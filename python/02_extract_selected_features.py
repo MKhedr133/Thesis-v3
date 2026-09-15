@@ -271,6 +271,29 @@ class ReachFeatureAggregation(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class ErrorOutcomeRecord(NamedTuple):
+    """One normalized performance row with raw errors and D0 change."""
+
+    participant_id: str
+    session_id: str
+    condition_name: str
+    difficulty_level: int | float
+    trial_order: str
+    errors_missing: float | None
+    errors_wrong_order: float | None
+    errors_duplicate: float | None
+    errors_not_in_list: float | None
+    total_error_count: float | None
+    error_change_from_d0: float | None
+
+
+class ErrorOutcomeResult(NamedTuple):
+    """Normalized error-outcome records and unique processing warnings."""
+
+    records: tuple[ErrorOutcomeRecord, ...]
+    warnings: tuple[str, ...]
+
+
 class HandPositionSample(NamedTuple):
     """One recorded hand position and its preceding motion step."""
 
@@ -477,6 +500,110 @@ def standardize_trial_table(data: pd.DataFrame) -> pd.DataFrame:
         output["language"] = "EN"
     output["language"] = output["language"].astype(str).str.strip().str.upper()
     return output
+
+
+def derive_error_outcomes(performance: pd.DataFrame) -> ErrorOutcomeResult:
+    """Normalize raw performance errors and derive same-condition D0 changes."""
+    error_aliases = {
+        "errors_total": "errors_total",
+        "total_error_count": "errors_total",
+        "errors_missing": "errors_missing",
+        "errors_wrongorder": "errors_wrong_order",
+        "errors_wrong_order": "errors_wrong_order",
+        "errors_collectedmorethanonce": "errors_duplicate",
+        "errors_duplicate": "errors_duplicate",
+        "errors_notinlist": "errors_not_in_list",
+        "errors_not_in_list": "errors_not_in_list",
+    }
+    rename = {
+        column: error_aliases[str(column).strip().casefold()]
+        for column in performance.columns
+        if str(column).strip().casefold() in error_aliases
+    }
+    normalized = standardize_trial_table(performance.rename(columns=rename))
+    warnings: list[str] = []
+    error_columns = (
+        "errors_missing",
+        "errors_wrong_order",
+        "errors_duplicate",
+        "errors_not_in_list",
+    )
+    for column in (*error_columns, "errors_total"):
+        if column not in normalized.columns:
+            normalized[column] = np.nan
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+
+    prepared: list[dict[str, object]] = []
+    for row_number, row in normalized.iterrows():
+        components = [row[column] for column in error_columns]
+        component_sum = (
+            float(sum(float(value) for value in components))
+            if all(pd.notna(value) and np.isfinite(float(value)) for value in components)
+            else None
+        )
+        recorded_total = row["errors_total"]
+        total = float(recorded_total) if pd.notna(recorded_total) and np.isfinite(float(recorded_total)) else None
+        if total is not None and component_sum is not None and not np.isclose(total, component_sum):
+            add_unique_warning(warnings, "error_total_component_mismatch")
+        if total is None and component_sum is not None:
+            total = component_sum
+        if total is None:
+            add_unique_warning(warnings, "error_total_unavailable")
+        prepared.append(
+            {
+                "participant_id": str(row["participant_id"]),
+                "session_id": str(row["session_id"]),
+                "condition_name": str(row["condition_name"]),
+                "difficulty_level": row["difficulty_level"],
+                "trial_order": str(row["trial_order"]),
+                "errors_missing": (
+                    float(row["errors_missing"]) if pd.notna(row["errors_missing"]) else None
+                ),
+                "errors_wrong_order": (
+                    float(row["errors_wrong_order"]) if pd.notna(row["errors_wrong_order"]) else None
+                ),
+                "errors_duplicate": (
+                    float(row["errors_duplicate"]) if pd.notna(row["errors_duplicate"]) else None
+                ),
+                "errors_not_in_list": (
+                    float(row["errors_not_in_list"]) if pd.notna(row["errors_not_in_list"]) else None
+                ),
+                "total_error_count": total,
+                "error_change_from_d0": None,
+            }
+        )
+
+    baseline_values: dict[tuple[str, str], list[float]] = {}
+    for record in prepared:
+        if record["difficulty_level"] == 0 and record["total_error_count"] is not None:
+            key = (str(record["participant_id"]), str(record["condition_name"]))
+            baseline_values.setdefault(key, []).append(float(record["total_error_count"]))
+    baselines: dict[tuple[str, str], float] = {}
+    for key, values in baseline_values.items():
+        if len(values) > 1:
+            add_unique_warning(warnings, f"duplicate_d0_baseline:{key[0]}:{key[1]}")
+        baselines[key] = float(np.median(values))
+
+    missing_baselines: set[tuple[str, str]] = set()
+    for record in prepared:
+        difficulty = record["difficulty_level"]
+        if difficulty == 0:
+            continue
+        key = (str(record["participant_id"]), str(record["condition_name"]))
+        if difficulty not in (2, 6, 10):
+            add_unique_warning(warnings, f"unsupported_difficulty:{difficulty}")
+            continue
+        baseline = baselines.get(key)
+        total = record["total_error_count"]
+        if baseline is None or total is None:
+            if baseline is None and key not in missing_baselines:
+                add_unique_warning(warnings, f"d0_baseline_unavailable:{key[0]}:{key[1]}")
+                missing_baselines.add(key)
+            continue
+        record["error_change_from_d0"] = float(total) - baseline
+
+    records = tuple(ErrorOutcomeRecord(**record) for record in prepared)
+    return ErrorOutcomeResult(records=records, warnings=tuple(warnings))
 
 
 def parse_correct_lists(path: Path) -> ProductCatalog:

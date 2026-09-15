@@ -1910,5 +1910,176 @@ class ReachFeatureAggregationTests(unittest.TestCase):
         self.assertIsNone(result.median_reach_path_ratio)
 
 
+class ErrorOutcomeTests(unittest.TestCase):
+    """Check FE-01.11 D0-matched raw and change error outcomes."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "derive_error_outcomes"),
+            "FE-01.11 error-outcome derivation not implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def row(
+        participant="P01",
+        session="S001",
+        trial="T001",
+        condition="Visual",
+        difficulty=0,
+        trial_order="T1",
+        total=0,
+        missing=0,
+        wrong=0,
+        duplicate=0,
+        not_in_list=0,
+        **extra,
+    ):
+        value = {
+            "participant": participant,
+            "session": session,
+            "trial": trial,
+            "group": "Young",
+            "condition": condition,
+            "trial2": trial_order,
+            "level3": difficulty,
+            "errors_total": total,
+            "errors_missing": missing,
+            "errors_wrongorder": wrong,
+            "errors_collectedmorethanonce": duplicate,
+            "errors_notinlist": not_in_list,
+        }
+        value.update(extra)
+        return value
+
+    def derive(self, rows):
+        return self.require_api().derive_error_outcomes(pd.DataFrame(rows))
+
+    def test_historical_error_aliases_and_metadata_are_normalized(self):
+        result = self.derive(
+            [
+                self.row(
+                    participant="p1",
+                    session="s002",
+                    trial="T004",
+                    condition="visual",
+                    difficulty="10",
+                    trial_order="t3",
+                    total=7,
+                    missing=1,
+                    wrong=2,
+                    duplicate=3,
+                    not_in_list=1,
+                )
+            ]
+        )
+        record = result.records[0]
+        self.assertEqual(record.participant_id, "P01")
+        self.assertEqual(record.session_id, "S002")
+        self.assertEqual(record.condition_name, "Visual")
+        self.assertEqual(record.difficulty_level, 10)
+        self.assertEqual(record.trial_order, "T3")
+        self.assertEqual(record.errors_wrong_order, 2.0)
+        self.assertEqual(record.errors_duplicate, 3.0)
+        self.assertEqual(record.errors_not_in_list, 1.0)
+
+    def test_recorded_total_is_preserved_as_authoritative(self):
+        result = self.derive([self.row(total=99, missing=1, wrong=2, duplicate=3, not_in_list=4)])
+        self.assertEqual(result.records[0].total_error_count, 99.0)
+
+    def test_missing_total_falls_back_to_complete_component_sum(self):
+        result = self.derive(
+            [self.row(total="bad", missing=1, wrong=2, duplicate=3, not_in_list=4)]
+        )
+        self.assertEqual(result.records[0].total_error_count, 10.0)
+
+    def test_total_component_mismatch_preserves_total_and_warns_once(self):
+        result = self.derive([self.row(total=20, missing=1, wrong=2, duplicate=3, not_in_list=4)])
+        self.assertEqual(result.records[0].total_error_count, 20.0)
+        self.assertEqual(
+            sum("error_total_component_mismatch" in warning for warning in result.warnings),
+            1,
+        )
+
+    def test_incomplete_components_leave_total_missing(self):
+        result = self.derive(
+            [self.row(total="bad", missing=1, wrong=None, duplicate=3, not_in_list=4)]
+        )
+        self.assertIsNone(result.records[0].total_error_count)
+        self.assertTrue(any("error_total_unavailable" in warning for warning in result.warnings))
+
+    def test_same_participant_condition_baseline_matches_across_sessions(self):
+        result = self.derive(
+            [
+                self.row(session="S001", difficulty=0, total=2),
+                self.row(session="S002", difficulty=6, total=7),
+            ]
+        )
+        self.assertEqual(result.records[1].error_change_from_d0, 5.0)
+
+    def test_duplicate_d0_baselines_use_median_and_warn(self):
+        result = self.derive(
+            [
+                self.row(trial="T001", difficulty=0, total=2),
+                self.row(trial="T002", difficulty=0, total=6),
+                self.row(trial="T003", difficulty=2, total=10),
+            ]
+        )
+        self.assertEqual(result.records[2].error_change_from_d0, 6.0)
+        self.assertTrue(any("duplicate_d0_baseline" in warning for warning in result.warnings))
+
+    def test_missing_d0_baseline_leaves_change_missing(self):
+        result = self.derive([self.row(difficulty=10, total=4)])
+        self.assertIsNone(result.records[0].error_change_from_d0)
+        self.assertTrue(any("d0_baseline_unavailable" in warning for warning in result.warnings))
+
+    def test_d0_change_is_missing_and_d2_d6_d10_changes_are_exact(self):
+        result = self.derive(
+            [
+                self.row(trial="T0", difficulty=0, total=3),
+                self.row(trial="T2", difficulty=2, total=5),
+                self.row(trial="T6", difficulty=6, total=1),
+                self.row(trial="T10", difficulty=10, total=8),
+            ]
+        )
+        self.assertIsNone(result.records[0].error_change_from_d0)
+        self.assertEqual(
+            [record.error_change_from_d0 for record in result.records[1:]],
+            [2.0, -2.0, 5.0],
+        )
+
+    def test_invalid_trial_errors_remain_missing(self):
+        result = self.derive([self.row(total="invalid", missing="bad", wrong=1, duplicate=1, not_in_list=1)])
+        self.assertIsNone(result.records[0].total_error_count)
+        self.assertIsNone(result.records[0].error_change_from_d0)
+
+    def test_unsupported_difficulty_change_is_missing(self):
+        result = self.derive(
+            [
+                self.row(difficulty=0, total=1),
+                self.row(difficulty=4, total=3),
+            ]
+        )
+        self.assertIsNone(result.records[1].error_change_from_d0)
+        self.assertTrue(any("unsupported_difficulty" in warning for warning in result.warnings))
+
+    def test_raw_components_and_input_order_are_preserved(self):
+        result = self.derive(
+            [
+                self.row(trial="T002", difficulty=2, total=4, missing=1),
+                self.row(trial="T001", difficulty=0, total=2, wrong=2),
+            ]
+        )
+        self.assertEqual([record.trial_order for record in result.records], ["T1", "T1"])
+        self.assertEqual(result.records[0].errors_missing, 1.0)
+        self.assertEqual(result.records[1].errors_wrong_order, 2.0)
+
+    def test_error_outcome_records_are_immutable(self):
+        result = self.derive([self.row()])
+        with self.assertRaises(AttributeError):
+            result.records[0].total_error_count = 4.0
+
+
 if __name__ == "__main__":
     unittest.main()
