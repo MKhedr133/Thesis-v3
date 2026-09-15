@@ -263,6 +263,14 @@ class LocatingFeatureAggregation(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class ReachFeatureAggregation(NamedTuple):
+    """Trial-level reach duration and 3-D path-ratio measurements."""
+
+    median_reach_duration_seconds: float | None
+    median_reach_path_ratio: float | None
+    warnings: tuple[str, ...]
+
+
 class HandPositionSample(NamedTuple):
     """One recorded hand position and its preceding motion step."""
 
@@ -1237,6 +1245,139 @@ def aggregate_trial_locating_features(
         median_head_turning_degrees=(
             float(np.median(head_turning_values)) if head_turning_values else None
         ),
+        warnings=tuple(warnings),
+    )
+
+
+def _reach_path_ratio(
+    tracker: pd.DataFrame,
+    hand: str,
+    reach_start: float,
+    grab_start: float,
+    minimum_straight_distance_meters: float,
+    warnings: list[str],
+) -> float | None:
+    """Calculate one observed 3-D reach path ratio without bridging gaps."""
+    motion = prepare_hand_motion(tracker, hand)
+    for warning in motion.warnings:
+        add_unique_warning(warnings, warning)
+
+    samples = motion.samples
+    windowed = [
+        (index, sample)
+        for index, sample in enumerate(samples)
+        if sample.timestamp_seconds is not None
+        and reach_start <= sample.timestamp_seconds <= grab_start
+    ]
+    valid_windowed = [(index, sample) for index, sample in windowed if sample.is_valid]
+    if len(valid_windowed) < 2:
+        add_unique_warning(warnings, f"insufficient_reach_positions:{hand}")
+        return None
+
+    if any(not sample.is_valid for _, sample in windowed):
+        add_unique_warning(warnings, f"reach_position_gap:{hand}")
+
+    first_sample = valid_windowed[0][1]
+    last_sample = valid_windowed[-1][1]
+    first_position = np.array(
+        [first_sample.x_meters, first_sample.y_meters, first_sample.z_meters],
+        dtype=float,
+    )
+    last_position = np.array(
+        [last_sample.x_meters, last_sample.y_meters, last_sample.z_meters],
+        dtype=float,
+    )
+    if not np.isfinite(first_position).all() or not np.isfinite(last_position).all():
+        add_unique_warning(warnings, f"reach_endpoint_position_missing:{hand}")
+        return None
+
+    straight_distance = float(np.linalg.norm(last_position - first_position))
+    if not np.isfinite(straight_distance):
+        add_unique_warning(warnings, f"reach_endpoint_position_missing:{hand}")
+        return None
+    if straight_distance < minimum_straight_distance_meters:
+        add_unique_warning(warnings, "straight_distance_too_small")
+        return None
+
+    path_steps: list[float] = []
+    for previous_index, current_index in zip(range(len(samples) - 1), range(1, len(samples))):
+        previous = samples[previous_index]
+        current = samples[current_index]
+        if not previous.is_valid or not current.is_valid:
+            continue
+        if previous.timestamp_seconds is None or current.timestamp_seconds is None:
+            continue
+        if not (
+            reach_start <= previous.timestamp_seconds <= grab_start
+            and reach_start <= current.timestamp_seconds <= grab_start
+        ):
+            continue
+        if current.step_distance_meters is not None and np.isfinite(current.step_distance_meters):
+            path_steps.append(float(current.step_distance_meters))
+
+    if not path_steps:
+        add_unique_warning(warnings, f"insufficient_reach_path:{hand}")
+        return None
+
+    path_length = float(sum(path_steps))
+    ratio = path_length / straight_distance
+    if not np.isfinite(ratio):
+        add_unique_warning(warnings, f"reach_path_ratio_unavailable:{hand}")
+        return None
+    return max(1.0, ratio)
+
+
+def aggregate_trial_reach_features(
+    reach_intervals: Sequence[ReachInterval],
+    tracker: pd.DataFrame,
+    minimum_straight_distance_meters: float = 0.02,
+) -> ReachFeatureAggregation:
+    """Aggregate median reach duration and observed 3-D path ratio."""
+    if minimum_straight_distance_meters < 0:
+        raise ValueError("minimum_straight_distance_meters cannot be negative")
+
+    warnings: list[str] = []
+    durations: list[float] = []
+    path_ratios: list[float] = []
+    ordered_intervals = sorted(
+        reach_intervals,
+        key=lambda interval: (
+            interval.grab_start_seconds
+            if interval.grab_start_seconds is not None
+            and np.isfinite(interval.grab_start_seconds)
+            else float("inf")
+        ),
+    )
+
+    for interval in ordered_intervals:
+        start = interval.reach_start_seconds
+        grab = interval.grab_start_seconds
+        if not interval.is_valid or start is None or grab is None:
+            add_unique_warning(warnings, "reach_duration_unavailable")
+            continue
+        if not np.isfinite(start) or not np.isfinite(grab):
+            add_unique_warning(warnings, "reach_duration_unavailable")
+            continue
+        duration = float(grab - start)
+        if duration < 0:
+            add_unique_warning(warnings, "negative_reach_duration")
+            continue
+        durations.append(duration)
+
+        ratio = _reach_path_ratio(
+            tracker,
+            interval.hand,
+            float(start),
+            float(grab),
+            minimum_straight_distance_meters,
+            warnings,
+        )
+        if ratio is not None:
+            path_ratios.append(ratio)
+
+    return ReachFeatureAggregation(
+        median_reach_duration_seconds=(float(np.median(durations)) if durations else None),
+        median_reach_path_ratio=(float(np.median(path_ratios)) if path_ratios else None),
         warnings=tuple(warnings),
     )
 

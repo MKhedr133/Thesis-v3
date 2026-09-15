@@ -1787,5 +1787,128 @@ class ReachOnsetTests(unittest.TestCase):
         self.assertTrue(result.intervals[0].is_valid)
 
 
+class ReachFeatureAggregationTests(unittest.TestCase):
+    """Check FE-01.10 reach duration and path-ratio aggregation."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "aggregate_trial_reach_features"),
+            "FE-01.10 reach aggregation not implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def interval(start, grab, *, hand="right", valid=True, product="red apple"):
+        return EXTRACTOR.ReachInterval(
+            canonical_product_name=product,
+            hand=hand,
+            reach_start_seconds=start,
+            grab_start_seconds=grab,
+            is_valid=valid,
+        )
+
+    @staticmethod
+    def tracker(times, positions, *, hand="right"):
+        return pd.DataFrame(
+            {
+                "time": times,
+                f"{hand}_pos_x": [position[0] for position in positions],
+                f"{hand}_pos_y": [position[1] for position in positions],
+                f"{hand}_pos_z": [position[2] for position in positions],
+            }
+        )
+
+    def aggregate(self, intervals, tracker):
+        extractor = self.require_api()
+        return extractor.aggregate_trial_reach_features(intervals, tracker)
+
+    def test_exact_duration_and_median_duration(self):
+        tracker = self.tracker([0.0, 1.0, 2.0], [(0, 0, 0)] * 3)
+        result = self.aggregate(
+            [self.interval(0.25, 1.25), self.interval(1.0, 3.0)], tracker
+        )
+        self.assertAlmostEqual(result.median_reach_duration_seconds, 1.5)
+
+    def test_invalid_or_missing_onset_remains_missing(self):
+        tracker = self.tracker([0.0, 1.0], [(0, 0, 0)] * 2)
+        result = self.aggregate([self.interval(None, 1.0, valid=False)], tracker)
+        self.assertIsNone(result.median_reach_duration_seconds)
+        self.assertIn("reach_duration_unavailable", result.warnings)
+
+    def test_negative_boundaries_are_rejected(self):
+        tracker = self.tracker([0.0, 1.0], [(0, 0, 0)] * 2)
+        result = self.aggregate([self.interval(2.0, 1.0)], tracker)
+        self.assertIsNone(result.median_reach_duration_seconds)
+        self.assertIn("negative_reach_duration", result.warnings)
+
+    def test_actual_hand_selects_matching_motion_columns(self):
+        tracker = pd.DataFrame(
+            {
+                "time": [0.0, 0.2, 0.4],
+                "left_pos_x": [0.0, 0.1, 0.2],
+                "left_pos_y": [0.0, 0.0, 0.0],
+                "left_pos_z": [0.0, 0.0, 0.0],
+                "right_pos_x": [0.0, 0.0, 0.0],
+                "right_pos_y": [0.0, 0.0, 0.0],
+                "right_pos_z": [0.0, 0.0, 0.0],
+            }
+        )
+        result = self.aggregate([self.interval(0.0, 0.4, hand="left")], tracker)
+        self.assertAlmostEqual(result.median_reach_path_ratio, 1.0)
+
+    def test_straight_line_motion_has_ratio_one(self):
+        tracker = self.tracker(
+            [0.0, 0.1, 0.2], [(0.0, 0, 0), (0.1, 0, 0), (0.2, 0, 0)]
+        )
+        result = self.aggregate([self.interval(0.0, 0.2)], tracker)
+        self.assertAlmostEqual(result.median_reach_path_ratio, 1.0)
+
+    def test_curved_and_returning_motion_accumulates_path(self):
+        tracker = self.tracker(
+            [0.0, 0.1, 0.2, 0.3],
+            [(0, 0, 0), (0.1, 0, 0), (0.1, 0.1, 0), (0.2, 0.1, 0)],
+        )
+        result = self.aggregate([self.interval(0.0, 0.3)], tracker)
+        self.assertGreater(result.median_reach_path_ratio, 1.0)
+
+    def test_small_straight_distance_is_missing_with_warning(self):
+        tracker = self.tracker([0.0, 0.1], [(0, 0, 0), (0.01, 0, 0)])
+        result = self.aggregate([self.interval(0.0, 0.1)], tracker)
+        self.assertIsNone(result.median_reach_path_ratio)
+        self.assertIn("straight_distance_too_small", result.warnings)
+
+    def test_missing_position_does_not_bridge_path_gap(self):
+        tracker = self.tracker(
+            [0.0, 0.1, 0.2, 0.3],
+            [(0, 0, 0), (0.1, 0, 0), (None, 0, 0), (0.3, 0, 0)],
+        )
+        result = self.aggregate([self.interval(0.0, 0.3)], tracker)
+        self.assertAlmostEqual(result.median_reach_path_ratio, 1.0)
+        self.assertTrue(any(warning.startswith("reach_position_gap") for warning in result.warnings))
+
+    def test_duration_can_be_valid_when_path_ratio_is_missing(self):
+        tracker = self.tracker([0.0, 0.1], [(0, 0, 0), (None, 0, 0)])
+        result = self.aggregate([self.interval(0.0, 0.1)], tracker)
+        self.assertAlmostEqual(result.median_reach_duration_seconds, 0.1)
+        self.assertIsNone(result.median_reach_path_ratio)
+
+    def test_unsorted_intervals_do_not_change_medians(self):
+        tracker = self.tracker(
+            [0.0, 0.1, 0.2, 0.3],
+            [(0, 0, 0), (0.1, 0, 0), (0.2, 0, 0), (0.3, 0, 0)],
+        )
+        result = self.aggregate(
+            [self.interval(0.2, 0.3), self.interval(0.0, 0.1)], tracker
+        )
+        self.assertAlmostEqual(result.median_reach_duration_seconds, 0.1)
+
+    def test_no_valid_intervals_returns_missing_values(self):
+        tracker = self.tracker([0.0, 0.1], [(0, 0, 0)] * 2)
+        result = self.aggregate([self.interval(None, 0.1, valid=False)], tracker)
+        self.assertIsNone(result.median_reach_duration_seconds)
+        self.assertIsNone(result.median_reach_path_ratio)
+
+
 if __name__ == "__main__":
     unittest.main()
