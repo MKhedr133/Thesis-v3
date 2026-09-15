@@ -1463,5 +1463,190 @@ class LocatingFeatureTests(unittest.TestCase):
         self.assertAlmostEqual(summary.median_time_to_target_seconds, 1.75)
 
 
+class HandMotionTests(unittest.TestCase):
+    """Check FE-01.8 hand positions, distances and speeds."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "prepare_hand_motion"),
+            "FE-01.8 hand-motion preparation has not been implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def tracker(rows):
+        return pd.DataFrame(rows)
+
+    def prepare(self, tracker, hand="right"):
+        extractor = self.require_api()
+        return extractor.prepare_hand_motion(tracker, hand)
+
+    def test_exact_times_positions_distances_and_timestamp_based_speeds(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [0.00, 0.50, 1.50],
+                    "right_pos_x": [0.0, 0.3, 0.3],
+                    "right_pos_y": [0.0, 0.4, 0.4],
+                    "right_pos_z": [0.0, 0.0, 1.4],
+                }
+            )
+        )
+
+        self.assertEqual([sample.timestamp_seconds for sample in result.samples], [0.0, 0.5, 1.5])
+        self.assertAlmostEqual(result.samples[1].step_distance_meters, 0.5)
+        self.assertAlmostEqual(result.samples[1].step_speed_meters_per_second, 1.0)
+        self.assertAlmostEqual(result.samples[2].step_distance_meters, 1.4)
+        self.assertAlmostEqual(result.samples[2].step_speed_meters_per_second, 1.4)
+
+    def test_stationary_samples_have_zero_distance_and_speed(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [0.0, 0.5],
+                    "right_pos_x": [1.0, 1.0],
+                    "right_pos_y": [2.0, 2.0],
+                    "right_pos_z": [3.0, 3.0],
+                }
+            )
+        )
+
+        self.assertEqual(result.samples[1].step_distance_meters, 0.0)
+        self.assertEqual(result.samples[1].step_speed_meters_per_second, 0.0)
+
+    def test_left_and_right_hand_columns_are_selected_independently(self):
+        tracker = self.tracker(
+            {
+                "time": [0.0, 1.0],
+                "left_pos_x": [0.0, 1.0],
+                "left_pos_y": [0.0, 0.0],
+                "left_pos_z": [0.0, 0.0],
+                "right_pos_x": [0.0, 0.0],
+                "right_pos_y": [0.0, 2.0],
+                "right_pos_z": [0.0, 0.0],
+            }
+        )
+
+        self.assertAlmostEqual(self.prepare(tracker, "left").samples[1].step_distance_meters, 1.0)
+        self.assertAlmostEqual(self.prepare(tracker, "right").samples[1].step_distance_meters, 2.0)
+
+    def test_missing_coordinate_breaks_step_without_bridging(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [0.0, 1.0, 2.0],
+                    "right_pos_x": [0.0, None, 2.0],
+                    "right_pos_y": [0.0, 0.0, 0.0],
+                    "right_pos_z": [0.0, 0.0, 0.0],
+                }
+            )
+        )
+
+        self.assertFalse(result.samples[1].is_valid)
+        self.assertIsNone(result.samples[1].step_distance_meters)
+        self.assertIsNone(result.samples[2].step_distance_meters)
+
+    def test_missing_time_breaks_step_without_bridging(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [0.0, None, 2.0],
+                    "right_pos_x": [0.0, 1.0, 2.0],
+                    "right_pos_y": [0.0, 0.0, 0.0],
+                    "right_pos_z": [0.0, 0.0, 0.0],
+                }
+            )
+        )
+
+        self.assertFalse(result.samples[1].is_valid)
+        self.assertIsNone(result.samples[2].step_distance_meters)
+
+    def test_nonpositive_time_difference_warns_and_speed_is_missing(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [0.0, 0.0],
+                    "right_pos_x": [0.0, 1.0],
+                    "right_pos_y": [0.0, 0.0],
+                    "right_pos_z": [0.0, 0.0],
+                }
+            )
+        )
+
+        self.assertAlmostEqual(result.samples[1].step_distance_meters, 1.0)
+        self.assertIsNone(result.samples[1].step_speed_meters_per_second)
+        self.assertIn("nonpositive_time_delta:right", result.warnings)
+
+    def test_missing_hand_columns_return_empty_series_with_warning(self):
+        result = self.prepare(pd.DataFrame({"time": [0.0, 1.0]}), "left")
+
+        self.assertEqual(result.samples, ())
+        self.assertIn("hand_position_columns_unavailable:left", result.warnings)
+
+    def test_invalid_numeric_strings_become_missing(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": ["0.0", "bad"],
+                    "right_pos_x": ["1.0", "2.0"],
+                    "right_pos_y": ["0.0", "0.0"],
+                    "right_pos_z": ["0.0", "0.0"],
+                }
+            )
+        )
+
+        self.assertTrue(result.samples[0].is_valid)
+        self.assertFalse(result.samples[1].is_valid)
+        self.assertIsNone(result.samples[1].step_speed_meters_per_second)
+
+    def test_row_order_is_preserved(self):
+        result = self.prepare(
+            self.tracker(
+                {
+                    "time": [2.0, 1.0],
+                    "right_pos_x": [2.0, 1.0],
+                    "right_pos_y": [0.0, 0.0],
+                    "right_pos_z": [0.0, 0.0],
+                }
+            )
+        )
+
+        self.assertEqual([sample.timestamp_seconds for sample in result.samples], [2.0, 1.0])
+        self.assertIn("nonpositive_time_delta:right", result.warnings)
+
+    def test_both_hands_can_be_prepared_from_one_tracker(self):
+        tracker = self.tracker(
+            {
+                "time": [0.0, 1.0],
+                "left_pos_x": [0.0, 1.0],
+                "left_pos_y": [0.0, 0.0],
+                "left_pos_z": [0.0, 0.0],
+                "right_pos_x": [0.0, 0.0],
+                "right_pos_y": [0.0, 1.0],
+                "right_pos_z": [0.0, 0.0],
+            }
+        )
+
+        self.assertEqual(self.prepare(tracker, "left").hand, "left")
+        self.assertEqual(self.prepare(tracker, "right").hand, "right")
+
+    def test_actual_grab_hand_helper_returns_event_hand(self):
+        extractor = self.require_api()
+        event = extractor.ProductGrabEvent(
+            canonical_product_name="red apple",
+            raw_product_label="red apple",
+            hand="left",
+            grab_start_seconds=1.0,
+            grab_release_seconds=1.3,
+            grab_duration_seconds=0.3,
+            is_on_list=True,
+            is_first_time_on_list=True,
+            overlaps_other_hand_grab=False,
+        )
+
+        self.assertEqual(extractor.actual_grab_hand(event), "left")
+
+
 if __name__ == "__main__":
     unittest.main()

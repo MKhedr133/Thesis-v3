@@ -187,6 +187,13 @@ class ProductGrabEvent(NamedTuple):
     overlaps_other_hand_grab: bool
 
 
+def actual_grab_hand(event: ProductGrabEvent) -> str:
+    """Return the recorded hand that completed a product grab."""
+    if event.hand not in {"left", "right"}:
+        raise ValueError(f"Unsupported grab hand: {event.hand!r}")
+    return event.hand
+
+
 class GrabDetectionResult(NamedTuple):
     """Chronological product-grab events and unique processing warnings."""
 
@@ -253,6 +260,26 @@ class LocatingFeatureAggregation(NamedTuple):
     median_time_to_target_seconds: float | None
     median_irrelevant_focus_duration_seconds: float | None
     median_head_turning_degrees: float | None
+    warnings: tuple[str, ...]
+
+
+class HandPositionSample(NamedTuple):
+    """One recorded hand position and its preceding motion step."""
+
+    timestamp_seconds: float | None
+    x_meters: float | None
+    y_meters: float | None
+    z_meters: float | None
+    step_distance_meters: float | None
+    step_speed_meters_per_second: float | None
+    is_valid: bool
+
+
+class HandMotionSeries(NamedTuple):
+    """Recorded hand positions with timestamp-based motion steps."""
+
+    hand: str
+    samples: tuple[HandPositionSample, ...]
     warnings: tuple[str, ...]
 
 
@@ -533,6 +560,58 @@ def load_tracker_table(path: Path) -> TrackerLoadResult:
             table[column] = np.nan
             warnings.append(f"missing_tracker_column:{column}")
     return TrackerLoadResult(table=table, warnings=warnings)
+
+
+def prepare_hand_motion(tracker: pd.DataFrame, hand: str) -> HandMotionSeries:
+    """Prepare recorded 3-D hand positions, distances and speeds."""
+    if hand not in {"left", "right"}:
+        raise ValueError(f"Unsupported hand: {hand!r}")
+    columns = ("time", f"{hand}_pos_x", f"{hand}_pos_y", f"{hand}_pos_z")
+    warnings: list[str] = []
+    if any(column not in tracker for column in columns):
+        add_unique_warning(warnings, f"hand_position_columns_unavailable:{hand}")
+        return HandMotionSeries(hand=hand, samples=(), warnings=tuple(warnings))
+
+    numeric = tracker.loc[:, columns].copy()
+    for column in columns:
+        numeric[column] = pd.to_numeric(numeric[column], errors="coerce")
+
+    samples: list[HandPositionSample] = []
+    previous_position: np.ndarray | None = None
+    previous_time: float | None = None
+    for row in numeric.itertuples(index=False):
+        timestamp = float(row[0]) if np.isfinite(row[0]) else None
+        position_values = np.asarray(row[1:4], dtype=float)
+        position_valid = bool(np.isfinite(position_values).all())
+        is_valid = timestamp is not None and position_valid
+        distance: float | None = None
+        speed: float | None = None
+        if is_valid:
+            current_position = position_values
+            if previous_position is not None and previous_time is not None:
+                distance = float(np.linalg.norm(current_position - previous_position))
+                delta_time = timestamp - previous_time
+                if np.isfinite(delta_time) and delta_time > 0:
+                    speed = distance / float(delta_time)
+                else:
+                    add_unique_warning(warnings, f"nonpositive_time_delta:{hand}")
+            previous_position = current_position
+            previous_time = timestamp
+        else:
+            previous_position = None
+            previous_time = None
+        samples.append(
+            HandPositionSample(
+                timestamp_seconds=timestamp,
+                x_meters=float(position_values[0]) if np.isfinite(position_values[0]) else None,
+                y_meters=float(position_values[1]) if np.isfinite(position_values[1]) else None,
+                z_meters=float(position_values[2]) if np.isfinite(position_values[2]) else None,
+                step_distance_meters=distance,
+                step_speed_meters_per_second=speed,
+                is_valid=is_valid,
+            )
+        )
+    return HandMotionSeries(hand=hand, samples=tuple(samples), warnings=tuple(warnings))
 
 
 def _complete_grab_segments_for_hand(
