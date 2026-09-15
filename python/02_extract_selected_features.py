@@ -213,6 +213,15 @@ class FocusDetectionResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class ListVisit(NamedTuple):
+    """One complete engine-labelled shopping-list viewing episode."""
+
+    list_visit_start_seconds: float
+    list_visit_end_seconds: float
+    list_visit_duration_seconds: float
+    is_initial_view: bool
+
+
 class _RawGrabSegment(NamedTuple):
     """Internal complete segment before duration and list classification."""
 
@@ -796,6 +805,39 @@ def detect_focus_episodes(
 
     episodes.sort(key=lambda episode: episode.focus_start_seconds)
     return FocusDetectionResult(episodes=tuple(episodes), warnings=tuple(warnings))
+
+
+def detect_list_visits(
+    focus_episodes: Sequence[FocusEpisode],
+) -> tuple[ListVisit, ...]:
+    """Return chronological initial-list and later recheck visits.
+
+    A list visit is exactly one already-complete focus episode whose cleaned
+    tag is ``tablet`` or whose canonical name is ``tablet`` or ``samsung_tab``.
+    Separate focus episodes remain separate visits.
+    """
+    tablet_names = {"tablet", "samsung_tab"}
+    tablet_episodes = sorted(
+        (
+            episode
+            for episode in focus_episodes
+            if episode.cleaned_focus_tag == "tablet"
+            or episode.canonical_focus_name in tablet_names
+        ),
+        key=lambda episode: (
+            episode.focus_start_seconds,
+            episode.focus_end_seconds,
+        ),
+    )
+    return tuple(
+        ListVisit(
+            list_visit_start_seconds=episode.focus_start_seconds,
+            list_visit_end_seconds=episode.focus_end_seconds,
+            list_visit_duration_seconds=episode.focus_duration_seconds,
+            is_initial_view=index == 0,
+        )
+        for index, episode in enumerate(tablet_episodes)
+    )
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

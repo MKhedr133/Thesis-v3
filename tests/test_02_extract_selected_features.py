@@ -812,5 +812,134 @@ class FocusEpisodeTests(unittest.TestCase):
         self.assertEqual(len(result.warnings), len(set(result.warnings)))
 
 
+class ListVisitTests(unittest.TestCase):
+    """Check FE-01.4 tablet/list visits derived from focus episodes only."""
+
+    def require_list_visit_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "detect_list_visits"),
+            "FE-01.4 list-visit detection has not been implemented",
+        )
+        return EXTRACTOR
+
+    def focus_episode(
+        self,
+        start,
+        end,
+        *,
+        name="",
+        tag="",
+        raw_name=None,
+        raw_tag=None,
+    ):
+        extractor = self.require_list_visit_api()
+        return extractor.FocusEpisode(
+            canonical_focus_name=name,
+            raw_focus_name=name if raw_name is None else raw_name,
+            cleaned_focus_tag=tag,
+            raw_focus_tag=tag if raw_tag is None else raw_tag,
+            focus_start_seconds=start,
+            focus_end_seconds=end,
+            focus_duration_seconds=end - start,
+        )
+
+    def detect(self, episodes):
+        extractor = self.require_list_visit_api()
+        return extractor.detect_list_visits(episodes)
+
+    def test_tablet_tag_creates_visit_with_focus_episode_timing(self):
+        visit = self.detect(
+            [self.focus_episode(0.10, 0.35, name="samsung_tab", tag="tablet")]
+        )[0]
+
+        self.assertAlmostEqual(visit.list_visit_start_seconds, 0.10)
+        self.assertAlmostEqual(visit.list_visit_end_seconds, 0.35)
+        self.assertAlmostEqual(visit.list_visit_duration_seconds, 0.25)
+        self.assertTrue(visit.is_initial_view)
+
+    def test_known_tablet_names_work_without_a_tablet_tag(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.00, 0.10, name="samsung_tab", tag="ui"),
+                self.focus_episode(0.20, 0.30, name="tablet", tag="ui"),
+            ]
+        )
+
+        self.assertEqual(len(visits), 2)
+        self.assertEqual([visit.is_initial_view for visit in visits], [True, False])
+
+    def test_non_tablet_focus_episodes_do_not_create_visits(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.00, 0.10, name="red apple", tag="mainshelf"),
+                self.focus_episode(0.20, 0.30, name="cart", tag="cart"),
+                self.focus_episode(0.40, 0.50, name="npc", tag="npc"),
+            ]
+        )
+
+        self.assertEqual(visits, ())
+
+    def test_first_chronological_visit_is_initial_and_later_visits_are_rechecks(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.10, 0.20, name="samsung_tab", tag="tablet"),
+                self.focus_episode(0.40, 0.55, name="samsung_tab", tag="tablet"),
+                self.focus_episode(0.70, 0.90, name="samsung_tab", tag="tablet"),
+            ]
+        )
+
+        self.assertEqual([visit.is_initial_view for visit in visits], [True, False, False])
+
+    def test_recheck_before_any_grab_is_still_retained(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.00, 0.10, name="samsung_tab", tag="tablet"),
+                self.focus_episode(0.15, 0.25, name="samsung_tab", tag="tablet"),
+            ]
+        )
+
+        self.assertEqual(len(visits), 2)
+        self.assertFalse(visits[1].is_initial_view)
+
+    def test_distinct_tablet_focus_episodes_are_not_merged(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.00, 0.10, name="samsung_tab", tag="tablet"),
+                self.focus_episode(0.10, 0.20, name="samsung_tab", tag="tablet"),
+            ]
+        )
+
+        self.assertEqual(len(visits), 2)
+        self.assertEqual(
+            [visit.list_visit_duration_seconds for visit in visits], [0.10, 0.10]
+        )
+
+    def test_zero_duration_complete_visit_is_retained(self):
+        visit = self.detect(
+            [self.focus_episode(0.10, 0.10, name="samsung_tab", tag="tablet")]
+        )[0]
+
+        self.assertEqual(visit.list_visit_duration_seconds, 0.0)
+
+    def test_no_tablet_focus_episode_returns_empty_tuple(self):
+        self.assertEqual(
+            self.detect([self.focus_episode(0.00, 0.10, name="red apple")]), ()
+        )
+
+    def test_unsorted_focus_episodes_produce_chronological_visits(self):
+        visits = self.detect(
+            [
+                self.focus_episode(0.40, 0.50, name="samsung_tab", tag="tablet"),
+                self.focus_episode(0.10, 0.20, name="samsung_tab", tag="tablet"),
+            ]
+        )
+
+        self.assertEqual(
+            [visit.list_visit_start_seconds for visit in visits], [0.10, 0.40]
+        )
+        self.assertEqual([visit.is_initial_view for visit in visits], [True, False])
+
+
 if __name__ == "__main__":
     unittest.main()
