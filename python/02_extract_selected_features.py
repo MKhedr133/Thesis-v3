@@ -283,6 +283,30 @@ class HandMotionSeries(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class ReachDetectionConfig(NamedTuple):
+    """Provisional historical settings for reach-onset detection."""
+
+    hand_speed_threshold_meters_per_second: float = 0.05
+    minimum_rest_duration_seconds: float = 0.20
+
+
+class ReachInterval(NamedTuple):
+    """Auditable reach interval ending at one qualifying grab."""
+
+    canonical_product_name: str
+    hand: str
+    reach_start_seconds: float | None
+    grab_start_seconds: float
+    is_valid: bool
+
+
+class ReachDetectionResult(NamedTuple):
+    """Reach intervals and unique detector warnings."""
+
+    intervals: tuple[ReachInterval, ...]
+    warnings: tuple[str, ...]
+
+
 class _RawGrabSegment(NamedTuple):
     """Internal complete segment before duration and list classification."""
 
@@ -612,6 +636,109 @@ def prepare_hand_motion(tracker: pd.DataFrame, hand: str) -> HandMotionSeries:
             )
         )
     return HandMotionSeries(hand=hand, samples=tuple(samples), warnings=tuple(warnings))
+
+
+def detect_reach_intervals(
+    tracker: pd.DataFrame,
+    grab_events: Sequence[ProductGrabEvent],
+    config: ReachDetectionConfig | None = None,
+) -> ReachDetectionResult:
+    """Detect the final sustained low-speed rest before each qualifying grab."""
+    config = config or ReachDetectionConfig()
+    if config.hand_speed_threshold_meters_per_second < 0:
+        raise ValueError("hand_speed_threshold_meters_per_second cannot be negative")
+    if config.minimum_rest_duration_seconds < 0:
+        raise ValueError("minimum_rest_duration_seconds cannot be negative")
+
+    warnings: list[str] = []
+    intervals: list[ReachInterval] = []
+    qualifying_grabs = sorted(
+        (
+            event
+            for event in grab_events
+            if event.is_on_list and event.is_first_time_on_list
+        ),
+        key=lambda event: event.grab_start_seconds,
+    )
+    motion_by_hand: dict[str, HandMotionSeries] = {}
+    for event in qualifying_grabs:
+        hand = actual_grab_hand(event)
+        if hand not in motion_by_hand:
+            motion_by_hand[hand] = prepare_hand_motion(tracker, hand)
+            for warning in motion_by_hand[hand].warnings:
+                add_unique_warning(warnings, warning)
+        motion = motion_by_hand[hand]
+        pre_grab = [
+            sample
+            for sample in motion.samples
+            if sample.timestamp_seconds is not None
+            and sample.timestamp_seconds <= event.grab_start_seconds
+        ]
+        rest_blocks: list[tuple[list[HandPositionSample], float]] = []
+        active_block: list[HandPositionSample] = []
+        active_start: float | None = None
+        previous_valid_timestamp: float | None = None
+        for sample in pre_grab:
+            if not sample.is_valid or sample.timestamp_seconds is None:
+                if active_block and active_start is not None:
+                    rest_blocks.append((active_block, active_start))
+                active_block = []
+                active_start = None
+                previous_valid_timestamp = None
+                continue
+            is_rest = (
+                sample.step_speed_meters_per_second is not None
+                and sample.step_speed_meters_per_second
+                <= config.hand_speed_threshold_meters_per_second
+            )
+            if (
+                sample.step_speed_meters_per_second is None
+                and not active_block
+            ):
+                is_rest = True
+            if is_rest:
+                if not active_block:
+                    active_start = (
+                        previous_valid_timestamp
+                        if previous_valid_timestamp is not None
+                        else sample.timestamp_seconds
+                    )
+                active_block.append(sample)
+            elif active_block:
+                rest_blocks.append((active_block, active_start))
+                active_block = []
+                active_start = None
+            previous_valid_timestamp = sample.timestamp_seconds
+        if active_block and active_start is not None:
+            rest_blocks.append((active_block, active_start))
+        qualifying_blocks = []
+        for block, rest_start in rest_blocks:
+            rest_duration = block[-1].timestamp_seconds - rest_start
+            if rest_duration >= config.minimum_rest_duration_seconds:
+                qualifying_blocks.append(block)
+        if not qualifying_blocks:
+            add_unique_warning(warnings, f"reach_onset_not_found:{hand}")
+            intervals.append(
+                ReachInterval(
+                    canonical_product_name=event.canonical_product_name,
+                    hand=hand,
+                    reach_start_seconds=None,
+                    grab_start_seconds=event.grab_start_seconds,
+                    is_valid=False,
+                )
+            )
+            continue
+        reach_start = float(qualifying_blocks[-1][-1].timestamp_seconds)
+        intervals.append(
+            ReachInterval(
+                canonical_product_name=event.canonical_product_name,
+                hand=hand,
+                reach_start_seconds=reach_start,
+                grab_start_seconds=event.grab_start_seconds,
+                is_valid=True,
+            )
+        )
+    return ReachDetectionResult(intervals=tuple(intervals), warnings=tuple(warnings))
 
 
 def _complete_grab_segments_for_hand(

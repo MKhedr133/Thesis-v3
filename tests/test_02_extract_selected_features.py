@@ -1648,5 +1648,144 @@ class HandMotionTests(unittest.TestCase):
         self.assertEqual(extractor.actual_grab_hand(event), "left")
 
 
+class ReachOnsetTests(unittest.TestCase):
+    """Check FE-01.9 final sustained pre-grab movement blocks."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "detect_reach_intervals"),
+            "FE-01.9 reach-onset detection has not been implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def grab(start, *, hand="right", product="red apple", on_list=True, first=True):
+        return EXTRACTOR.ProductGrabEvent(
+            canonical_product_name=product,
+            raw_product_label=product,
+            hand=hand,
+            grab_start_seconds=start,
+            grab_release_seconds=start + 0.20,
+            grab_duration_seconds=0.20,
+            is_on_list=on_list,
+            is_first_time_on_list=first,
+            overlaps_other_hand_grab=False,
+        )
+
+    @staticmethod
+    def tracker(times, positions):
+        return pd.DataFrame(
+            {
+                "time": times,
+                "right_pos_x": [position[0] for position in positions],
+                "right_pos_y": [position[1] for position in positions],
+                "right_pos_z": [position[2] for position in positions],
+            }
+        )
+
+    def detect(self, tracker, grabs, config=None):
+        extractor = self.require_api()
+        return extractor.detect_reach_intervals(tracker, grabs, config)
+
+    def test_final_sustained_rest_selects_following_reach_onset(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.3, 0.6, 1.0],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                 (0.1, 0.0, 0.0), (0.4, 0.0, 0.0), (0.8, 0.0, 0.0)],
+            ),
+            [self.grab(1.0)],
+        )
+
+        interval = result.intervals[0]
+        self.assertAlmostEqual(interval.reach_start_seconds, 0.2)
+        self.assertAlmostEqual(interval.grab_start_seconds, 1.0)
+        self.assertTrue(interval.is_valid)
+
+    def test_multiple_rest_blocks_use_the_final_qualifying_block(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                 (0.2, 0.0, 0.0), (0.3, 0.0, 0.0), (0.4, 0.0, 0.0),
+                 (0.4, 0.0, 0.0), (0.4, 0.0, 0.0), (0.8, 0.0, 0.0)],
+            ),
+            [self.grab(1.0)],
+        )
+
+        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.8)
+
+    def test_rest_duration_threshold_is_configurable_and_provisional(self):
+        extractor = self.require_api()
+        config = extractor.ReachDetectionConfig(
+            hand_speed_threshold_meters_per_second=0.05,
+            minimum_rest_duration_seconds=0.30,
+        )
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.3, 0.6],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                 (0.2, 0.0, 0.0), (0.5, 0.0, 0.0)],
+            ),
+            [self.grab(0.6)],
+            config,
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+
+    def test_no_qualifying_rest_produces_invalid_interval_and_warning(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.2, 0.4, 0.8],
+                [(0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.6, 0.0, 0.0), (1.0, 0.0, 0.0)],
+            ),
+            [self.grab(0.8)],
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+        self.assertIn("reach_onset_not_found:right", result.warnings)
+
+    def test_missing_hand_motion_keeps_interval_missing(self):
+        result = self.detect(
+            pd.DataFrame({"time": [0.0, 1.0]}),
+            [self.grab(1.0)],
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+        self.assertIn("hand_position_columns_unavailable:right", result.warnings)
+
+    def test_repeated_and_off_list_grabs_do_not_create_reach_intervals(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.3, 0.6],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                 (0.1, 0.0, 0.0), (0.4, 0.0, 0.0)],
+            ),
+            [
+                self.grab(0.6),
+                self.grab(0.7, product="red apple", first=False),
+                self.grab(0.8, product="orange bottle", on_list=False, first=False),
+            ],
+        )
+
+        self.assertEqual(len(result.intervals), 1)
+
+    def test_actual_left_grabbing_hand_selects_left_motion_columns(self):
+        extractor = self.require_api()
+        tracker = pd.DataFrame(
+            {
+                "time": [0.0, 0.1, 0.2, 0.3, 0.6],
+                "left_pos_x": [0.0, 0.0, 0.0, 0.1, 0.4],
+                "left_pos_y": [0.0] * 5,
+                "left_pos_z": [0.0] * 5,
+            }
+        )
+        result = extractor.detect_reach_intervals(tracker, [self.grab(0.6, hand="left")])
+
+        self.assertEqual(result.intervals[0].hand, "left")
+        self.assertTrue(result.intervals[0].is_valid)
+
+
 if __name__ == "__main__":
     unittest.main()
