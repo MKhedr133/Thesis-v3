@@ -2081,5 +2081,177 @@ class ErrorOutcomeTests(unittest.TestCase):
             result.records[0].total_error_count = 4.0
 
 
+class ProductGrabOutputTests(unittest.TestCase):
+    """Check FE-01.12 auditable product-grab table and writer."""
+
+    EXPECTED_COLUMNS = [
+        "participant_id",
+        "session_id",
+        "source_tracker_csv_filename",
+        "participant_group",
+        "condition_name",
+        "difficulty_level",
+        "trial_order",
+        "language",
+        "canonical_product_name",
+        "raw_product_label",
+        "hand",
+        "grab_start_seconds",
+        "grab_release_seconds",
+        "grab_duration_seconds",
+        "is_on_list",
+        "is_first_time_on_list",
+        "is_repeated_on_list",
+        "is_off_list",
+        "overlaps_other_hand_grab",
+        "search_start_seconds",
+        "first_target_focus_seconds",
+        "search_interval_valid",
+        "reach_start_seconds",
+        "reach_duration_seconds",
+        "reach_path_ratio",
+        "reach_interval_valid",
+        "processing_warnings",
+    ]
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "build_product_grab_features"),
+            "FE-01.12 product output builder not implemented",
+        )
+        self.assertTrue(
+            hasattr(EXTRACTOR, "write_product_grab_features"),
+            "FE-01.12 product output writer not implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def event(product, raw, start, *, on_list=True, first=True, hand="right", overlap=False):
+        return EXTRACTOR.ProductGrabEvent(
+            canonical_product_name=product,
+            raw_product_label=raw,
+            hand=hand,
+            grab_start_seconds=start,
+            grab_release_seconds=start + 0.3,
+            grab_duration_seconds=0.3,
+            is_on_list=on_list,
+            is_first_time_on_list=first,
+            overlaps_other_hand_grab=overlap,
+        )
+
+    @staticmethod
+    def search(product, start, search_start, target, valid=True):
+        return EXTRACTOR.SearchInterval(
+            canonical_product_name=product,
+            qualifying_grab_start_seconds=start,
+            search_start_seconds=search_start,
+            first_target_focus_seconds=target,
+            is_valid=valid,
+        )
+
+    @staticmethod
+    def reach(product, hand, onset, start, valid=True):
+        return EXTRACTOR.ReachInterval(
+            canonical_product_name=product,
+            hand=hand,
+            reach_start_seconds=onset,
+            grab_start_seconds=start,
+            is_valid=valid,
+        )
+
+    @staticmethod
+    def tracker():
+        return pd.DataFrame(
+            {
+                "time": [0.0, 0.1, 0.2, 0.3],
+                "right_pos_x": [0.0, 0.1, 0.2, 0.3],
+                "right_pos_y": [0.0, 0.0, 0.0, 0.0],
+                "right_pos_z": [0.0, 0.0, 0.0, 0.0],
+            }
+        )
+
+    def build(self, events, searches=(), reaches=(), tracker=None):
+        extractor = self.require_api()
+        metadata = {
+            "participant_id": "P01",
+            "session_id": "S001",
+            "source_tracker_csv_filename": "data_collector_vr_sample_T001.csv",
+            "participant_group": "Young",
+            "condition_name": "Visual",
+            "difficulty_level": 2,
+            "trial_order": "T1",
+            "language": "EN",
+        }
+        return extractor.build_product_grab_features(
+            metadata, events, searches, reaches, tracker if tracker is not None else self.tracker()
+        )
+
+    def test_all_complete_events_and_metadata_are_preserved(self):
+        result = self.build(
+            [
+                self.event("red apple", "Apple(Clone)", 0.3),
+                self.event("red apple", "Apple(3)", 0.8, first=False),
+                self.event("orange bottle", "Bottle", 1.2, on_list=False, first=False, overlap=True),
+            ]
+        )
+        self.assertEqual(len(result.table), 3)
+        self.assertEqual(list(result.table.columns), self.EXPECTED_COLUMNS)
+        self.assertEqual(result.table.loc[0, "raw_product_label"], "Apple(Clone)")
+        self.assertEqual(result.table.loc[0, "participant_id"], "P01")
+        self.assertTrue(bool(result.table.loc[1, "is_repeated_on_list"]))
+        self.assertTrue(bool(result.table.loc[2, "is_off_list"]))
+        self.assertTrue(bool(result.table.loc[2, "overlaps_other_hand_grab"]))
+
+    def test_search_and_reach_attach_only_to_matching_qualifying_event(self):
+        result = self.build(
+            [
+                self.event("red apple", "Apple", 0.3),
+                self.event("red apple", "Apple(2)", 0.8, first=False),
+            ],
+            [self.search("red apple", 0.3, 0.0, 0.2)],
+            [self.reach("red apple", "right", 0.1, 0.3)],
+        )
+        self.assertAlmostEqual(result.table.loc[0, "search_start_seconds"], 0.0)
+        self.assertAlmostEqual(result.table.loc[0, "reach_start_seconds"], 0.1)
+        self.assertTrue(pd.isna(result.table.loc[1, "search_start_seconds"]))
+        self.assertTrue(pd.isna(result.table.loc[1, "reach_start_seconds"]))
+
+    def test_per_event_reach_duration_and_path_ratio_use_actual_hand(self):
+        result = self.build(
+            [self.event("red apple", "Apple", 0.3, hand="right")],
+            reaches=[self.reach("red apple", "right", 0.0, 0.3)],
+        )
+        self.assertAlmostEqual(result.table.loc[0, "reach_duration_seconds"], 0.3)
+        self.assertAlmostEqual(result.table.loc[0, "reach_path_ratio"], 1.0)
+        self.assertTrue(bool(result.table.loc[0, "reach_interval_valid"]))
+
+    def test_unmatched_intervals_are_blank_and_warn_once(self):
+        result = self.build(
+            [self.event("red apple", "Apple", 0.3)],
+            searches=[self.search("orange bottle", 0.9, 0.5, 0.8)],
+            reaches=[self.reach("orange bottle", "right", 0.6, 0.9)],
+        )
+        self.assertTrue(pd.isna(result.table.loc[0, "search_start_seconds"]))
+        self.assertTrue(pd.isna(result.table.loc[0, "reach_start_seconds"]))
+        self.assertEqual(len(result.warnings), 2)
+        self.assertEqual(len(set(result.warnings)), len(result.warnings))
+
+    def test_missing_numeric_values_write_as_blank_cells(self):
+        extractor = self.require_api()
+        result = self.build([self.event("red apple", "Apple", 0.3)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "nested" / "product_grab_features_v2.csv"
+            extractor.write_product_grab_features(result.table, path)
+            text = path.read_text(encoding="utf-8")
+        self.assertIn("search_start_seconds", text.splitlines()[0])
+        self.assertIn(",,", text)
+
+    def test_empty_event_input_returns_full_schema(self):
+        result = self.build([])
+        self.assertEqual(len(result.table), 0)
+        self.assertEqual(list(result.table.columns), self.EXPECTED_COLUMNS)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -294,6 +294,44 @@ class ErrorOutcomeResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class ProductGrabOutputResult(NamedTuple):
+    """One trial's auditable product-grab output table and warnings."""
+
+    table: pd.DataFrame
+    warnings: tuple[str, ...]
+
+
+PRODUCT_GRAB_OUTPUT_COLUMNS = (
+    "participant_id",
+    "session_id",
+    "source_tracker_csv_filename",
+    "participant_group",
+    "condition_name",
+    "difficulty_level",
+    "trial_order",
+    "language",
+    "canonical_product_name",
+    "raw_product_label",
+    "hand",
+    "grab_start_seconds",
+    "grab_release_seconds",
+    "grab_duration_seconds",
+    "is_on_list",
+    "is_first_time_on_list",
+    "is_repeated_on_list",
+    "is_off_list",
+    "overlaps_other_hand_grab",
+    "search_start_seconds",
+    "first_target_focus_seconds",
+    "search_interval_valid",
+    "reach_start_seconds",
+    "reach_duration_seconds",
+    "reach_path_ratio",
+    "reach_interval_valid",
+    "processing_warnings",
+)
+
+
 class HandPositionSample(NamedTuple):
     """One recorded hand position and its preceding motion step."""
 
@@ -1507,6 +1545,159 @@ def aggregate_trial_reach_features(
         median_reach_path_ratio=(float(np.median(path_ratios)) if path_ratios else None),
         warnings=tuple(warnings),
     )
+
+
+def _product_event_key(product: object, grab_start: object) -> tuple[str, float] | None:
+    """Build an exact canonical-product/recorded-start matching key."""
+    if product is None or grab_start is None:
+        return None
+    try:
+        numeric_start = float(grab_start)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric_start):
+        return None
+    return (_focus_name_key(product), numeric_start)
+
+
+def build_product_grab_features(
+    trial_metadata: Mapping[str, object],
+    grab_events: Sequence[ProductGrabEvent],
+    search_intervals: Sequence[SearchInterval],
+    reach_intervals: Sequence[ReachInterval],
+    tracker: pd.DataFrame,
+) -> ProductGrabOutputResult:
+    """Build one auditable product-grab table without writing a file."""
+    warnings: list[str] = []
+    search_by_key: dict[tuple[str, float], SearchInterval] = {}
+    for interval in search_intervals:
+        key = _product_event_key(
+            interval.canonical_product_name,
+            interval.qualifying_grab_start_seconds,
+        )
+        if key is None:
+            add_unique_warning(warnings, "search_interval_key_unavailable")
+        elif key in search_by_key:
+            add_unique_warning(warnings, f"duplicate_search_interval:{key[0]}:{key[1]}")
+        else:
+            search_by_key[key] = interval
+
+    reach_by_key: dict[tuple[str, float], ReachInterval] = {}
+    for interval in reach_intervals:
+        key = _product_event_key(interval.canonical_product_name, interval.grab_start_seconds)
+        if key is None:
+            add_unique_warning(warnings, "reach_interval_key_unavailable")
+        elif key in reach_by_key:
+            add_unique_warning(warnings, f"duplicate_reach_interval:{key[0]}:{key[1]}")
+        else:
+            reach_by_key[key] = interval
+
+    rows: list[dict[str, object]] = []
+    ordered_events = sorted(
+        grab_events,
+        key=lambda event: (event.grab_start_seconds, event.hand),
+    )
+    metadata_keys = (
+        "participant_id",
+        "session_id",
+        "source_tracker_csv_filename",
+        "participant_group",
+        "condition_name",
+        "difficulty_level",
+        "trial_order",
+        "language",
+    )
+    for event in ordered_events:
+        row_warnings: list[str] = []
+        key = _product_event_key(event.canonical_product_name, event.grab_start_seconds)
+        search = search_by_key.get(key) if key is not None and event.is_first_time_on_list else None
+        reach = reach_by_key.get(key) if key is not None and event.is_first_time_on_list else None
+
+        search_start = None
+        target_focus = None
+        search_valid = None
+        if event.is_first_time_on_list:
+            if search is None:
+                warning = f"search_interval_unmatched:{event.canonical_product_name}:{event.grab_start_seconds}"
+                add_unique_warning(row_warnings, warning)
+                add_unique_warning(warnings, warning)
+            else:
+                search_start = search.search_start_seconds
+                target_focus = search.first_target_focus_seconds
+                search_valid = search.is_valid
+
+        reach_start = None
+        reach_duration = None
+        reach_path_ratio = None
+        reach_valid = None
+        if event.is_first_time_on_list:
+            if reach is None:
+                warning = f"reach_interval_unmatched:{event.canonical_product_name}:{event.grab_start_seconds}"
+                add_unique_warning(row_warnings, warning)
+                add_unique_warning(warnings, warning)
+            else:
+                reach_start = reach.reach_start_seconds
+                reach_valid = reach.is_valid
+                if reach.is_valid and reach_start is not None and np.isfinite(reach_start):
+                    duration = float(event.grab_start_seconds - reach_start)
+                    if duration >= 0 and np.isfinite(duration):
+                        reach_duration = duration
+                    else:
+                        warning = f"negative_reach_duration:{event.hand}"
+                        add_unique_warning(row_warnings, warning)
+                        add_unique_warning(warnings, warning)
+                    if reach_duration is not None:
+                        reach_path_ratio = _reach_path_ratio(
+                            tracker,
+                            event.hand,
+                            float(reach_start),
+                            float(event.grab_start_seconds),
+                            0.02,
+                            row_warnings,
+                        )
+                        for warning in row_warnings:
+                            add_unique_warning(warnings, warning)
+
+        row: dict[str, object] = {key_name: trial_metadata.get(key_name) for key_name in metadata_keys}
+        row.update(
+            {
+                "canonical_product_name": event.canonical_product_name,
+                "raw_product_label": event.raw_product_label,
+                "hand": event.hand,
+                "grab_start_seconds": event.grab_start_seconds,
+                "grab_release_seconds": event.grab_release_seconds,
+                "grab_duration_seconds": event.grab_duration_seconds,
+                "is_on_list": event.is_on_list,
+                "is_first_time_on_list": event.is_first_time_on_list,
+                "is_repeated_on_list": event.is_on_list and not event.is_first_time_on_list,
+                "is_off_list": not event.is_on_list,
+                "overlaps_other_hand_grab": event.overlaps_other_hand_grab,
+                "search_start_seconds": search_start,
+                "first_target_focus_seconds": target_focus,
+                "search_interval_valid": search_valid,
+                "reach_start_seconds": reach_start,
+                "reach_duration_seconds": reach_duration,
+                "reach_path_ratio": reach_path_ratio,
+                "reach_interval_valid": reach_valid,
+                "processing_warnings": ";".join(row_warnings),
+            }
+        )
+        rows.append(row)
+
+    table = pd.DataFrame(rows, columns=PRODUCT_GRAB_OUTPUT_COLUMNS)
+    return ProductGrabOutputResult(table=table, warnings=tuple(warnings))
+
+
+def write_product_grab_features(table: pd.DataFrame, path: Path) -> None:
+    """Write a product-grab table using the fixed schema and blank missing cells."""
+    output = table.copy()
+    for column in PRODUCT_GRAB_OUTPUT_COLUMNS:
+        if column not in output.columns:
+            output[column] = pd.NA
+    output = output.loc[:, PRODUCT_GRAB_OUTPUT_COLUMNS]
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(destination, index=False, encoding="utf-8", na_rep="")
 
 
 def detect_search_intervals(
