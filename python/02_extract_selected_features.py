@@ -222,6 +222,23 @@ class ListVisit(NamedTuple):
     is_initial_view: bool
 
 
+class SearchInterval(NamedTuple):
+    """Search timing for one qualifying first-time-on-list product grab."""
+
+    canonical_product_name: str
+    qualifying_grab_start_seconds: float
+    search_start_seconds: float | None
+    first_target_focus_seconds: float | None
+    is_valid: bool
+
+
+class SearchIntervalResult(NamedTuple):
+    """Auditable qualifying-grab search records and unique warnings."""
+
+    intervals: tuple[SearchInterval, ...]
+    warnings: tuple[str, ...]
+
+
 class _RawGrabSegment(NamedTuple):
     """Internal complete segment before duration and list classification."""
 
@@ -837,6 +854,135 @@ def detect_list_visits(
             is_initial_view=index == 0,
         )
         for index, episode in enumerate(tablet_episodes)
+    )
+
+
+def detect_search_intervals(
+    tracker: pd.DataFrame,
+    grab_events: Sequence[ProductGrabEvent],
+    list_visits: Sequence[ListVisit],
+    focus_episodes: Sequence[FocusEpisode],
+) -> SearchIntervalResult:
+    """Build shared search records for qualifying first-time-on-list grabs."""
+    if "time" not in tracker:
+        raise ValueError("Tracker table is missing required column: time")
+
+    warnings: list[str] = []
+    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    usable_activity_start: float | None = None
+    blackout_column = "enableBlackout"
+    if blackout_column in tracker and not tracker[blackout_column].isna().all():
+        blackout = parse_boolean_series(tracker[blackout_column]).to_numpy(bool)
+        valid_starts = np.flatnonzero(np.isfinite(times) & ~blackout)
+        if len(valid_starts):
+            usable_activity_start = float(times[valid_starts[0]])
+    if usable_activity_start is None:
+        add_unique_warning(warnings, "usable_activity_start_unavailable")
+
+    qualifying_grabs = sorted(
+        (
+            event
+            for event in grab_events
+            if event.is_on_list and event.is_first_time_on_list
+        ),
+        key=lambda event: (
+            event.grab_start_seconds,
+            event.grab_release_seconds,
+        ),
+    )
+    ordered_visits = sorted(
+        list_visits,
+        key=lambda visit: (
+            visit.list_visit_start_seconds,
+            visit.list_visit_end_seconds,
+        ),
+    )
+    ordered_focus = sorted(
+        focus_episodes,
+        key=lambda episode: (
+            episode.focus_start_seconds,
+            episode.focus_end_seconds,
+        ),
+    )
+
+    intervals: list[SearchInterval] = []
+    previous_qualifying_grab_start: float | None = None
+    for event in qualifying_grabs:
+        grab_start = event.grab_start_seconds
+        completed_visit_ends = [
+            visit.list_visit_end_seconds
+            for visit in ordered_visits
+            if visit.list_visit_end_seconds <= grab_start
+        ]
+        latest_visit_end = max(completed_visit_ends, default=None)
+
+        if previous_qualifying_grab_start is None:
+            if usable_activity_start is None:
+                intervals.append(
+                    SearchInterval(
+                        canonical_product_name=event.canonical_product_name,
+                        qualifying_grab_start_seconds=grab_start,
+                        search_start_seconds=None,
+                        first_target_focus_seconds=None,
+                        is_valid=False,
+                    )
+                )
+                previous_qualifying_grab_start = grab_start
+                continue
+            search_start = max(
+                usable_activity_start,
+                latest_visit_end if latest_visit_end is not None else usable_activity_start,
+            )
+        else:
+            search_start = max(
+                previous_qualifying_grab_start,
+                latest_visit_end
+                if latest_visit_end is not None
+                else previous_qualifying_grab_start,
+            )
+
+        if search_start > grab_start:
+            add_unique_warning(warnings, "search_start_after_grab")
+            intervals.append(
+                SearchInterval(
+                    canonical_product_name=event.canonical_product_name,
+                    qualifying_grab_start_seconds=grab_start,
+                    search_start_seconds=None,
+                    first_target_focus_seconds=None,
+                    is_valid=False,
+                )
+            )
+            previous_qualifying_grab_start = grab_start
+            continue
+
+        target_focus_candidates = [
+            max(search_start, episode.focus_start_seconds)
+            for episode in ordered_focus
+            if episode.canonical_focus_name == event.canonical_product_name
+            and episode.focus_start_seconds <= grab_start
+            and episode.focus_end_seconds >= search_start
+        ]
+        target_focus_candidates = [
+            candidate for candidate in target_focus_candidates if candidate <= grab_start
+        ]
+        first_target_focus = (
+            min(target_focus_candidates) if target_focus_candidates else None
+        )
+        if first_target_focus is None:
+            add_unique_warning(warnings, "target_focus_not_found")
+        intervals.append(
+            SearchInterval(
+                canonical_product_name=event.canonical_product_name,
+                qualifying_grab_start_seconds=grab_start,
+                search_start_seconds=search_start,
+                first_target_focus_seconds=first_target_focus,
+                is_valid=first_target_focus is not None,
+            )
+        )
+        previous_qualifying_grab_start = grab_start
+
+    return SearchIntervalResult(
+        intervals=tuple(intervals), warnings=tuple(warnings)
     )
 
 

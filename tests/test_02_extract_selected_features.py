@@ -941,5 +941,243 @@ class ListVisitTests(unittest.TestCase):
         self.assertEqual([visit.is_initial_view for visit in visits], [True, False])
 
 
+class SearchIntervalTests(unittest.TestCase):
+    """Check FE-01.5 shared search intervals for qualifying product grabs."""
+
+    def require_search_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "detect_search_intervals"),
+            "FE-01.5 search-interval detection has not been implemented",
+        )
+        return EXTRACTOR
+
+    def grab(self, start, *, product="red apple", release=None, on_list=True, first=True):
+        extractor = self.require_search_api()
+        release = start + 0.20 if release is None else release
+        return extractor.ProductGrabEvent(
+            canonical_product_name=product,
+            raw_product_label=product,
+            hand="right",
+            grab_start_seconds=start,
+            grab_release_seconds=release,
+            grab_duration_seconds=release - start,
+            is_on_list=on_list,
+            is_first_time_on_list=first,
+            overlaps_other_hand_grab=False,
+        )
+
+    def focus(self, start, end, *, product="red apple"):
+        extractor = self.require_search_api()
+        return extractor.FocusEpisode(
+            canonical_focus_name=product,
+            raw_focus_name=product,
+            cleaned_focus_tag="mainshelf",
+            raw_focus_tag="MainShelf",
+            focus_start_seconds=start,
+            focus_end_seconds=end,
+            focus_duration_seconds=end - start,
+        )
+
+    def visit(self, start, end, *, initial=False):
+        extractor = self.require_search_api()
+        return extractor.ListVisit(
+            list_visit_start_seconds=start,
+            list_visit_end_seconds=end,
+            list_visit_duration_seconds=end - start,
+            is_initial_view=initial,
+        )
+
+    @staticmethod
+    def tracker(times, blackouts=None):
+        data = {"time": times}
+        if blackouts is not None:
+            data["enableBlackout"] = blackouts
+        return pd.DataFrame(data)
+
+    def detect(self, tracker, grabs, visits=(), focus_episodes=()):
+        extractor = self.require_search_api()
+        return extractor.detect_search_intervals(
+            tracker, grabs, visits, focus_episodes
+        )
+
+    def test_first_qualifying_grab_starts_at_first_non_blackout_time(self):
+        result = self.detect(
+            self.tracker([0.00, 0.10, 0.40], [True, False, False]),
+            [self.grab(0.50)],
+            focus_episodes=[self.focus(0.30, 0.35)],
+        )
+
+        interval = result.intervals[0]
+
+        self.assertAlmostEqual(interval.search_start_seconds, 0.10)
+        self.assertAlmostEqual(interval.first_target_focus_seconds, 0.30)
+        self.assertTrue(interval.is_valid)
+
+    def test_leading_blackout_rows_are_excluded_from_activity_start(self):
+        result = self.detect(
+            self.tracker([0.00, 0.05, 0.10], [True, True, False]),
+            [self.grab(0.40)],
+            focus_episodes=[self.focus(0.20, 0.25)],
+        )
+
+        self.assertAlmostEqual(result.intervals[0].search_start_seconds, 0.10)
+
+    def test_missing_or_all_blackout_activity_data_invalidates_first_interval(self):
+        for tracker in (
+            self.tracker([0.00, 0.10]),
+            self.tracker([0.00, 0.10], [True, True]),
+        ):
+            with self.subTest(columns=list(tracker.columns)):
+                result = self.detect(
+                    tracker,
+                    [self.grab(0.40)],
+                    focus_episodes=[self.focus(0.20, 0.25)],
+                )
+                self.assertFalse(result.intervals[0].is_valid)
+                self.assertIsNone(result.intervals[0].search_start_seconds)
+                self.assertIn("usable_activity_start_unavailable", result.warnings)
+
+    def test_later_interval_uses_previous_qualifying_grab_start_not_release(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [
+                self.grab(0.20, product="red apple", release=0.90),
+                self.grab(0.60, product="green plant"),
+            ],
+            focus_episodes=[
+                self.focus(0.10, 0.15, product="red apple"),
+                self.focus(0.50, 0.55, product="green plant"),
+            ],
+        )
+
+        self.assertAlmostEqual(result.intervals[1].search_start_seconds, 0.20)
+
+    def test_repeated_and_off_list_grabs_do_not_create_or_replace_intervals(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [
+                self.grab(0.20, product="red apple"),
+                self.grab(0.30, product="red apple", first=False),
+                self.grab(0.40, product="orange bottle", on_list=False, first=False),
+                self.grab(0.60, product="green plant"),
+            ],
+            focus_episodes=[
+                self.focus(0.10, 0.15, product="red apple"),
+                self.focus(0.50, 0.55, product="green plant"),
+            ],
+        )
+
+        self.assertEqual(len(result.intervals), 2)
+        self.assertAlmostEqual(result.intervals[1].search_start_seconds, 0.20)
+
+    def test_later_completed_list_visit_overrides_previous_grab_start(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.20), self.grab(0.80, product="green plant")],
+            visits=[self.visit(0.40, 0.60)],
+            focus_episodes=[
+                self.focus(0.10, 0.15),
+                self.focus(0.70, 0.75, product="green plant"),
+            ],
+        )
+
+        self.assertAlmostEqual(result.intervals[1].search_start_seconds, 0.60)
+
+    def test_earlier_list_visit_does_not_override_later_previous_grab(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.40), self.grab(0.80, product="green plant")],
+            visits=[self.visit(0.10, 0.20)],
+            focus_episodes=[
+                self.focus(0.30, 0.35),
+                self.focus(0.70, 0.75, product="green plant"),
+            ],
+        )
+
+        self.assertAlmostEqual(result.intervals[1].search_start_seconds, 0.40)
+
+    def test_list_visit_after_current_grab_is_ignored(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.20), self.grab(0.70, product="green plant")],
+            visits=[self.visit(0.65, 0.75)],
+            focus_episodes=[
+                self.focus(0.10, 0.15),
+                self.focus(0.60, 0.65, product="green plant"),
+            ],
+        )
+
+        self.assertAlmostEqual(result.intervals[1].search_start_seconds, 0.20)
+
+    def test_earliest_matching_target_focus_ends_interval(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.80)],
+            focus_episodes=[self.focus(0.50, 0.55), self.focus(0.30, 0.35)],
+        )
+
+        self.assertAlmostEqual(result.intervals[0].first_target_focus_seconds, 0.30)
+
+    def test_target_focus_overlapping_search_start_is_clipped(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.20), self.grab(0.80, product="green plant")],
+            focus_episodes=[
+                self.focus(0.10, 0.15),
+                self.focus(0.10, 0.70, product="green plant"),
+            ],
+        )
+
+        interval = result.intervals[1]
+        self.assertAlmostEqual(interval.search_start_seconds, 0.20)
+        self.assertAlmostEqual(interval.first_target_focus_seconds, 0.20)
+
+    def test_focus_after_grab_does_not_qualify(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.40)],
+            focus_episodes=[self.focus(0.50, 0.60)],
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+        self.assertIn("target_focus_not_found", result.warnings)
+
+    def test_missing_target_focus_is_invalid_without_fabricated_endpoint(self):
+        result = self.detect(self.tracker([0.00], [False]), [self.grab(0.40)])
+
+        interval = result.intervals[0]
+        self.assertFalse(interval.is_valid)
+        self.assertIsNone(interval.first_target_focus_seconds)
+        self.assertIn("target_focus_not_found", result.warnings)
+
+    def test_canonical_product_aliases_match_focus_episodes(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [self.grab(0.40, product="red apple")],
+            focus_episodes=[self.focus(0.20, 0.25, product="red apple")],
+        )
+
+        self.assertTrue(result.intervals[0].is_valid)
+
+    def test_intervals_are_ordered_by_qualifying_grab_start(self):
+        result = self.detect(
+            self.tracker([0.00], [False]),
+            [
+                self.grab(0.80, product="green plant"),
+                self.grab(0.30, product="red apple"),
+            ],
+            focus_episodes=[
+                self.focus(0.20, 0.25, product="red apple"),
+                self.focus(0.70, 0.75, product="green plant"),
+            ],
+        )
+
+        self.assertEqual(
+            [interval.qualifying_grab_start_seconds for interval in result.intervals],
+            [0.30, 0.80],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
