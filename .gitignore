@@ -1,0 +1,72 @@
+# Participant data and local data exchange files
+data/
+datasets/
+raw/
+private/
+*.csv
+*.tsv
+*.xlsx
+*.xls
+*.mat
+*.h5
+*.hdf5
+*.parquet
+*.zip
+
+# Credentials and machine-specific configuration
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+credentials*.json
+*credentials*.yaml
+*credentials*.yml
+*.pem
+*.key
+*.p12
+*.pfx
+config.local.*
+*.local.json
+*.local.yaml
+*.local.yml
+
+# Python environments and caches
+.venv/
+.venv-*/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.ipynb_checkpoints/
+.coverage
+htmlcov/
+
+# Generated outputs and build products
+outputs/
+results/
+generated/
+build/
+dist/
+*.egg-info/
+*.log
+*.tmp
+
+# MATLAB temporary and generated files
+*.asv
+*.m~
+*.mex*
+*.slxc
+slprj/
+codegen/
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
