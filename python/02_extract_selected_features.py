@@ -301,6 +301,13 @@ class ProductGrabOutputResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class TrialFeatureOutputResult(NamedTuple):
+    """One trial's aggregated feature table and unique processing warnings."""
+
+    table: pd.DataFrame
+    warnings: tuple[str, ...]
+
+
 PRODUCT_GRAB_OUTPUT_COLUMNS = (
     "participant_id",
     "session_id",
@@ -328,6 +335,41 @@ PRODUCT_GRAB_OUTPUT_COLUMNS = (
     "reach_duration_seconds",
     "reach_path_ratio",
     "reach_interval_valid",
+    "processing_warnings",
+)
+
+
+TRIAL_FEATURE_COLUMNS = (
+    "participant_id",
+    "session_id",
+    "source_tracker_csv_filename",
+    "participant_group",
+    "condition_name",
+    "difficulty_level",
+    "trial_order",
+    "language",
+    "performance",
+    "mental_demand_score_0_to_10",
+    "errors_missing",
+    "errors_wrong_order",
+    "errors_duplicate",
+    "errors_not_in_list",
+    "total_error_count",
+    "error_change_from_d0",
+    "median_time_between_qualifying_grabs_seconds",
+    "list_recheck_count",
+    "total_list_recheck_duration_seconds",
+    "median_time_to_target_seconds",
+    "median_irrelevant_focus_duration_seconds",
+    "median_head_turning_degrees",
+    "median_reach_duration_seconds",
+    "median_reach_path_ratio",
+    "real_product_grab_count",
+    "first_time_on_list_grab_count",
+    "list_visit_count",
+    "valid_search_interval_count",
+    "valid_reach_duration_count",
+    "valid_reach_path_ratio_count",
     "processing_warnings",
 )
 
@@ -1695,6 +1737,128 @@ def write_product_grab_features(table: pd.DataFrame, path: Path) -> None:
         if column not in output.columns:
             output[column] = pd.NA
     output = output.loc[:, PRODUCT_GRAB_OUTPUT_COLUMNS]
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(destination, index=False, encoding="utf-8", na_rep="")
+
+
+TRIAL_VALIDITY_COUNT_COLUMNS = (
+    "real_product_grab_count",
+    "first_time_on_list_grab_count",
+    "list_visit_count",
+    "valid_search_interval_count",
+    "valid_reach_duration_count",
+    "valid_reach_path_ratio_count",
+)
+
+
+def _coerce_trial_validity_count(
+    value: object,
+    key: str,
+    warnings: list[str],
+) -> int | float | None:
+    """Normalize an optional trial-validity count without inventing values."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        add_unique_warning(warnings, f"invalid_validity_count:{key}")
+        return None
+    if not np.isfinite(numeric) or numeric < 0:
+        add_unique_warning(warnings, f"invalid_validity_count:{key}")
+        return None
+    return int(numeric) if numeric.is_integer() else numeric
+
+
+def build_trial_features(
+    trial_metadata: Mapping[str, object],
+    pace_and_rechecks: PaceAndListRecheckAggregation | None,
+    locating_features: LocatingFeatureAggregation | None,
+    reach_features: ReachFeatureAggregation | None,
+    error_outcome: ErrorOutcomeRecord | None = None,
+    validity_counts: Mapping[str, object] | None = None,
+) -> TrialFeatureOutputResult:
+    """Build one fixed-schema trial-feature row without writing a file."""
+    warnings: list[str] = []
+    for aggregate in (locating_features, reach_features):
+        for warning in getattr(aggregate, "warnings", ()):
+            add_unique_warning(warnings, warning)
+
+    row: dict[str, object] = {
+        key: trial_metadata.get(key) for key in TRIAL_FEATURE_COLUMNS
+    }
+    row.update(
+        {
+            "performance": trial_metadata.get("performance"),
+            "mental_demand_score_0_to_10": trial_metadata.get(
+                "mental_demand_score_0_to_10"
+            ),
+            "median_time_between_qualifying_grabs_seconds": getattr(
+                pace_and_rechecks,
+                "median_time_between_qualifying_grabs_seconds",
+                None,
+            ),
+            "list_recheck_count": getattr(
+                pace_and_rechecks, "list_recheck_count", None
+            ),
+            "total_list_recheck_duration_seconds": getattr(
+                pace_and_rechecks,
+                "total_list_recheck_duration_seconds",
+                None,
+            ),
+            "median_time_to_target_seconds": getattr(
+                locating_features, "median_time_to_target_seconds", None
+            ),
+            "median_irrelevant_focus_duration_seconds": getattr(
+                locating_features,
+                "median_irrelevant_focus_duration_seconds",
+                None,
+            ),
+            "median_head_turning_degrees": getattr(
+                locating_features, "median_head_turning_degrees", None
+            ),
+            "median_reach_duration_seconds": getattr(
+                reach_features, "median_reach_duration_seconds", None
+            ),
+            "median_reach_path_ratio": getattr(
+                reach_features, "median_reach_path_ratio", None
+            ),
+        }
+    )
+
+    error_columns = (
+        "errors_missing",
+        "errors_wrong_order",
+        "errors_duplicate",
+        "errors_not_in_list",
+        "total_error_count",
+        "error_change_from_d0",
+    )
+    for key in error_columns:
+        row[key] = getattr(error_outcome, key, None) if error_outcome is not None else None
+
+    for key in TRIAL_VALIDITY_COUNT_COLUMNS:
+        value = validity_counts.get(key) if validity_counts is not None else None
+        row[key] = _coerce_trial_validity_count(value, key, warnings)
+
+    row["processing_warnings"] = ";".join(warnings)
+    table = pd.DataFrame([row], columns=TRIAL_FEATURE_COLUMNS)
+    return TrialFeatureOutputResult(table=table, warnings=tuple(warnings))
+
+
+def write_trial_features(table: pd.DataFrame, path: Path) -> None:
+    """Write the fixed-schema trial-feature table with blank missing cells."""
+    output = table.copy()
+    for column in TRIAL_FEATURE_COLUMNS:
+        if column not in output.columns:
+            output[column] = pd.NA
+    output = output.loc[:, TRIAL_FEATURE_COLUMNS]
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(destination, index=False, encoding="utf-8", na_rep="")

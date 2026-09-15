@@ -2253,5 +2253,205 @@ class ProductGrabOutputTests(unittest.TestCase):
         self.assertEqual(list(result.table.columns), self.EXPECTED_COLUMNS)
 
 
+class TrialFeatureOutputTests(unittest.TestCase):
+    """Check FE-01.13 one-row trial feature aggregation and writer."""
+
+    EXPECTED_COLUMNS = [
+        "participant_id",
+        "session_id",
+        "source_tracker_csv_filename",
+        "participant_group",
+        "condition_name",
+        "difficulty_level",
+        "trial_order",
+        "language",
+        "performance",
+        "mental_demand_score_0_to_10",
+        "errors_missing",
+        "errors_wrong_order",
+        "errors_duplicate",
+        "errors_not_in_list",
+        "total_error_count",
+        "error_change_from_d0",
+        "median_time_between_qualifying_grabs_seconds",
+        "list_recheck_count",
+        "total_list_recheck_duration_seconds",
+        "median_time_to_target_seconds",
+        "median_irrelevant_focus_duration_seconds",
+        "median_head_turning_degrees",
+        "median_reach_duration_seconds",
+        "median_reach_path_ratio",
+        "real_product_grab_count",
+        "first_time_on_list_grab_count",
+        "list_visit_count",
+        "valid_search_interval_count",
+        "valid_reach_duration_count",
+        "valid_reach_path_ratio_count",
+        "processing_warnings",
+    ]
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "build_trial_features"),
+            "FE-01.13 trial feature builder not implemented",
+        )
+        self.assertTrue(
+            hasattr(EXTRACTOR, "write_trial_features"),
+            "FE-01.13 trial feature writer not implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def metadata():
+        return {
+            "participant_id": "P01",
+            "session_id": "S001",
+            "source_tracker_csv_filename": "data_collector_vr_sample_T001.csv",
+            "participant_group": "Young",
+            "condition_name": "Visual",
+            "difficulty_level": 6,
+            "trial_order": "T2",
+            "language": "EN",
+            "performance": 0.75,
+            "mental_demand_score_0_to_10": 6.0,
+        }
+
+    @staticmethod
+    def aggregates(warnings=()):
+        extractor = EXTRACTOR
+        pace = extractor.PaceAndListRecheckAggregation(
+            median_time_between_qualifying_grabs_seconds=1.25,
+            list_recheck_count=2,
+            total_list_recheck_duration_seconds=3.5,
+        )
+        locating = extractor.LocatingFeatureAggregation(
+            median_time_to_target_seconds=0.8,
+            median_irrelevant_focus_duration_seconds=0.2,
+            median_head_turning_degrees=15.0,
+            warnings=tuple(warnings),
+        )
+        reach = extractor.ReachFeatureAggregation(
+            median_reach_duration_seconds=0.4,
+            median_reach_path_ratio=1.2,
+            warnings=tuple(warnings),
+        )
+        return pace, locating, reach
+
+    @staticmethod
+    def error_outcome():
+        return EXTRACTOR.ErrorOutcomeRecord(
+            participant_id="P01",
+            session_id="S001",
+            condition_name="Visual",
+            difficulty_level=6,
+            trial_order="T2",
+            errors_missing=1.0,
+            errors_wrong_order=2.0,
+            errors_duplicate=3.0,
+            errors_not_in_list=4.0,
+            total_error_count=10.0,
+            error_change_from_d0=5.0,
+        )
+
+    def build(self, *, error_outcome=None, validity_counts=None, warnings=()):
+        extractor = self.require_api()
+        pace, locating, reach = self.aggregates(warnings)
+        return extractor.build_trial_features(
+            self.metadata(),
+            pace,
+            locating,
+            reach,
+            error_outcome=error_outcome,
+            validity_counts=validity_counts,
+        )
+
+    def test_all_metadata_outcomes_measures_and_counts_map_in_fixed_order(self):
+        result = self.build(
+            error_outcome=self.error_outcome(),
+            validity_counts={
+                "real_product_grab_count": 5,
+                "first_time_on_list_grab_count": 3,
+                "list_visit_count": 4,
+                "valid_search_interval_count": 3,
+                "valid_reach_duration_count": 2,
+                "valid_reach_path_ratio_count": 1,
+            },
+        )
+        row = result.table.iloc[0]
+        self.assertEqual(list(result.table.columns), self.EXPECTED_COLUMNS)
+        self.assertEqual(row["participant_id"], "P01")
+        self.assertEqual(row["performance"], 0.75)
+        self.assertEqual(row["mental_demand_score_0_to_10"], 6.0)
+        self.assertEqual(row["errors_duplicate"], 3.0)
+        self.assertEqual(row["error_change_from_d0"], 5.0)
+        self.assertEqual(row["median_time_between_qualifying_grabs_seconds"], 1.25)
+        self.assertEqual(row["median_reach_path_ratio"], 1.2)
+        self.assertEqual(row["valid_reach_path_ratio_count"], 1)
+
+    def test_missing_measurements_remain_missing_and_zero_counts_remain_zero(self):
+        extractor = self.require_api()
+        pace = extractor.PaceAndListRecheckAggregation(None, 0, 0.0)
+        locating = extractor.LocatingFeatureAggregation(None, None, None, ())
+        reach = extractor.ReachFeatureAggregation(None, None, ())
+        result = extractor.build_trial_features(
+            self.metadata(),
+            pace,
+            locating,
+            reach,
+            validity_counts={
+                "real_product_grab_count": 0,
+                "first_time_on_list_grab_count": 0,
+                "list_visit_count": 0,
+                "valid_search_interval_count": 0,
+                "valid_reach_duration_count": 0,
+                "valid_reach_path_ratio_count": 0,
+            },
+        )
+        row = result.table.iloc[0]
+        self.assertTrue(pd.isna(row["median_time_to_target_seconds"]))
+        self.assertEqual(row["list_recheck_count"], 0)
+        self.assertEqual(row["total_list_recheck_duration_seconds"], 0.0)
+        self.assertEqual(row["real_product_grab_count"], 0)
+
+    def test_aggregate_warnings_are_unique_and_delimited(self):
+        result = self.build(warnings=("focus_warning", "focus_warning", "reach_warning"))
+        self.assertEqual(result.warnings, ("focus_warning", "reach_warning"))
+        self.assertEqual(result.table.loc[0, "processing_warnings"], "focus_warning;reach_warning")
+
+    def test_missing_error_outcome_preserves_blank_error_fields(self):
+        result = self.build()
+        for column in (
+            "errors_missing",
+            "errors_wrong_order",
+            "errors_duplicate",
+            "errors_not_in_list",
+            "total_error_count",
+            "error_change_from_d0",
+        ):
+            self.assertTrue(pd.isna(result.table.loc[0, column]))
+
+    def test_result_wrapper_is_immutable(self):
+        result = self.build(error_outcome=self.error_outcome())
+        with self.assertRaises(AttributeError):
+            result.table = pd.DataFrame()
+
+    def test_writer_creates_only_requested_temporary_csv_with_blank_missing_cells(self):
+        extractor = self.require_api()
+        result = self.build()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "nested" / "trial_features_v2.csv"
+            extractor.write_trial_features(result.table, path)
+            self.assertTrue(path.exists())
+            self.assertEqual(
+                sorted(p.relative_to(root).as_posix() for p in root.rglob("*")),
+                ["nested", "nested/trial_features_v2.csv"],
+            )
+            lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines[0].split(","), self.EXPECTED_COLUMNS)
+        self.assertIn(",,,", lines[1])
+
+
 if __name__ == "__main__":
     unittest.main()
