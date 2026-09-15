@@ -61,6 +61,8 @@ SUPPORTING_TRACKER_COLUMNS = (
     "enableBlackout",
     "focus_object_name",
     "focus_object_tag",
+    "is_left_eye_blinking",
+    "is_right_eye_blinking",
     "num_items_in_cart",
     "is_grabbing_right",
     "grabbed_object_right",
@@ -189,6 +191,25 @@ class GrabDetectionResult(NamedTuple):
     """Chronological product-grab events and unique processing warnings."""
 
     events: tuple[ProductGrabEvent, ...]
+    warnings: tuple[str, ...]
+
+
+class FocusEpisode(NamedTuple):
+    """One complete continuous engine-labelled focus episode."""
+
+    canonical_focus_name: str
+    raw_focus_name: str
+    cleaned_focus_tag: str
+    raw_focus_tag: str
+    focus_start_seconds: float
+    focus_end_seconds: float
+    focus_duration_seconds: float
+
+
+class FocusDetectionResult(NamedTuple):
+    """Chronological focus episodes and unique processing warnings."""
+
+    episodes: tuple[FocusEpisode, ...]
     warnings: tuple[str, ...]
 
 
@@ -654,6 +675,127 @@ def detect_product_grab_events(
         )
 
     return GrabDetectionResult(events=tuple(events), warnings=tuple(warnings))
+
+
+def detect_focus_episodes(
+    tracker: pd.DataFrame,
+    catalog: ProductCatalog,
+) -> FocusDetectionResult:
+    """Detect complete continuous engine-labelled object-focus episodes.
+
+    These records describe the object's label reported by the VR engine.  They
+    are not physiological eye fixations.  Durations use observed transition
+    timestamps, with no minimum-duration filter or inferred final-row time.
+    """
+    if "time" not in tracker:
+        raise ValueError("Tracker table is missing required column: time")
+
+    warnings: list[str] = []
+
+    focus_values: dict[str, pd.Series] = {}
+    for column in ("focus_object_name", "focus_object_tag"):
+        if column not in tracker:
+            add_unique_warning(warnings, f"focus_signal_unavailable:{column}")
+            focus_values[column] = pd.Series("", index=tracker.index, dtype=object)
+        else:
+            focus_values[column] = tracker[column]
+
+    blink_values: dict[str, pd.Series | None] = {}
+    for eye in ("left", "right"):
+        column = f"is_{eye}_eye_blinking"
+        if column not in tracker or tracker[column].isna().all():
+            add_unique_warning(warnings, f"blink_signal_unavailable:{eye}")
+            blink_values[eye] = None
+        else:
+            blink_values[eye] = parse_boolean_series(tracker[column])
+
+    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    episodes: list[FocusEpisode] = []
+    active_key: tuple[str, str] | None = None
+    active_raw_name = ""
+    active_raw_tag = ""
+    active_start = np.nan
+
+    def discard_active_episode() -> None:
+        nonlocal active_key, active_raw_name, active_raw_tag, active_start
+        active_key = None
+        active_raw_name = ""
+        active_raw_tag = ""
+        active_start = np.nan
+
+    def close_active_episode(end: float) -> None:
+        if active_key is None:
+            return
+        if end < active_start:
+            add_unique_warning(warnings, "non_monotonic_focus_time")
+        else:
+            episodes.append(
+                FocusEpisode(
+                    canonical_focus_name=active_key[0],
+                    raw_focus_name=active_raw_name,
+                    cleaned_focus_tag=active_key[1],
+                    raw_focus_tag=active_raw_tag,
+                    focus_start_seconds=float(active_start),
+                    focus_end_seconds=float(end),
+                    focus_duration_seconds=float(end - active_start),
+                )
+            )
+        discard_active_episode()
+
+    nonempty_placeholders = PLACEHOLDER_OBJECT_NAMES - {""}
+    for index in range(len(tracker)):
+        timestamp = times[index]
+        if not np.isfinite(timestamp):
+            if active_key is not None:
+                add_unique_warning(warnings, "missing_time_during_focus")
+                discard_active_episode()
+            continue
+
+        raw_name_value = focus_values["focus_object_name"].iloc[index]
+        raw_tag_value = focus_values["focus_object_tag"].iloc[index]
+        raw_name = "" if pd.isna(raw_name_value) else str(raw_name_value).strip()
+        raw_tag = "" if pd.isna(raw_tag_value) else str(raw_tag_value).strip()
+        cleaned_name = clean_product_name(raw_name_value)
+        cleaned_tag = clean_product_name(raw_tag_value)
+
+        placeholder_present = (
+            cleaned_name in nonempty_placeholders
+            or cleaned_tag in nonempty_placeholders
+        )
+        has_assigned_label = bool(cleaned_name or cleaned_tag) and not placeholder_present
+        is_blinking = any(
+            values is not None and bool(values.iloc[index])
+            for values in blink_values.values()
+        )
+        key = (
+            (catalog.canonicalize(cleaned_name), cleaned_tag)
+            if has_assigned_label and not is_blinking
+            else None
+        )
+
+        if active_key is None:
+            if key is not None:
+                active_key = key
+                active_raw_name = raw_name
+                active_raw_tag = raw_tag
+                active_start = float(timestamp)
+            continue
+
+        if key == active_key:
+            continue
+
+        close_active_episode(float(timestamp))
+        if key is not None:
+            active_key = key
+            active_raw_name = raw_name
+            active_raw_tag = raw_tag
+            active_start = float(timestamp)
+
+    if active_key is not None:
+        add_unique_warning(warnings, "open_ended_focus_discarded")
+
+    episodes.sort(key=lambda episode: episode.focus_start_seconds)
+    return FocusDetectionResult(episodes=tuple(episodes), warnings=tuple(warnings))
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

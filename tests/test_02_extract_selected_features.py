@@ -524,5 +524,293 @@ class ProductGrabEventTests(unittest.TestCase):
         self.assertIn("grab_signal_unavailable:right", result.warnings)
 
 
+class FocusEpisodeTests(unittest.TestCase):
+    """Check FE-01.3 engine-labelled focus episode boundaries and validity."""
+
+    def require_focus_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "detect_focus_episodes"),
+            "FE-01.3 focus-episode detection has not been implemented",
+        )
+        return EXTRACTOR
+
+    def make_catalog(self):
+        extractor = self.require_focus_api()
+        return extractor.ProductCatalog(
+            {
+                (0, "EN"): ("Green Plant",),
+                (0, "NL"): ("Groene Plant",),
+                (2, "EN"): ("Red Apple",),
+                (2, "NL"): ("Rode Appel",),
+                (6, "EN"): ("Yellow Banana",),
+                (6, "NL"): ("Gele Banaan",),
+                (10, "EN"): ("Green Broccoli",),
+                (10, "NL"): ("Groene Broccoli",),
+            }
+        )
+
+    @staticmethod
+    def tracker(
+        times,
+        *,
+        names=None,
+        tags=None,
+        left_blinks=None,
+        right_blinks=None,
+    ):
+        count = len(times)
+        data = {
+            "time": times,
+            "focus_object_name": names or [""] * count,
+            "focus_object_tag": tags or [""] * count,
+        }
+        if left_blinks is not None:
+            data["is_left_eye_blinking"] = left_blinks
+        if right_blinks is not None:
+            data["is_right_eye_blinking"] = right_blinks
+        return pd.DataFrame(data)
+
+    def detect(self, tracker):
+        extractor = self.require_focus_api()
+        return extractor.detect_focus_episodes(tracker, self.make_catalog())
+
+    def test_episode_uses_exact_recorded_start_end_and_duration(self):
+        tracker = self.tracker(
+            [0.00, 0.03, 0.11],
+            names=["Red Apple", "Red Apple", ""],
+            tags=["MainShelf", "MainShelf", "notAssigned"],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        event = self.detect(tracker).episodes[0]
+
+        self.assertAlmostEqual(event.focus_start_seconds, 0.00)
+        self.assertAlmostEqual(event.focus_end_seconds, 0.11)
+        self.assertAlmostEqual(event.focus_duration_seconds, 0.11)
+
+    def test_identical_name_and_tag_rows_form_one_episode(self):
+        tracker = self.tracker(
+            [0.00, 0.05, 0.10],
+            names=["Red Apple", "Red Apple", ""],
+            tags=["MainShelf", "MainShelf", ""],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        self.assertEqual(len(self.detect(tracker).episodes), 1)
+
+    def test_label_change_closes_and_starts_at_same_timestamp(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.40],
+            names=["Red Apple", "Green Plant", ""],
+            tags=["MainShelf", "MainShelf", ""],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        events = self.detect(tracker).episodes
+
+        self.assertEqual(len(events), 2)
+        self.assertAlmostEqual(events[0].focus_end_seconds, 0.20)
+        self.assertAlmostEqual(events[1].focus_start_seconds, 0.20)
+
+    def test_language_aliases_share_english_canonical_name(self):
+        tracker = self.tracker(
+            [0.00, 0.10, 0.20],
+            names=["Rode Appel", "Red Apple", ""],
+            tags=["MainShelf", "MainShelf", ""],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        events = self.detect(tracker).episodes
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].canonical_focus_name, "red apple")
+
+    def test_unity_suffix_does_not_split_product_episode(self):
+        tracker = self.tracker(
+            [0.00, 0.10, 0.20],
+            names=["Red Apple (3)", "Red Apple", ""],
+            tags=["MainShelf", "MainShelf", ""],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        self.assertEqual(len(self.detect(tracker).episodes), 1)
+
+    def test_original_and_cleaned_labels_are_preserved(self):
+        tracker = self.tracker(
+            [0.00, 0.20],
+            names=["Red Apple (3)", ""],
+            tags=["MainShelf (1)", ""],
+            left_blinks=[False, False],
+            right_blinks=[False, False],
+        )
+
+        event = self.detect(tracker).episodes[0]
+
+        self.assertEqual(event.raw_focus_name, "Red Apple (3)")
+        self.assertEqual(event.canonical_focus_name, "red apple")
+        self.assertEqual(event.raw_focus_tag, "MainShelf (1)")
+        self.assertEqual(event.cleaned_focus_tag, "mainshelf")
+
+    def test_placeholders_do_not_form_episodes(self):
+        for placeholder in ("", "notAssigned", "none", "null", "nan"):
+            with self.subTest(placeholder=placeholder):
+                tracker = self.tracker(
+                    [0.00, 0.20],
+                    names=[placeholder, ""],
+                    tags=[placeholder, ""],
+                    left_blinks=[False, False],
+                    right_blinks=[False, False],
+                )
+                self.assertEqual(self.detect(tracker).episodes, ())
+
+    def test_blink_closes_episode_and_blinking_rows_do_not_start_one(self):
+        tracker = self.tracker(
+            [0.00, 0.10, 0.20, 0.30],
+            names=["Red Apple"] * 4,
+            tags=["MainShelf"] * 4,
+            left_blinks=[False, True, True, False],
+            right_blinks=[False] * 4,
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(len(result.episodes), 1)
+        self.assertAlmostEqual(result.episodes[0].focus_end_seconds, 0.10)
+        self.assertIn("open_ended_focus_discarded", result.warnings)
+
+    def test_either_eye_blink_invalidates_a_row(self):
+        for eye in ("left", "right"):
+            with self.subTest(eye=eye):
+                left = [eye == "left", False]
+                right = [eye == "right", False]
+                tracker = self.tracker(
+                    [0.00, 0.20],
+                    names=["Red Apple", ""],
+                    tags=["MainShelf", ""],
+                    left_blinks=left,
+                    right_blinks=right,
+                )
+                self.assertEqual(self.detect(tracker).episodes, ())
+
+    def test_missing_one_blink_signal_warns_and_uses_available_eye(self):
+        tracker = self.tracker(
+            [0.00, 0.20],
+            names=["Red Apple", ""],
+            tags=["MainShelf", ""],
+            left_blinks=[False, False],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(len(result.episodes), 1)
+        self.assertIn("blink_signal_unavailable:right", result.warnings)
+
+    def test_missing_both_blink_signals_warn_but_keep_labelled_focus(self):
+        tracker = self.tracker(
+            [0.00, 0.20],
+            names=["Red Apple", ""],
+            tags=["MainShelf", ""],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(len(result.episodes), 1)
+        self.assertIn("blink_signal_unavailable:left", result.warnings)
+        self.assertIn("blink_signal_unavailable:right", result.warnings)
+
+    def test_missing_name_or_tag_warns_and_uses_available_field(self):
+        for missing, present in (
+            ("focus_object_name", "focus_object_tag"),
+            ("focus_object_tag", "focus_object_name"),
+        ):
+            with self.subTest(missing=missing):
+                tracker = pd.DataFrame(
+                    {
+                        "time": [0.00, 0.20],
+                        present: ["MainShelf", ""],
+                        "is_left_eye_blinking": [False, False],
+                        "is_right_eye_blinking": [False, False],
+                    }
+                )
+                result = self.detect(tracker)
+                self.assertEqual(len(result.episodes), 1)
+                self.assertIn(f"focus_signal_unavailable:{missing}", result.warnings)
+
+    def test_missing_timestamp_breaks_episode_and_warns(self):
+        tracker = self.tracker(
+            [0.00, float("nan"), 0.20],
+            names=["Red Apple", "Red Apple", ""],
+            tags=["MainShelf", "MainShelf", ""],
+            left_blinks=[False] * 3,
+            right_blinks=[False] * 3,
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.episodes, ())
+        self.assertIn("missing_time_during_focus", result.warnings)
+
+    def test_nonmonotonic_boundary_warns_without_negative_episode(self):
+        tracker = self.tracker(
+            [0.20, 0.10],
+            names=["Red Apple", ""],
+            tags=["MainShelf", ""],
+            left_blinks=[False, False],
+            right_blinks=[False, False],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.episodes, ())
+        self.assertIn("non_monotonic_focus_time", result.warnings)
+
+    def test_open_episode_at_final_row_is_discarded(self):
+        tracker = self.tracker(
+            [0.00, 0.20],
+            names=["Red Apple", "Red Apple"],
+            tags=["MainShelf", "MainShelf"],
+            left_blinks=[False, False],
+            right_blinks=[False, False],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.episodes, ())
+        self.assertIn("open_ended_focus_discarded", result.warnings)
+
+    def test_zero_duration_complete_episode_is_retained(self):
+        tracker = self.tracker(
+            [0.10, 0.10],
+            names=["Red Apple", ""],
+            tags=["MainShelf", ""],
+            left_blinks=[False, False],
+            right_blinks=[False, False],
+        )
+
+        event = self.detect(tracker).episodes[0]
+
+        self.assertEqual(event.focus_duration_seconds, 0.0)
+
+    def test_episode_order_and_warnings_are_unique(self):
+        tracker = self.tracker(
+            [0.00, 0.10, 0.20, 0.30],
+            names=["Red Apple", "", "Green Plant", ""],
+            tags=["MainShelf", "", "MainShelf", ""],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(
+            [event.focus_start_seconds for event in result.episodes], [0.00, 0.20]
+        )
+        self.assertEqual(len(result.warnings), len(set(result.warnings)))
+
+
 if __name__ == "__main__":
     unittest.main()
