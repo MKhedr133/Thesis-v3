@@ -1179,5 +1179,129 @@ class SearchIntervalTests(unittest.TestCase):
         )
 
 
+class PaceAndListRecheckAggregationTests(unittest.TestCase):
+    """Check FE-01.6 pace and list-recheck trial aggregation."""
+
+    def require_aggregation_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "aggregate_trial_pace_and_list_rechecks"),
+            "FE-01.6 pace and list-recheck aggregation has not been implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def grab(start, *, product="red apple", on_list=True, first=True):
+        return EXTRACTOR.ProductGrabEvent(
+            canonical_product_name=product,
+            raw_product_label=product,
+            hand="right",
+            grab_start_seconds=start,
+            grab_release_seconds=start + 0.20,
+            grab_duration_seconds=0.20,
+            is_on_list=on_list,
+            is_first_time_on_list=first,
+            overlaps_other_hand_grab=False,
+        )
+
+    @staticmethod
+    def visit(start, end, *, initial=False):
+        return EXTRACTOR.ListVisit(
+            list_visit_start_seconds=start,
+            list_visit_end_seconds=end,
+            list_visit_duration_seconds=end - start,
+            is_initial_view=initial,
+        )
+
+    def aggregate(self, grabs=(), visits=()):
+        extractor = self.require_aggregation_api()
+        return extractor.aggregate_trial_pace_and_list_rechecks(grabs, visits)
+
+    def test_uneven_qualifying_grab_intervals_use_exact_median_pace(self):
+        summary = self.aggregate(
+            [self.grab(1.00), self.grab(1.30), self.grab(2.20), self.grab(4.00)]
+        )
+
+        self.assertAlmostEqual(
+            summary.median_time_between_qualifying_grabs_seconds, 0.90
+        )
+
+    def test_qualifying_grabs_are_ordered_by_recorded_start_time(self):
+        summary = self.aggregate([self.grab(3.00), self.grab(1.00), self.grab(2.00)])
+
+        self.assertAlmostEqual(
+            summary.median_time_between_qualifying_grabs_seconds, 1.00
+        )
+
+    def test_fewer_than_two_qualifying_grabs_leave_pace_missing(self):
+        self.assertIsNone(
+            self.aggregate([self.grab(1.00)]).median_time_between_qualifying_grabs_seconds
+        )
+        self.assertIsNone(
+            self.aggregate().median_time_between_qualifying_grabs_seconds
+        )
+
+    def test_repeated_and_off_list_grabs_do_not_affect_pace(self):
+        summary = self.aggregate(
+            [
+                self.grab(1.00),
+                self.grab(1.20, first=False),
+                self.grab(1.40, product="off list product", on_list=False, first=False),
+                self.grab(2.00, product="green plant"),
+            ]
+        )
+
+        self.assertAlmostEqual(
+            summary.median_time_between_qualifying_grabs_seconds, 1.00
+        )
+
+    def test_initial_visit_only_means_zero_rechecks_and_zero_duration(self):
+        summary = self.aggregate(visits=[self.visit(0.10, 0.40, initial=True)])
+
+        self.assertEqual(summary.list_recheck_count, 0)
+        self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.0)
+
+    def test_later_visits_each_count_and_contribute_full_duration(self):
+        summary = self.aggregate(
+            visits=[
+                self.visit(0.10, 0.40, initial=True),
+                self.visit(1.00, 1.25),
+                self.visit(2.00, 2.60),
+            ]
+        )
+
+        self.assertEqual(summary.list_recheck_count, 2)
+        self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.85)
+
+    def test_rechecks_before_any_grab_are_included(self):
+        summary = self.aggregate(
+            grabs=[self.grab(3.00)],
+            visits=[self.visit(0.10, 0.20, initial=True), self.visit(0.30, 0.80)],
+        )
+
+        self.assertEqual(summary.list_recheck_count, 1)
+        self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.50)
+
+    def test_zero_duration_recheck_counts_but_adds_zero_seconds(self):
+        summary = self.aggregate(
+            visits=[self.visit(0.10, 0.20, initial=True), self.visit(1.00, 1.00)]
+        )
+
+        self.assertEqual(summary.list_recheck_count, 1)
+        self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.0)
+
+    def test_unsorted_visits_keep_identity_and_aggregate_all_rechecks(self):
+        summary = self.aggregate(
+            visits=[
+                self.visit(2.00, 2.40),
+                self.visit(0.10, 0.20, initial=True),
+                self.visit(1.00, 1.30),
+            ]
+        )
+
+        self.assertEqual(summary.list_recheck_count, 2)
+        self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.70)
+
+
 if __name__ == "__main__":
     unittest.main()

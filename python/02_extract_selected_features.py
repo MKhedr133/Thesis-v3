@@ -239,6 +239,14 @@ class SearchIntervalResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class PaceAndListRecheckAggregation(NamedTuple):
+    """Trial-level pace and list-recheck measurements from established events."""
+
+    median_time_between_qualifying_grabs_seconds: float | None
+    list_recheck_count: int
+    total_list_recheck_duration_seconds: float
+
+
 class _RawGrabSegment(NamedTuple):
     """Internal complete segment before duration and list classification."""
 
@@ -854,6 +862,32 @@ def detect_list_visits(
             is_initial_view=index == 0,
         )
         for index, episode in enumerate(tablet_episodes)
+    )
+
+
+def aggregate_trial_pace_and_list_rechecks(
+    grab_events: Sequence[ProductGrabEvent],
+    list_visits: Sequence[ListVisit],
+) -> PaceAndListRecheckAggregation:
+    """Aggregate qualifying-grab pace and later list visits for one trial."""
+    qualifying_grab_starts = sorted(
+        event.grab_start_seconds
+        for event in grab_events
+        if event.is_on_list and event.is_first_time_on_list
+    )
+    if len(qualifying_grab_starts) < 2:
+        median_pace: float | None = None
+    else:
+        intervals = np.diff(qualifying_grab_starts)
+        median_pace = float(np.median(intervals))
+
+    rechecks = [visit for visit in list_visits if not visit.is_initial_view]
+    return PaceAndListRecheckAggregation(
+        median_time_between_qualifying_grabs_seconds=median_pace,
+        list_recheck_count=len(rechecks),
+        total_list_recheck_duration_seconds=float(
+            sum(visit.list_visit_duration_seconds for visit in rechecks)
+        ),
     )
 
 
