@@ -78,16 +78,76 @@ SUPPORTING_TRACKER_COLUMNS = (
     "hmd_rot_w",
 )
 
+PLACEHOLDER_OBJECT_NAMES = {
+    "",
+    "nan",
+    "none",
+    "noobjectgrabbed",
+    "notassigned",
+    "untagged",
+    "null",
+}
+
+NON_PRODUCT_OBJECT_NAMES = {
+    "tablet",
+    "samsung_tab",
+    "cart",
+    "shopping_basket",
+    "basket",
+    "mainshelf",
+    "main shelf",
+    "npc",
+    "bodum",
+    "side l",
+    "side r",
+    "cube",
+    "first shelf",
+    "second shelf",
+    "third shelf",
+    "fourth shelf",
+}
+
 
 class ProductCatalog:
     """Ordered shopping-list product names keyed by difficulty and language."""
 
     def __init__(self, ordered_lists: Mapping[tuple[int, str], tuple[str, ...]]):
         self.ordered_lists = dict(ordered_lists)
+        self.alias_to_canonical: dict[str, str] = {}
+        canonical_products: set[str] = set()
+
+        difficulties = sorted({difficulty for difficulty, _ in self.ordered_lists})
+        for difficulty in difficulties:
+            english = self.ordered_lists.get((difficulty, "EN"), ())
+            dutch = self.ordered_lists.get((difficulty, "NL"), ())
+            for index, english_name in enumerate(english):
+                canonical = clean_product_name(english_name)
+                if not canonical:
+                    continue
+                canonical_products.add(canonical)
+                self.alias_to_canonical[canonical] = canonical
+                if index < len(dutch):
+                    self.alias_to_canonical[clean_product_name(dutch[index])] = canonical
+
+        self.all_canonical_products = frozenset(canonical_products)
 
     def products_for(self, difficulty: int, language: str) -> tuple[str, ...]:
         """Return the ordered list for one difficulty and language."""
         return self.ordered_lists.get((int(difficulty), str(language).upper()), ())
+
+    def canonicalize(self, value: object) -> str:
+        """Map English or Dutch product labels to one cleaned English name."""
+        cleaned = clean_product_name(value)
+        return self.alias_to_canonical.get(cleaned, cleaned)
+
+    def correct_canonical_products(
+        self, difficulty: int, language: str
+    ) -> frozenset[str]:
+        """Return canonical products assigned to one trial list."""
+        return frozenset(
+            self.canonicalize(product)
+            for product in self.products_for(difficulty, language)
+        )
 
 
 class TrialPaths(NamedTuple):
@@ -102,6 +162,44 @@ class TrackerLoadResult(NamedTuple):
 
     table: pd.DataFrame
     warnings: list[str]
+
+
+class GrabDetectionConfig(NamedTuple):
+    """Provisional historical product-grab settings used before validation."""
+
+    minimum_duration_seconds: float = 0.20
+    merge_gap_seconds: float = 0.10
+
+
+class ProductGrabEvent(NamedTuple):
+    """One complete real-product grab retained for later auditing."""
+
+    canonical_product_name: str
+    raw_product_label: str
+    hand: str
+    grab_start_seconds: float
+    grab_release_seconds: float
+    grab_duration_seconds: float
+    is_on_list: bool
+    is_first_time_on_list: bool
+    overlaps_other_hand_grab: bool
+
+
+class GrabDetectionResult(NamedTuple):
+    """Chronological product-grab events and unique processing warnings."""
+
+    events: tuple[ProductGrabEvent, ...]
+    warnings: tuple[str, ...]
+
+
+class _RawGrabSegment(NamedTuple):
+    """Internal complete segment before duration and list classification."""
+
+    canonical_product_name: str
+    raw_product_label: str
+    hand: str
+    start: float
+    release: float
 
 
 def read_table(path: Path) -> pd.DataFrame:
@@ -123,6 +221,52 @@ def read_table(path: Path) -> pd.DataFrame:
     else:
         separator = ","
     return pd.read_csv(path, sep=separator)
+
+
+def clean_product_name(value: object) -> str:
+    """Clean known Unity instance suffixes without changing product meaning."""
+    if pd.isna(value):
+        return ""
+    text = str(value).strip().casefold()
+    text = re.sub(r"\s*\(clone\)\s*$", "", text, flags=re.IGNORECASE)
+    previous = None
+    while text != previous:
+        previous = text
+        text = re.sub(r"\s*\(\s*\d+\s*\)(?:\s+\d+)*\s*$", "", text)
+        text = re.sub(r"\s+\d+\s*$", "", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def is_probable_product_object(value: object, catalog: ProductCatalog) -> bool:
+    """Distinguish plausible products from known placeholders and task AOIs."""
+    cleaned = clean_product_name(value)
+    if cleaned in PLACEHOLDER_OBJECT_NAMES:
+        return False
+    canonical = catalog.canonicalize(cleaned)
+    if canonical in catalog.all_canonical_products:
+        return True
+    if cleaned in NON_PRODUCT_OBJECT_NAMES:
+        return False
+    if re.search(r"(?:^|\s)(?:shelf|cube|npc)(?:\s|$)", cleaned):
+        return False
+    if "business man" in cleaned or cleaned.startswith("swpd"):
+        return False
+    return True
+
+
+def parse_boolean_series(values: pd.Series) -> pd.Series:
+    """Read boolean tracker values without treating missing values as true."""
+    if pd.api.types.is_bool_dtype(values):
+        return values.fillna(False).astype(bool)
+    return values.astype(str).str.strip().str.casefold().isin(
+        {"true", "1", "yes", "y"}
+    )
+
+
+def add_unique_warning(warnings: list[str], warning: str) -> None:
+    """Append a warning once while retaining discovery order."""
+    if warning not in warnings:
+        warnings.append(warning)
 
 
 def normalize_participant(value: object) -> str:
@@ -325,6 +469,191 @@ def load_tracker_table(path: Path) -> TrackerLoadResult:
             table[column] = np.nan
             warnings.append(f"missing_tracker_column:{column}")
     return TrackerLoadResult(table=table, warnings=warnings)
+
+
+def _complete_grab_segments_for_hand(
+    tracker: pd.DataFrame,
+    hand: str,
+    catalog: ProductCatalog,
+    warnings: list[str],
+) -> list[_RawGrabSegment]:
+    """Return complete same-hand, same-product segments before gap merging."""
+    grab_column = f"is_grabbing_{hand}"
+    object_column = f"grabbed_object_{hand}"
+    if grab_column not in tracker or tracker[grab_column].isna().all():
+        add_unique_warning(warnings, f"grab_signal_unavailable:{hand}")
+        return []
+    if object_column not in tracker:
+        add_unique_warning(warnings, f"grab_object_unavailable:{hand}")
+        return []
+
+    grabbing = parse_boolean_series(tracker[grab_column]).to_numpy(bool)
+    raw_labels = tracker[object_column]
+    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+
+    segments: list[_RawGrabSegment] = []
+    active_product: str | None = None
+    active_raw_label = ""
+    active_start = np.nan
+
+    def discard_active_segment() -> None:
+        nonlocal active_product, active_raw_label, active_start
+        active_product = None
+        active_raw_label = ""
+        active_start = np.nan
+
+    def close_active_segment(release: float) -> None:
+        nonlocal active_product, active_raw_label, active_start
+        if active_product is None:
+            return
+        if release < active_start:
+            add_unique_warning(warnings, f"non_monotonic_grab_time:{hand}")
+        else:
+            segments.append(
+                _RawGrabSegment(
+                    canonical_product_name=active_product,
+                    raw_product_label=active_raw_label,
+                    hand=hand,
+                    start=float(active_start),
+                    release=float(release),
+                )
+            )
+        discard_active_segment()
+
+    for index in range(len(tracker)):
+        timestamp = times[index]
+        if not np.isfinite(timestamp):
+            if active_product is not None:
+                add_unique_warning(warnings, f"missing_time_during_grab:{hand}")
+                discard_active_segment()
+            continue
+
+        raw_value = raw_labels.iloc[index]
+        probable_product = grabbing[index] and is_probable_product_object(
+            raw_value, catalog
+        )
+        product = catalog.canonicalize(raw_value) if probable_product else None
+
+        if active_product is None:
+            if product is not None:
+                active_product = product
+                active_raw_label = str(raw_value).strip()
+                active_start = float(timestamp)
+            continue
+
+        if product == active_product:
+            continue
+
+        close_active_segment(float(timestamp))
+        if product is not None:
+            active_product = product
+            active_raw_label = str(raw_value).strip()
+            active_start = float(timestamp)
+
+    if active_product is not None:
+        add_unique_warning(warnings, f"open_ended_grab_discarded:{hand}")
+    return segments
+
+
+def _merge_grab_segments(
+    segments: Sequence[_RawGrabSegment],
+    config: GrabDetectionConfig,
+    warnings: list[str],
+) -> list[_RawGrabSegment]:
+    """Merge brief same-hand interruptions of the same canonical product."""
+    if not segments:
+        return []
+    merged = [segments[0]]
+    for segment in segments[1:]:
+        previous = merged[-1]
+        gap = segment.start - previous.release
+        if gap < 0:
+            add_unique_warning(warnings, f"non_monotonic_grab_time:{segment.hand}")
+        if (
+            segment.hand == previous.hand
+            and segment.canonical_product_name == previous.canonical_product_name
+            and -1e-12 <= gap <= config.merge_gap_seconds + 1e-12
+        ):
+            merged[-1] = _RawGrabSegment(
+                canonical_product_name=previous.canonical_product_name,
+                raw_product_label=previous.raw_product_label,
+                hand=previous.hand,
+                start=previous.start,
+                release=segment.release,
+            )
+        else:
+            merged.append(segment)
+    return merged
+
+
+def detect_product_grab_events(
+    tracker: pd.DataFrame,
+    catalog: ProductCatalog,
+    difficulty: int,
+    language: str,
+    config: GrabDetectionConfig | None = None,
+) -> GrabDetectionResult:
+    """Detect complete real-product grabs from both recorded hands.
+
+    The default 0.20-second minimum duration and 0.10-second merge gap are
+    provisional historical settings.  This function does not validate or tune
+    them.  Open-ended segments are discarded because no release was observed.
+    """
+    if "time" not in tracker:
+        raise ValueError("Tracker table is missing required column: time")
+    config = config or GrabDetectionConfig()
+    if config.minimum_duration_seconds <= 0:
+        raise ValueError("minimum_duration_seconds must be greater than zero")
+    if config.merge_gap_seconds < 0:
+        raise ValueError("merge_gap_seconds cannot be negative")
+
+    warnings: list[str] = []
+    retained_segments: list[_RawGrabSegment] = []
+    for hand in ("left", "right"):
+        raw_segments = _complete_grab_segments_for_hand(
+            tracker, hand, catalog, warnings
+        )
+        merged_segments = _merge_grab_segments(raw_segments, config, warnings)
+        retained_segments.extend(
+            segment
+            for segment in merged_segments
+            if segment.release - segment.start
+            >= config.minimum_duration_seconds - 1e-12
+        )
+
+    retained_segments.sort(key=lambda segment: (segment.start, segment.hand))
+    correct_products = catalog.correct_canonical_products(difficulty, language)
+    seen_on_list: set[str] = set()
+    events: list[ProductGrabEvent] = []
+
+    for index, segment in enumerate(retained_segments):
+        overlaps_other_hand = any(
+            other_index != index
+            and other.hand != segment.hand
+            and max(segment.start, other.start) < min(segment.release, other.release)
+            for other_index, other in enumerate(retained_segments)
+        )
+        is_on_list = segment.canonical_product_name in correct_products
+        is_first_time_on_list = (
+            is_on_list and segment.canonical_product_name not in seen_on_list
+        )
+        if is_on_list:
+            seen_on_list.add(segment.canonical_product_name)
+        events.append(
+            ProductGrabEvent(
+                canonical_product_name=segment.canonical_product_name,
+                raw_product_label=segment.raw_product_label,
+                hand=segment.hand,
+                grab_start_seconds=segment.start,
+                grab_release_seconds=segment.release,
+                grab_duration_seconds=segment.release - segment.start,
+                is_on_list=is_on_list,
+                is_first_time_on_list=is_first_time_on_list,
+                overlaps_other_hand_grab=overlaps_other_hand,
+            )
+        )
+
+    return GrabDetectionResult(events=tuple(events), warnings=tuple(warnings))
 
 
 def build_argument_parser() -> argparse.ArgumentParser:

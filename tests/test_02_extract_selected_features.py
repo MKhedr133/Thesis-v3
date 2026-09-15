@@ -261,5 +261,268 @@ class InputAndTrialSetupTests(unittest.TestCase):
             self.assertFalse((root / "trial_features.csv").exists())
 
 
+class ProductGrabEventTests(unittest.TestCase):
+    """Check FE-01.2 grab boundaries, product identity, and audit flags."""
+
+    def require_grab_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "detect_product_grab_events"),
+            "FE-01.2 product-grab detection has not been implemented",
+        )
+        return EXTRACTOR
+
+    def make_catalog(self):
+        extractor = self.require_grab_api()
+        return extractor.ProductCatalog(
+            {
+                (0, "EN"): ("Green Plant", "Red Apple"),
+                (0, "NL"): ("Groene Plant", "Rode Appel"),
+                (2, "EN"): ("Red Apple", "Blue Cereal Box"),
+                (2, "NL"): ("Rode Appel", "Blauwe Doos Cornflakes"),
+                (6, "EN"): ("Yellow Banana", "White Beer Box"),
+                (6, "NL"): ("Gele Banaan", "Witte Bierkrat"),
+                (10, "EN"): ("Green Broccoli", "Blue Water Bottle"),
+                (10, "NL"): ("Groene Broccoli", "Blauwe Fles Water"),
+            }
+        )
+
+    @staticmethod
+    def tracker(
+        times,
+        *,
+        right_states=None,
+        right_objects=None,
+        left_states=None,
+        left_objects=None,
+    ):
+        count = len(times)
+        return pd.DataFrame(
+            {
+                "time": times,
+                "is_grabbing_right": right_states or [False] * count,
+                "grabbed_object_right": right_objects or [""] * count,
+                "is_grabbing_left": left_states or [False] * count,
+                "grabbed_object_left": left_objects or [""] * count,
+            }
+        )
+
+    def detect(self, tracker, *, difficulty=2, language="EN"):
+        extractor = self.require_grab_api()
+        return extractor.detect_product_grab_events(
+            tracker,
+            self.make_catalog(),
+            difficulty,
+            language,
+        )
+
+    def test_right_hand_grab_uses_recorded_start_release_and_duration(self):
+        tracker = self.tracker(
+            [0.00, 0.10, 0.30, 0.31],
+            right_states=[False, True, True, False],
+            right_objects=["", "Red Apple", "Red Apple", ""],
+        )
+
+        event = self.detect(tracker).events[0]
+
+        self.assertEqual(event.hand, "right")
+        self.assertEqual(event.raw_product_label, "Red Apple")
+        self.assertAlmostEqual(event.grab_start_seconds, 0.10)
+        self.assertAlmostEqual(event.grab_release_seconds, 0.31)
+        self.assertAlmostEqual(event.grab_duration_seconds, 0.21)
+
+    def test_left_hand_grab_records_actual_hand(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.40],
+            left_states=[True, True, False],
+            left_objects=["Red Apple", "Red Apple", ""],
+        )
+
+        event = self.detect(tracker).events[0]
+
+        self.assertEqual(event.hand, "left")
+
+    def test_dutch_and_english_aliases_share_english_canonical_name(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.31, 0.52],
+            right_states=[True, False, True, False],
+            right_objects=["Rode Appel", "", "Red Apple", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual([event.canonical_product_name for event in events], ["red apple", "red apple"])
+
+    def test_unity_instance_suffix_maps_to_base_product(self):
+        tracker = self.tracker(
+            [0.00, 0.25],
+            right_states=[True, False],
+            right_objects=["Red Apple (3)", ""],
+        )
+
+        event = self.detect(tracker).events[0]
+
+        self.assertEqual(event.canonical_product_name, "red apple")
+        self.assertEqual(event.raw_product_label, "Red Apple (3)")
+
+    def test_repeated_on_list_product_is_not_first_time_twice(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.40, 0.60],
+            right_states=[True, False, True, False],
+            right_objects=["Red Apple", "", "Red Apple", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual([event.is_on_list for event in events], [True, True])
+        self.assertEqual(
+            [event.is_first_time_on_list for event in events], [True, False]
+        )
+
+    def test_plausible_product_outside_list_is_retained_for_audit(self):
+        tracker = self.tracker(
+            [0.00, 0.25],
+            right_states=[True, False],
+            right_objects=["Orange Santa Bottle", ""],
+        )
+
+        event = self.detect(tracker).events[0]
+
+        self.assertEqual(event.canonical_product_name, "orange santa bottle")
+        self.assertFalse(event.is_on_list)
+        self.assertFalse(event.is_first_time_on_list)
+
+    def test_same_product_segments_at_merge_boundary_are_one_event(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.30, 0.50],
+            right_states=[True, False, True, False],
+            right_objects=["Red Apple", "", "Red Apple", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual(len(events), 1)
+        self.assertAlmostEqual(events[0].grab_start_seconds, 0.00)
+        self.assertAlmostEqual(events[0].grab_release_seconds, 0.50)
+
+    def test_same_product_segments_beyond_merge_gap_stay_separate(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.31, 0.52],
+            right_states=[True, False, True, False],
+            right_objects=["Red Apple", "", "Red Apple", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual(len(events), 2)
+
+    def test_different_products_never_merge_across_short_gap(self):
+        tracker = self.tracker(
+            [0.00, 0.20, 0.25, 0.50],
+            right_states=[True, False, True, False],
+            right_objects=["Red Apple", "", "Blue Cereal Box", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual(
+            [event.canonical_product_name for event in events],
+            ["red apple", "blue cereal box"],
+        )
+
+    def test_segment_shorter_than_minimum_duration_is_discarded(self):
+        tracker = self.tracker(
+            [0.00, 0.19],
+            right_states=[True, False],
+            right_objects=["Red Apple", ""],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.events, ())
+
+    def test_segment_exactly_at_minimum_duration_is_retained(self):
+        tracker = self.tracker(
+            [0.00, 0.20],
+            right_states=[True, False],
+            right_objects=["Red Apple", ""],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(len(result.events), 1)
+        self.assertAlmostEqual(result.events[0].grab_duration_seconds, 0.20)
+
+    def test_open_ended_grab_is_discarded(self):
+        tracker = self.tracker(
+            [0.00, 0.30],
+            right_states=[True, True],
+            right_objects=["Red Apple", "Red Apple"],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.events, ())
+        self.assertIn("open_ended_grab_discarded:right", result.warnings)
+
+    def test_task_objects_and_placeholders_are_not_product_events(self):
+        excluded = [
+            "",
+            "noObjectGrabbed",
+            "notAssigned",
+            "Tablet",
+            "Cart",
+            "Main Shelf",
+            "NPC",
+            "Cube",
+        ]
+        for label in excluded:
+            with self.subTest(label=label):
+                tracker = self.tracker(
+                    [0.00, 0.25],
+                    right_states=[True, False],
+                    right_objects=[label, ""],
+                )
+                self.assertEqual(self.detect(tracker).events, ())
+
+    def test_overlapping_left_and_right_grabs_remain_separate(self):
+        tracker = self.tracker(
+            [0.00, 0.30],
+            right_states=[True, False],
+            right_objects=["Red Apple", ""],
+            left_states=[True, False],
+            left_objects=["Blue Cereal Box", ""],
+        )
+
+        events = self.detect(tracker).events
+
+        self.assertEqual([event.hand for event in events], ["left", "right"])
+        self.assertTrue(all(event.overlaps_other_hand_grab for event in events))
+
+    def test_missing_timestamp_breaks_grab_and_adds_warning(self):
+        tracker = self.tracker(
+            [0.00, 0.10, float("nan"), 0.40],
+            right_states=[False, True, True, False],
+            right_objects=["", "Red Apple", "Red Apple", ""],
+        )
+
+        result = self.detect(tracker)
+
+        self.assertEqual(result.events, ())
+        self.assertIn("missing_time_during_grab:right", result.warnings)
+
+    def test_missing_hand_signals_warn_without_fabricating_events(self):
+        extractor = self.require_grab_api()
+        tracker = pd.DataFrame({"time": [0.00, 0.30]})
+
+        result = extractor.detect_product_grab_events(
+            tracker, self.make_catalog(), 2, "EN"
+        )
+
+        self.assertEqual(result.events, ())
+        self.assertIn("grab_signal_unavailable:left", result.warnings)
+        self.assertIn("grab_signal_unavailable:right", result.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()
