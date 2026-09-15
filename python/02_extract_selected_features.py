@@ -308,6 +308,13 @@ class TrialFeatureOutputResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class DescriptivePlotResult(NamedTuple):
+    """Generated descriptive plot paths and unique plotting warnings."""
+
+    paths: tuple[Path, ...]
+    warnings: tuple[str, ...]
+
+
 PRODUCT_GRAB_OUTPUT_COLUMNS = (
     "participant_id",
     "session_id",
@@ -372,6 +379,88 @@ TRIAL_FEATURE_COLUMNS = (
     "valid_reach_path_ratio_count",
     "processing_warnings",
 )
+
+
+DESCRIPTIVE_PLOT_CONDITIONS = ("Visual", "Auditory", "Cognitive")
+DESCRIPTIVE_PLOT_DIFFICULTIES = (0, 2, 6, 10)
+DESCRIPTIVE_PLOT_DIFFICULTY_LABELS = tuple(
+    f"D{difficulty}" for difficulty in DESCRIPTIVE_PLOT_DIFFICULTIES
+)
+DESCRIPTIVE_PLOT_SPECS = (
+    (
+        "01_time_between_correct_grabs.png",
+        "median_time_between_qualifying_grabs_seconds",
+        "Time between qualifying correct-product grabs (seconds)",
+        "Time between qualifying correct-product grabs",
+    ),
+    (
+        "02_list_recheck_count.png",
+        "list_recheck_count",
+        "List rechecks (count)",
+        "List recheck count",
+    ),
+    (
+        "03_total_list_recheck_time.png",
+        "total_list_recheck_duration_seconds",
+        "Total list recheck duration (seconds)",
+        "Total list recheck duration",
+    ),
+    (
+        "04_time_to_locate_target.png",
+        "median_time_to_target_seconds",
+        "Time to locate target (seconds)",
+        "Time to locate target",
+    ),
+    (
+        "05_irrelevant_focus_time.png",
+        "median_irrelevant_focus_duration_seconds",
+        "Irrelevant focus duration (seconds)",
+        "Irrelevant focus duration",
+    ),
+    (
+        "06_reach_time.png",
+        "median_reach_duration_seconds",
+        "Reach duration (seconds)",
+        "Reach duration",
+    ),
+    (
+        "07_reach_path_ratio.png",
+        "median_reach_path_ratio",
+        "Reach path ratio (dimensionless)",
+        "Reach path ratio",
+    ),
+    (
+        "08_head_turning.png",
+        "median_head_turning_degrees",
+        "Headset angular movement (degrees)",
+        "Headset angular movement",
+    ),
+    (
+        "09_total_errors.png",
+        "total_error_count",
+        "Total errors (count)",
+        "Total errors",
+    ),
+    (
+        "10_error_change_from_D0.png",
+        "error_change_from_d0",
+        "Error change from D0 (count)",
+        "Error change from D0",
+    ),
+    (
+        "11_relative_performance_change.png",
+        "__relative_performance_change",
+        "Relative performance change (percentage points)",
+        "Relative performance change",
+    ),
+    (
+        "12_subjective_mental_demand.png",
+        "mental_demand_score_0_to_10",
+        "Subjective mental demand (0–10)",
+        "Subjective mental demand",
+    ),
+)
+DESCRIPTIVE_COVERAGE_FEATURES = tuple(spec[1] for spec in DESCRIPTIVE_PLOT_SPECS[:8])
 
 
 class HandPositionSample(NamedTuple):
@@ -1862,6 +1951,361 @@ def write_trial_features(table: pd.DataFrame, path: Path) -> None:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     output.to_csv(destination, index=False, encoding="utf-8", na_rep="")
+
+
+def _plot_value_is_missing(value: object) -> bool:
+    """Return whether a scalar plotting value is missing."""
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(missing, (bool, np.bool_)) and bool(missing)
+
+
+def _plot_difficulty(value: object) -> int | None:
+    """Normalize a plotting difficulty token to one of the accepted levels."""
+    if value is None or _plot_value_is_missing(value):
+        return None
+    text = str(value).strip().casefold()
+    if text.startswith("d"):
+        text = text[1:].strip()
+    try:
+        numeric = float(text)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(numeric) or not numeric.is_integer():
+        return None
+    difficulty = int(numeric)
+    return difficulty if difficulty in DESCRIPTIVE_PLOT_DIFFICULTIES else None
+
+
+def _plot_condition(value: object) -> str | None:
+    """Normalize a plotting condition without raising on unknown labels."""
+    if value is None or _plot_value_is_missing(value):
+        return None
+    text = str(value).strip().casefold()
+    return {
+        "visual": "Visual",
+        "auditory": "Auditory",
+        "cognitive": "Cognitive",
+    }.get(text)
+
+
+def _plot_participant_key(value: object) -> str | None:
+    """Return a stable participant key for same-participant baselines."""
+    if value is None or _plot_value_is_missing(value) or not str(value).strip():
+        return None
+    try:
+        return normalize_participant(value)
+    except (TypeError, ValueError):
+        return str(value).strip().casefold()
+
+
+def _plot_numeric_column(
+    frame: pd.DataFrame,
+    column: str,
+    warnings: list[str],
+) -> pd.Series:
+    """Coerce one metric to finite numeric values and report bad entries."""
+    if column not in frame.columns:
+        add_unique_warning(warnings, f"missing metric column: {column}")
+        return pd.Series(np.nan, index=frame.index, dtype=float)
+
+    raw = frame[column]
+    numeric = pd.to_numeric(raw, errors="coerce")
+    numeric = pd.Series(np.asarray(numeric, dtype=float), index=frame.index)
+    finite = np.isfinite(numeric.to_numpy(float))
+    present = raw.notna() & raw.astype("string").str.strip().ne("")
+    if bool((present & ~pd.Series(finite, index=frame.index)).any()):
+        add_unique_warning(warnings, f"invalid numeric values: {column}")
+    numeric.loc[~pd.Series(finite, index=frame.index)] = np.nan
+    return numeric
+
+
+def _prepare_descriptive_plot_frame(
+    trial_features: pd.DataFrame,
+    warnings: list[str],
+) -> pd.DataFrame:
+    """Copy and normalize identifiers and all metrics used by FE-01.14 plots."""
+    if not isinstance(trial_features, pd.DataFrame):
+        raise TypeError("trial_features must be a pandas DataFrame")
+    frame = trial_features.copy().reset_index(drop=True)
+    required_identifiers = (
+        "participant_id",
+        "session_id",
+        "source_tracker_csv_filename",
+        "participant_group",
+        "condition_name",
+        "difficulty_level",
+        "trial_order",
+        "language",
+    )
+    for column in required_identifiers:
+        if column not in frame.columns:
+            add_unique_warning(warnings, f"missing required identifier column: {column}")
+            frame[column] = pd.NA
+        missing_values = frame[column].isna() | frame[column].astype("string").str.strip().eq("")
+        if bool(missing_values.any()):
+            add_unique_warning(warnings, f"missing identifier value: {column}")
+
+    normalized_conditions: list[str | None] = []
+    for value in frame["condition_name"]:
+        condition = _plot_condition(value)
+        normalized_conditions.append(condition)
+        if condition is None:
+            if not (value is None or _plot_value_is_missing(value) or not str(value).strip()):
+                add_unique_warning(warnings, f"unknown condition: {str(value).strip()}")
+    frame["__plot_condition"] = normalized_conditions
+
+    normalized_difficulties: list[int | None] = []
+    for value in frame["difficulty_level"]:
+        difficulty = _plot_difficulty(value)
+        normalized_difficulties.append(difficulty)
+        if difficulty is None:
+            if not (value is None or _plot_value_is_missing(value) or not str(value).strip()):
+                add_unique_warning(warnings, f"unknown difficulty: {str(value).strip()}")
+    frame["__plot_difficulty"] = normalized_difficulties
+    frame["__plot_participant"] = frame["participant_id"].map(_plot_participant_key)
+
+    metric_columns = {
+        "performance",
+        "mental_demand_score_0_to_10",
+        "total_error_count",
+        "error_change_from_d0",
+        *(spec[1] for spec in DESCRIPTIVE_PLOT_SPECS if not spec[1].startswith("__")),
+    }
+    for column in sorted(metric_columns):
+        frame[f"__plot_{column}"] = _plot_numeric_column(frame, column, warnings)
+    return frame
+
+
+def _relative_performance_values(
+    frame: pd.DataFrame,
+    warnings: list[str],
+) -> pd.Series:
+    """Compute D0-minus-current performance changes for higher difficulties."""
+    performance = frame["__plot_performance"]
+    baselines: dict[tuple[str, str], list[float]] = {}
+    for index in frame.index:
+        participant = frame.at[index, "__plot_participant"]
+        condition = frame.at[index, "__plot_condition"]
+        difficulty = frame.at[index, "__plot_difficulty"]
+        value = performance.at[index]
+        if participant is None or condition is None or difficulty != 0:
+            continue
+        if value is not None and pd.notna(value) and np.isfinite(float(value)):
+            baselines.setdefault((participant, condition), []).append(float(value))
+
+    baseline_medians: dict[tuple[str, str], float] = {}
+    for key, values in baselines.items():
+        if len(values) > 1:
+            add_unique_warning(
+                warnings,
+                f"duplicate D0 performance baseline: {key[0]}/{key[1]}",
+            )
+        baseline_medians[key] = float(np.median(values))
+
+    changes = pd.Series(np.nan, index=frame.index, dtype=float)
+    unavailable_keys: set[tuple[str | None, str | None]] = set()
+    for index in frame.index:
+        participant = frame.at[index, "__plot_participant"]
+        condition = frame.at[index, "__plot_condition"]
+        difficulty = frame.at[index, "__plot_difficulty"]
+        if difficulty is None or difficulty == 0:
+            continue
+        key = (participant, condition)
+        baseline = baseline_medians.get(key)
+        value = performance.at[index]
+        if baseline is None:
+            unavailable_keys.add(key)
+        elif value is not None and pd.notna(value) and np.isfinite(float(value)):
+            changes.at[index] = baseline - float(value)
+    for participant, condition in sorted(
+        unavailable_keys,
+        key=lambda item: (str(item[0]), str(item[1])),
+    ):
+        participant_label = participant if participant is not None else "missing participant_id"
+        condition_label = condition if condition is not None else "missing condition_name"
+        add_unique_warning(
+            warnings,
+            f"performance baseline unavailable: {participant_label}/{condition_label}",
+        )
+    return changes
+
+
+def _draw_descriptive_metric_plot(
+    frame: pd.DataFrame,
+    metric_column: str,
+    filename: str,
+    ylabel: str,
+    title: str,
+    destination: Path,
+    plt,
+    *,
+    exclude_d0: bool = False,
+    zero_line: bool = False,
+    y_limits: tuple[float, float] | None = None,
+) -> None:
+    """Draw one three-panel observation-plus-median descriptive figure."""
+    figure, axes = plt.subplots(1, 3, figsize=(13, 4.2), sharex=True)
+    axes = np.atleast_1d(axes)
+    for axis, condition in zip(axes, DESCRIPTIVE_PLOT_CONDITIONS):
+        median_x: list[int] = []
+        median_y: list[float] = []
+        for position, difficulty in enumerate(DESCRIPTIVE_PLOT_DIFFICULTIES):
+            if exclude_d0 and difficulty == 0:
+                continue
+            mask = (
+                (frame["__plot_condition"] == condition)
+                & (frame["__plot_difficulty"] == difficulty)
+            )
+            values = frame.loc[mask, metric_column].dropna().astype(float)
+            values = values[np.isfinite(values.to_numpy(float))]
+            if values.empty:
+                continue
+            jitter = np.linspace(-0.08, 0.08, len(values)) if len(values) > 1 else np.array([0.0])
+            axis.scatter(
+                np.full(len(values), position, dtype=float) + jitter,
+                values.to_numpy(float),
+                color="#8aa4c8",
+                alpha=0.65,
+                s=22,
+                label="Trial observations" if position == 0 else "_nolegend_",
+            )
+            median_x.append(position)
+            median_y.append(float(np.median(values.to_numpy(float))))
+        if median_x:
+            axis.plot(
+                median_x,
+                median_y,
+                color="#c44e52",
+                marker="o",
+                linewidth=2,
+                label="Condition/difficulty median",
+            )
+        else:
+            axis.text(0.5, 0.5, "No finite measurements", ha="center", va="center", transform=axis.transAxes)
+        if zero_line:
+            axis.axhline(0.0, color="#555555", linestyle="--", linewidth=1, label="Zero reference" if condition == DESCRIPTIVE_PLOT_CONDITIONS[0] else "_nolegend_")
+        axis.set_title(condition)
+        axis.set_xticks(range(len(DESCRIPTIVE_PLOT_DIFFICULTIES)))
+        axis.set_xticklabels(DESCRIPTIVE_PLOT_DIFFICULTY_LABELS)
+        axis.set_xlabel("Difficulty")
+        axis.set_ylabel(ylabel)
+        if y_limits is not None:
+            axis.set_ylim(*y_limits)
+        axis.grid(True, axis="y", alpha=0.25)
+    figure.suptitle(title)
+    handles: list[object] = []
+    labels: list[str] = []
+    for axis in axes:
+        panel_handles, panel_labels = axis.get_legend_handles_labels()
+        for handle, label in zip(panel_handles, panel_labels):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
+    if handles:
+        figure.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.02), ncol=3, frameon=False)
+    figure.tight_layout(rect=(0, 0.08, 1, 0.94))
+    figure.savefig(destination, format="png", dpi=120)
+    plt.close(figure)
+
+
+def _draw_coverage_plot(
+    frame: pd.DataFrame,
+    destination: Path,
+    plt,
+) -> None:
+    """Draw valid-measurement coverage by feature, condition and difficulty."""
+    figure, axes = plt.subplots(1, 3, figsize=(14, 4.5), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes)
+    for axis, condition in zip(axes, DESCRIPTIVE_PLOT_CONDITIONS):
+        for feature in DESCRIPTIVE_COVERAGE_FEATURES:
+            metric_column = f"__plot_{feature}"
+            percentages: list[float] = []
+            for difficulty in DESCRIPTIVE_PLOT_DIFFICULTIES:
+                mask = (
+                    (frame["__plot_condition"] == condition)
+                    & (frame["__plot_difficulty"] == difficulty)
+                )
+                denominator = int(mask.sum())
+                if denominator == 0 or feature not in frame.columns:
+                    percentages.append(np.nan)
+                    continue
+                values = frame.loc[mask, metric_column]
+                finite_count = int(values.notna().sum())
+                percentages.append(100.0 * finite_count / denominator)
+            if any(np.isfinite(value) for value in percentages):
+                axis.plot(
+                    range(len(DESCRIPTIVE_PLOT_DIFFICULTIES)),
+                    percentages,
+                    marker="o",
+                    linewidth=1.5,
+                    label=feature,
+                )
+        axis.set_title(condition)
+        axis.set_xticks(range(len(DESCRIPTIVE_PLOT_DIFFICULTIES)))
+        axis.set_xticklabels(DESCRIPTIVE_PLOT_DIFFICULTY_LABELS)
+        axis.set_xlabel("Difficulty")
+        axis.set_ylabel("Valid measurements (%)")
+        axis.set_ylim(0, 100)
+        axis.grid(True, axis="y", alpha=0.25)
+    handles: list[object] = []
+    labels: list[str] = []
+    for axis in axes:
+        panel_handles, panel_labels = axis.get_legend_handles_labels()
+        for handle, label in zip(panel_handles, panel_labels):
+            if label not in labels:
+                handles.append(handle)
+                labels.append(label)
+    if handles:
+        figure.legend(handles, labels, loc="upper center", bbox_to_anchor=(0.5, 0.02), ncol=2, frameon=False)
+    figure.suptitle("Valid measurements by feature, condition, and difficulty")
+    figure.tight_layout(rect=(0, 0.18, 1, 0.94))
+    figure.savefig(destination, format="png", dpi=120)
+    plt.close(figure)
+
+
+def write_descriptive_feature_plots(
+    trial_features: pd.DataFrame,
+    output_dir: Path,
+) -> DescriptivePlotResult:
+    """Write the thirteen FE-01.14 descriptive feature and outcome plots."""
+    warnings: list[str] = []
+    frame = _prepare_descriptive_plot_frame(trial_features, warnings)
+    frame["__plot_relative_performance_change"] = _relative_performance_values(frame, warnings)
+
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except ImportError as exc:  # pragma: no cover - environment dependency
+        raise RuntimeError("FE-01.14 requires Matplotlib") from exc
+
+    destination_root = Path(output_dir) / "plots"
+    destination_root.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for filename, metric, ylabel, title in DESCRIPTIVE_PLOT_SPECS:
+        path = destination_root / filename
+        _draw_descriptive_metric_plot(
+            frame,
+            f"__plot_{metric[2:]}" if metric.startswith("__") else f"__plot_{metric}",
+            filename,
+            ylabel,
+            title,
+            path,
+            plt,
+            exclude_d0=metric in {"error_change_from_d0", "__relative_performance_change"},
+            zero_line=metric in {"error_change_from_d0", "__relative_performance_change"},
+            y_limits=(0.0, 10.0) if metric == "mental_demand_score_0_to_10" else None,
+        )
+        paths.append(path)
+
+    coverage_path = destination_root / "13_valid_measurements_by_difficulty.png"
+    _draw_coverage_plot(frame, coverage_path, plt)
+    paths.append(coverage_path)
+    return DescriptivePlotResult(paths=tuple(paths), warnings=tuple(warnings))
 
 
 def detect_search_intervals(

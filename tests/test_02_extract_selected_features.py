@@ -2453,5 +2453,156 @@ class TrialFeatureOutputTests(unittest.TestCase):
         self.assertIn(",,,", lines[1])
 
 
+class DescriptivePlotTests(unittest.TestCase):
+    """Check FE-01.14 descriptive plotting contract."""
+
+    REQUIRED_FILENAMES = [
+        "01_time_between_correct_grabs.png",
+        "02_list_recheck_count.png",
+        "03_total_list_recheck_time.png",
+        "04_time_to_locate_target.png",
+        "05_irrelevant_focus_time.png",
+        "06_reach_time.png",
+        "07_reach_path_ratio.png",
+        "08_head_turning.png",
+        "09_total_errors.png",
+        "10_error_change_from_D0.png",
+        "11_relative_performance_change.png",
+        "12_subjective_mental_demand.png",
+        "13_valid_measurements_by_difficulty.png",
+    ]
+
+    BEHAVIOURAL_COLUMNS = [
+        "median_time_between_qualifying_grabs_seconds",
+        "list_recheck_count",
+        "total_list_recheck_duration_seconds",
+        "median_time_to_target_seconds",
+        "median_irrelevant_focus_duration_seconds",
+        "median_head_turning_degrees",
+        "median_reach_duration_seconds",
+        "median_reach_path_ratio",
+    ]
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "write_descriptive_feature_plots"),
+            "FE-01.14 plotting API not implemented",
+        )
+        return EXTRACTOR
+
+    @classmethod
+    def trial_table(cls):
+        rows = []
+        for condition, offset in (("Visual", 0.0), ("Auditory", 1.0), ("Cognitive", 2.0)):
+            for difficulty, performance, demand in (
+                (0, 0.8, 2.0),
+                (2, 0.5, 4.0),
+                (6, 0.4, 6.0),
+                (10, 0.2, 8.0),
+            ):
+                row = {
+                    "participant_id": "P01",
+                    "session_id": "S001",
+                    "source_tracker_csv_filename": "data_collector_vr_sample_T001.csv",
+                    "participant_group": "Young",
+                    "condition_name": condition,
+                    "difficulty_level": difficulty,
+                    "trial_order": f"T{difficulty + 1}",
+                    "language": "EN",
+                    "performance": performance - offset * 0.05,
+                    "mental_demand_score_0_to_10": demand,
+                    "errors_missing": 0.0,
+                    "errors_wrong_order": float(difficulty > 0),
+                    "errors_duplicate": 0.0,
+                    "errors_not_in_list": 0.0,
+                    "total_error_count": float(difficulty > 0),
+                    "error_change_from_d0": None if difficulty == 0 else float(difficulty / 2),
+                    "median_time_between_qualifying_grabs_seconds": 1.0 + difficulty / 10,
+                    "list_recheck_count": difficulty // 2,
+                    "total_list_recheck_duration_seconds": float(difficulty) / 10,
+                    "median_time_to_target_seconds": 0.4 + difficulty / 10,
+                    "median_irrelevant_focus_duration_seconds": 0.1,
+                    "median_head_turning_degrees": 5.0 + difficulty,
+                    "median_reach_duration_seconds": 0.3,
+                    "median_reach_path_ratio": 1.0 + difficulty / 20,
+                }
+                rows.append(row)
+        return pd.DataFrame(rows)
+
+    def test_plot_api_is_present_and_returns_immutable_result(self):
+        extractor = self.require_api()
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(
+                self.trial_table(), Path(directory)
+            )
+        self.assertEqual(len(result.paths), 13)
+        with self.assertRaises(AttributeError):
+            result.paths = ()
+
+    def test_exactly_thirteen_required_pngs_and_no_extra_files(self):
+        extractor = self.require_api()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result = extractor.write_descriptive_feature_plots(self.trial_table(), root)
+            self.assertEqual(
+                sorted(path.name for path in result.paths),
+                sorted(self.REQUIRED_FILENAMES),
+            )
+            self.assertEqual(
+                sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()),
+                sorted(f"plots/{name}" for name in self.REQUIRED_FILENAMES),
+            )
+
+    def test_missing_metric_columns_warn_without_fabricating_values(self):
+        extractor = self.require_api()
+        table = self.trial_table().drop(columns=["median_reach_path_ratio"])
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(table, Path(directory))
+        self.assertTrue(any("median_reach_path_ratio" in warning for warning in result.warnings))
+        self.assertEqual(len(set(result.warnings)), len(result.warnings))
+
+    def test_unknown_condition_is_excluded_with_unique_warning(self):
+        extractor = self.require_api()
+        table = self.trial_table()
+        unknown = table.iloc[[0]].copy()
+        unknown["condition_name"] = "Tactile"
+        table = pd.concat([table, unknown], ignore_index=True)
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(table, Path(directory))
+        self.assertTrue(any("unknown condition" in warning.lower() for warning in result.warnings))
+        self.assertEqual(len(set(result.warnings)), len(result.warnings))
+
+    def test_relative_performance_change_uses_d0_minus_current_and_warns_for_missing_baseline(self):
+        extractor = self.require_api()
+        table = self.trial_table()
+        extra = table.iloc[[1]].copy()
+        extra["participant_id"] = "P02"
+        extra["difficulty_level"] = 2
+        extra["performance"] = 0.5
+        table = pd.concat([table, extra], ignore_index=True)
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(table, Path(directory))
+        self.assertTrue(any("performance baseline" in warning.lower() for warning in result.warnings))
+
+    def test_raw_error_and_mental_demand_plots_keep_all_difficulties(self):
+        extractor = self.require_api()
+        table = self.trial_table()
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(table, Path(directory))
+            self.assertEqual(len(result.paths), 13)
+            self.assertTrue((Path(directory) / "plots" / "09_total_errors.png").exists())
+            self.assertTrue((Path(directory) / "plots" / "12_subjective_mental_demand.png").exists())
+
+    def test_valid_measurement_coverage_uses_feature_condition_and_difficulty(self):
+        extractor = self.require_api()
+        table = self.trial_table()
+        table.loc[0, "median_time_to_target_seconds"] = pd.NA
+        with tempfile.TemporaryDirectory() as directory:
+            result = extractor.write_descriptive_feature_plots(table, Path(directory))
+        self.assertEqual(len(result.paths), 13)
+        self.assertFalse(result.warnings)
+
+
 if __name__ == "__main__":
     unittest.main()
