@@ -247,6 +247,15 @@ class PaceAndListRecheckAggregation(NamedTuple):
     total_list_recheck_duration_seconds: float
 
 
+class LocatingFeatureAggregation(NamedTuple):
+    """Trial-level locating, irrelevant-focus and head-turning measures."""
+
+    median_time_to_target_seconds: float | None
+    median_irrelevant_focus_duration_seconds: float | None
+    median_head_turning_degrees: float | None
+    warnings: tuple[str, ...]
+
+
 class _RawGrabSegment(NamedTuple):
     """Internal complete segment before duration and list classification."""
 
@@ -888,6 +897,141 @@ def aggregate_trial_pace_and_list_rechecks(
         total_list_recheck_duration_seconds=float(
             sum(visit.list_visit_duration_seconds for visit in rechecks)
         ),
+    )
+
+
+def _focus_name_key(value: object) -> str:
+    return clean_product_name(value).casefold()
+
+
+def _is_excluded_focus(episode: FocusEpisode, target_names: set[str]) -> bool:
+    name = _focus_name_key(episode.canonical_focus_name)
+    tag = _focus_name_key(episode.cleaned_focus_tag)
+    if not name and not tag:
+        return True
+    if name in target_names:
+        return True
+    excluded = {
+        _focus_name_key(value) for value in PLACEHOLDER_OBJECT_NAMES | NON_PRODUCT_OBJECT_NAMES
+    }
+    return name in excluded or tag in excluded
+
+
+def _is_explicitly_irrelevant_focus(episode: FocusEpisode) -> bool:
+    irrelevant = {"npc", "bodum", "side l", "side r"}
+    return (
+        _focus_name_key(episode.canonical_focus_name) in irrelevant
+        or _focus_name_key(episode.cleaned_focus_tag) in irrelevant
+    )
+
+
+def _head_rotation_path_degrees(
+    tracker: pd.DataFrame,
+    start: float,
+    end: float,
+    warnings: list[str],
+) -> float | None:
+    required = ("time", "hmd_rot_x", "hmd_rot_y", "hmd_rot_z", "hmd_rot_w")
+    if any(column not in tracker for column in required[1:]):
+        add_unique_warning(warnings, "head_rotation_unavailable")
+        return None
+    values = tracker.loc[:, required].copy()
+    for column in required:
+        values[column] = pd.to_numeric(values[column], errors="coerce")
+    values = values[
+        np.isfinite(values["time"])
+        & (values["time"] >= start)
+        & (values["time"] <= end)
+    ]
+    rotations: list[np.ndarray] = []
+    for row in values.itertuples(index=False):
+        quaternion = np.asarray(row[1:5], dtype=float)
+        norm = float(np.linalg.norm(quaternion))
+        if np.isfinite(norm) and norm > 0:
+            rotations.append(quaternion / norm)
+    if len(rotations) < 2:
+        add_unique_warning(warnings, "head_rotation_unavailable")
+        return None
+    total = 0.0
+    for previous, current in zip(rotations, rotations[1:]):
+        dot = float(np.clip(abs(np.dot(previous, current)), -1.0, 1.0))
+        total += float(2.0 * np.degrees(np.arccos(dot)))
+    return total
+
+
+def aggregate_trial_locating_features(
+    search_intervals: Sequence[SearchInterval],
+    focus_episodes: Sequence[FocusEpisode],
+    tracker: pd.DataFrame,
+) -> LocatingFeatureAggregation:
+    """Aggregate locating, irrelevant-focus and headset-turning measurements."""
+    warnings: list[str] = []
+    ordered_intervals = sorted(
+        search_intervals,
+        key=lambda interval: interval.qualifying_grab_start_seconds,
+    )
+    ordered_focus = sorted(
+        focus_episodes,
+        key=lambda episode: episode.focus_start_seconds,
+    )
+    target_names = {
+        _focus_name_key(interval.canonical_product_name)
+        for interval in ordered_intervals
+    }
+    locating_values: list[float] = []
+    irrelevant_values: list[float] = []
+    head_turning_values: list[float] = []
+    for interval in ordered_intervals:
+        if not interval.is_valid:
+            if interval.search_start_seconds is None or interval.first_target_focus_seconds is None:
+                add_unique_warning(warnings, "locating_time_unavailable")
+            continue
+        start = interval.search_start_seconds
+        target = interval.first_target_focus_seconds
+        if start is None or target is None or not np.isfinite(start) or not np.isfinite(target):
+            add_unique_warning(warnings, "locating_time_unavailable")
+            continue
+        locating_duration = float(target - start)
+        if locating_duration < 0:
+            add_unique_warning(warnings, "negative_locating_duration")
+            continue
+        locating_values.append(locating_duration)
+
+        irrelevant_duration = 0.0
+        seen_focus_labels: set[str] = set()
+        for episode in ordered_focus:
+            overlap_start = max(start, episode.focus_start_seconds)
+            overlap_end = min(target, episode.focus_end_seconds)
+            if overlap_end < overlap_start:
+                continue
+            if not _is_explicitly_irrelevant_focus(episode):
+                if _is_excluded_focus(episode, target_names):
+                    continue
+                label = _focus_name_key(episode.canonical_focus_name) or _focus_name_key(
+                    episode.cleaned_focus_tag
+                )
+                if label and label not in seen_focus_labels:
+                    add_unique_warning(warnings, f"unclassifiable_focus:{label}")
+                    seen_focus_labels.add(label)
+                continue
+            irrelevant_duration += float(overlap_end - overlap_start)
+        irrelevant_values.append(irrelevant_duration)
+
+        turning = _head_rotation_path_degrees(tracker, float(start), float(target), warnings)
+        if turning is not None:
+            head_turning_values.append(turning)
+
+    return LocatingFeatureAggregation(
+        median_time_to_target_seconds=(
+            float(np.median(locating_values)) if locating_values else None
+        ),
+        median_irrelevant_focus_duration_seconds=(
+            float(np.median(irrelevant_values)) if irrelevant_values else None
+        ),
+        median_head_turning_degrees=(
+            float(np.median(head_turning_values)) if head_turning_values else None
+        ),
+        warnings=tuple(warnings),
     )
 
 

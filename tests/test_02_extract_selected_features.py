@@ -1303,5 +1303,165 @@ class PaceAndListRecheckAggregationTests(unittest.TestCase):
         self.assertAlmostEqual(summary.total_list_recheck_duration_seconds, 0.70)
 
 
+class LocatingFeatureTests(unittest.TestCase):
+    """Check FE-01.7 locating, irrelevant-focus and head-turning measures."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "aggregate_trial_locating_features"),
+            "FE-01.7 locating aggregation has not been implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def interval(start, target, *, product="red apple", valid=True):
+        return EXTRACTOR.SearchInterval(
+            canonical_product_name=product,
+            qualifying_grab_start_seconds=(start + 0.10 if target is None else target + 0.10),
+            search_start_seconds=start,
+            first_target_focus_seconds=target,
+            is_valid=valid,
+        )
+
+    @staticmethod
+    def focus(start, end, *, name="red apple", tag="mainshelf"):
+        return EXTRACTOR.FocusEpisode(
+            canonical_focus_name=name,
+            raw_focus_name=name,
+            cleaned_focus_tag=tag,
+            raw_focus_tag=tag,
+            focus_start_seconds=start,
+            focus_end_seconds=end,
+            focus_duration_seconds=end - start,
+        )
+
+    @staticmethod
+    def tracker(times, rotations=None):
+        data = {"time": times}
+        if rotations is not None:
+            data.update(
+                {
+                    "hmd_rot_x": [row[0] for row in rotations],
+                    "hmd_rot_y": [row[1] for row in rotations],
+                    "hmd_rot_z": [row[2] for row in rotations],
+                    "hmd_rot_w": [row[3] for row in rotations],
+                }
+            )
+        return pd.DataFrame(data)
+
+    def aggregate(self, intervals, focus=(), tracker=None):
+        extractor = self.require_api()
+        if tracker is None:
+            tracker = self.tracker([0.0, 1.0])
+        return extractor.aggregate_trial_locating_features(intervals, focus, tracker)
+
+    def test_exact_locating_duration_and_median(self):
+        summary = self.aggregate(
+            [self.interval(1.0, 2.5), self.interval(3.0, 5.0)]
+        )
+
+        self.assertAlmostEqual(summary.median_time_to_target_seconds, 1.75)
+
+    def test_missing_target_endpoint_is_excluded_and_reported(self):
+        interval = self.interval(1.0, None, valid=False)
+        interval = interval._replace(first_target_focus_seconds=None)
+        summary = self.aggregate([interval])
+
+        self.assertIsNone(summary.median_time_to_target_seconds)
+        self.assertIn("locating_time_unavailable", summary.warnings)
+
+    def test_focus_durations_are_clipped_to_search_boundaries(self):
+        summary = self.aggregate(
+            [self.interval(2.0, 8.0)],
+            [self.focus(0.0, 10.0, name="npc", tag="npc")],
+        )
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 6.0)
+
+    def test_target_and_known_scene_labels_are_excluded_from_irrelevant_time(self):
+        summary = self.aggregate(
+            [self.interval(0.0, 5.0)],
+            [
+                self.focus(0.0, 1.0, name="red apple"),
+                self.focus(1.0, 2.0, name="green plant"),
+                self.focus(2.0, 3.0, name="mainshelf", tag="mainshelf"),
+                self.focus(3.0, 4.0, name="tablet", tag="tablet"),
+                self.focus(4.0, 5.0, name="cart", tag="cart"),
+            ],
+        )
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 0.0)
+
+    def test_npc_is_explicitly_irrelevant(self):
+        summary = self.aggregate(
+            [self.interval(0.0, 5.0)],
+            [self.focus(1.0, 2.5, name="npc", tag="npc")],
+        )
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 1.5)
+
+    def test_unknown_focus_is_excluded_and_warned(self):
+        summary = self.aggregate(
+            [self.interval(0.0, 5.0)],
+            [self.focus(1.0, 3.0, name="mystery object", tag="mystery")],
+        )
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 0.0)
+        self.assertIn("unclassifiable_focus:mystery object", summary.warnings)
+
+    def test_zero_irrelevant_focus_is_retained_as_zero(self):
+        summary = self.aggregate([self.interval(0.0, 1.0)], [])
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 0.0)
+
+    def test_head_turning_accumulates_quaternion_path_in_degrees(self):
+        half = 2**-0.5
+        summary = self.aggregate(
+            [self.interval(0.0, 2.0)],
+            tracker=self.tracker(
+                [0.0, 1.0, 2.0],
+                [(0.0, 0.0, 0.0, 1.0), (0.0, 0.0, half, half), (0.0, 0.0, 1.0, 0.0)],
+            ),
+        )
+
+        self.assertAlmostEqual(summary.median_head_turning_degrees, 180.0, places=5)
+
+    def test_head_turning_counts_turn_and_return(self):
+        half = 2**-0.5
+        summary = self.aggregate(
+            [self.interval(0.0, 2.0)],
+            tracker=self.tracker(
+                [0.0, 1.0, 2.0],
+                [(0.0, 0.0, 0.0, 1.0), (0.0, 0.0, half, half), (0.0, 0.0, 0.0, 1.0)],
+            ),
+        )
+
+        self.assertAlmostEqual(summary.median_head_turning_degrees, 180.0, places=5)
+
+    def test_missing_rotation_data_is_missing_with_warning(self):
+        summary = self.aggregate([self.interval(0.0, 1.0)])
+
+        self.assertIsNone(summary.median_head_turning_degrees)
+        self.assertIn("head_rotation_unavailable", summary.warnings)
+
+    def test_invalid_intervals_do_not_contribute(self):
+        summary = self.aggregate(
+            [self.interval(0.0, 1.0, valid=False), self.interval(2.0, 4.0)],
+            tracker=self.tracker(
+                [0.0, 1.0, 2.0, 3.0, 4.0],
+                [(0.0, 0.0, 0.0, 1.0)] * 5,
+            ),
+        )
+
+        self.assertAlmostEqual(summary.median_time_to_target_seconds, 2.0)
+
+    def test_interval_order_does_not_change_medians(self):
+        intervals = [self.interval(3.0, 5.0), self.interval(1.0, 2.5)]
+        summary = self.aggregate(intervals)
+
+        self.assertAlmostEqual(summary.median_time_to_target_seconds, 1.75)
+
+
 if __name__ == "__main__":
     unittest.main()
