@@ -48,6 +48,7 @@ COMPARISON_EXTRA_FIELDS = (
     "excluded_observation_count",
     "excluded_participant_count",
     "fit_error",
+    "included_row_signature",
 )
 _FORMULA_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FORMULA_RESERVED = {
@@ -63,6 +64,7 @@ _FORMULA_RESERVED = {
     "log",
     "sqrt",
 }
+_SOURCE_ROW_POSITION = "__mod02_source_row_position"
 
 
 @dataclass(frozen=True)
@@ -110,6 +112,7 @@ class RandomInterceptFitRecord:
     likelihood_ratio_p_value: float | None
     likelihood_ratio_role: str
     selection_status: str
+    included_row_signature: str
 
 
 @dataclass(frozen=True)
@@ -201,6 +204,14 @@ def _formula_columns(
         for column in available_columns
         if re.search(rf"(?<![A-Za-z0-9_]){re.escape(column)}(?![A-Za-z0-9_])", formula)
     )
+
+
+def _included_row_signature(data: pd.DataFrame) -> str:
+    positions = sorted(
+        int(value)
+        for value in data[_SOURCE_ROW_POSITION].tolist()
+    )
+    return ",".join(str(position) for position in positions)
 
 
 def _attempt_fit(
@@ -322,6 +333,7 @@ def _record(
     random_intercept_variance: float | None = None,
     boundary_flag: bool | None = None,
     singularity_flag: bool | None = None,
+    included_row_signature: str = "",
 ) -> RandomInterceptFitRecord:
     difficulty = comparison.difficulty_coding
     return RandomInterceptFitRecord(
@@ -374,6 +386,7 @@ def _record(
         likelihood_ratio_p_value=None,
         likelihood_ratio_role=LIKELIHOOD_RATIO_ROLE,
         selection_status=SELECTION_STATUS,
+        included_row_signature=included_row_signature,
     )
 
 
@@ -423,6 +436,7 @@ def fit_random_intercept_models(
         raise ValueError("maxiter must be positive")
 
     data = modeling_data.copy(deep=True)
+    data[_SOURCE_ROW_POSITION] = list(range(len(data)))
     target_columns = target_columns or {}
     available_columns = set(data.columns)
     records: list[RandomInterceptFitRecord] = []
@@ -565,14 +579,19 @@ def fit_random_intercept_models(
         fit_frame = eligible_frame.dropna(
             subset=required_fit_columns
         ).copy(deep=True)
+        included_row_signature = _included_row_signature(fit_frame)
+        fit_data = fit_frame.drop(
+            columns=[_SOURCE_ROW_POSITION],
+            errors="ignore",
+        ).copy(deep=True)
         excluded_observation_count = len(condition_frame) - len(fit_frame)
-        after_ids = set(fit_frame[participant_column].dropna().tolist())
+        after_ids = set(fit_data[participant_column].dropna().tolist())
         excluded_participant_count = len(before_ids - after_ids)
         if excluded_observation_count:
             local_warnings.append(
                 f"excluded {excluded_observation_count} rows from fit eligibility"
             )
-        if not len(fit_frame):
+        if not len(fit_data):
             message = (
                 f"{comparison.condition_name}/{target_name}: no eligible "
                 "observations remain"
@@ -587,11 +606,12 @@ def fit_random_intercept_models(
                 excluded_participant_count=excluded_participant_count,
                 warnings_text=tuple(local_warnings),
                 fit_error=message,
+                included_row_signature=included_row_signature,
             )
             records.append(record)
             result_warnings.extend(local_warnings)
             continue
-        if fit_frame[participant_column].nunique(dropna=True) < 2:
+        if fit_data[participant_column].nunique(dropna=True) < 2:
             message = (
                 f"{comparison.condition_name}/{target_name}: at least two "
                 "participants are required for a random-intercept fit"
@@ -603,20 +623,21 @@ def fit_random_intercept_models(
                 random_model=random_model,
                 difficulty_source_column=difficulty_column,
                 participant_count=int(
-                    fit_frame[participant_column].nunique(dropna=True)
+                    fit_data[participant_column].nunique(dropna=True)
                 ),
-                observation_count=len(fit_frame),
+                observation_count=len(fit_data),
                 excluded_observation_count=excluded_observation_count,
                 excluded_participant_count=excluded_participant_count,
                 warnings_text=tuple(local_warnings),
                 fit_error=message,
+                included_row_signature=included_row_signature,
             )
             records.append(record)
             result_warnings.extend(local_warnings)
             continue
 
         selected, fit_warnings, fit_errors = _fit_with_fallback(
-            fit_frame,
+            fit_data,
             formula,
             participant_column,
             tuple(optimizer_methods),
@@ -639,13 +660,14 @@ def fit_random_intercept_models(
                     random_model=random_model,
                     difficulty_source_column=difficulty_column,
                     participant_count=int(
-                        fit_frame[participant_column].nunique(dropna=True)
+                        fit_data[participant_column].nunique(dropna=True)
                     ),
-                    observation_count=len(fit_frame),
+                    observation_count=len(fit_data),
                     excluded_observation_count=excluded_observation_count,
                     excluded_participant_count=excluded_participant_count,
                     warnings_text=all_warnings,
                     fit_error=fit_error or message,
+                    included_row_signature=included_row_signature,
                 )
             )
             continue
@@ -666,9 +688,9 @@ def fit_random_intercept_models(
             random_model=random_model,
             difficulty_source_column=difficulty_column,
             participant_count=int(
-                fit_frame[participant_column].nunique(dropna=True)
+                fit_data[participant_column].nunique(dropna=True)
             ),
-            observation_count=len(fit_frame),
+            observation_count=len(fit_data),
             excluded_observation_count=excluded_observation_count,
             excluded_participant_count=excluded_participant_count,
             fixed_effect_count=_safe_len(getattr(fitted, "fe_params", None)),
@@ -690,6 +712,7 @@ def fit_random_intercept_models(
                 fitted,
                 ("singularity_flag", "is_singular"),
             ),
+            included_row_signature=included_row_signature,
         )
         records.append(record)
 

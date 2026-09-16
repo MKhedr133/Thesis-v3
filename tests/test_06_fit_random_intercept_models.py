@@ -270,6 +270,21 @@ class RandomInterceptFittingTests(unittest.TestCase):
                 DIFFICULTY_COLUMNS,
             )
 
+        expected_signatures = {
+            "Visual": {
+                PERFORMANCE_TARGET: "1,2,3,13,14,15,25,26,27,37,38,39",
+                MENTAL_DEMAND_TARGET: "0,1,2,3,12,13,14,15,24,25,26,27,36,37,38,39",
+            },
+            "Auditory": {
+                PERFORMANCE_TARGET: "5,6,7,17,18,19,29,30,31,41,42,43",
+                MENTAL_DEMAND_TARGET: "4,5,6,7,16,17,18,19,28,29,30,31,40,41,42,43",
+            },
+            "Cognitive": {
+                PERFORMANCE_TARGET: "9,10,11,21,22,23,33,34,35,45,46,47",
+                MENTAL_DEMAND_TARGET: "8,9,10,11,20,21,22,23,32,33,34,35,44,45,46,47",
+            },
+        }
+
         for record in result.fit_records:
             if record.target_name == PERFORMANCE_TARGET:
                 self.assertEqual(record.observation_count, 12)
@@ -277,6 +292,10 @@ class RandomInterceptFittingTests(unittest.TestCase):
             else:
                 self.assertEqual(record.observation_count, 16)
                 self.assertEqual(record.excluded_observation_count, 0)
+            self.assertEqual(
+                record.included_row_signature,
+                expected_signatures[record.condition_name][record.target_name],
+            )
 
     def test_missing_values_are_reported_and_inputs_are_unchanged(self):
         module = self.require_module()
@@ -338,6 +357,7 @@ class RandomInterceptFittingTests(unittest.TestCase):
         self.assertTrue(
             all(record.delta_bic is None for record in result.fit_records)
         )
+        self.assertIn("included_row_signature", result.fit_table.columns)
         self.assertEqual(
             tuple(result.fit_table.columns[: len(make_registry().comparison_fields)]),
             make_registry().comparison_fields,
