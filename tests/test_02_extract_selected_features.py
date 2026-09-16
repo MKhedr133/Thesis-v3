@@ -8,6 +8,7 @@ import io
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import pandas as pd
 
@@ -1730,7 +1731,7 @@ class ReachOnsetTests(unittest.TestCase):
         )
 
         interval = result.intervals[0]
-        self.assertAlmostEqual(interval.reach_start_seconds, 0.3)
+        self.assertAlmostEqual(interval.reach_start_seconds, 0.2)
         self.assertAlmostEqual(interval.grab_start_seconds, 0.5)
         self.assertTrue(interval.is_valid)
 
@@ -1747,7 +1748,7 @@ class ReachOnsetTests(unittest.TestCase):
             [self.search()],
         )
 
-        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.5)
+        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.4)
 
     def test_pause_before_final_reach_does_not_select_earlier_movement(self):
         result = self.detect(
@@ -1761,7 +1762,26 @@ class ReachOnsetTests(unittest.TestCase):
             [self.search(grab_start=0.8)],
         )
 
-        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.6)
+        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.5)
+
+    def test_step_start_is_clipped_to_search_start(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.3, 0.4],
+                [
+                    (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0),
+                    (0.0, 0.0, 0.0),
+                    (0.1, 0.0, 0.0),
+                    (0.2, 0.0, 0.0),
+                ],
+            ),
+            [self.grab(0.4)],
+            [self.search(grab_start=0.4, search_start=0.25)],
+        )
+        interval = result.intervals[0]
+        self.assertTrue(interval.is_valid)
+        self.assertAlmostEqual(interval.reach_start_seconds, 0.25)
 
     def test_below_threshold_noise_does_not_create_a_reach(self):
         result = self.detect(
@@ -2938,6 +2958,114 @@ class CorrectionIntegrationTests(unittest.TestCase):
             )
         self.assertTrue(result.trial_feature_table["mental_demand_score_0_to_10"].isna().all())
         self.assertTrue(any("mental_demand_match_missing" in warning for warning in result.warnings))
+
+
+class RuntimeOptimizationTests(unittest.TestCase):
+    """Regression checks for the private one-trial signal cache."""
+
+    def require_cache(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "_TrialSignalCache"),
+            "per-trial signal cache has not been implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def tracker_with_both_hands():
+        return pd.DataFrame(
+            {
+                "time": [0.0, 0.1, 0.2],
+                "left_pos_x": [0.0, 0.1, 0.2],
+                "left_pos_y": [0.0, 0.0, 0.0],
+                "left_pos_z": [0.0, 0.0, 0.0],
+                "right_pos_x": [0.0, 0.0, 0.0],
+                "right_pos_y": [0.0, 0.1, 0.2],
+                "right_pos_z": [0.0, 0.0, 0.0],
+                "hmd_rot_x": [0.0, 0.0, 0.0],
+                "hmd_rot_y": [0.0, 0.0, 0.0],
+                "hmd_rot_z": [0.0, 0.0, 0.0],
+                "hmd_rot_w": [1.0, 1.0, 1.0],
+            }
+        )
+
+    def test_hand_motion_is_cached_once_per_hand_within_a_trial(self):
+        extractor = self.require_cache()
+        tracker = self.tracker_with_both_hands()
+        with mock.patch.object(
+            extractor,
+            "prepare_hand_motion",
+            wraps=extractor.prepare_hand_motion,
+        ) as prepare:
+            cache = extractor._TrialSignalCache(tracker)
+            right_first = cache.hand_motion("right")
+            right_second = cache.hand_motion("right")
+            left = cache.hand_motion("left")
+        self.assertIs(right_first, right_second)
+        self.assertEqual(left.hand, "left")
+        self.assertEqual(prepare.call_count, 2)
+
+    def test_trial_caches_are_not_shared_across_trials(self):
+        extractor = self.require_cache()
+        tracker = self.tracker_with_both_hands()
+        first_cache = extractor._TrialSignalCache(tracker)
+        second_cache = extractor._TrialSignalCache(tracker.copy())
+        self.assertIsNot(
+            first_cache.hand_motion("right"),
+            second_cache.hand_motion("right"),
+        )
+
+    def test_timestamps_and_blackout_values_are_cached_within_a_trial(self):
+        extractor = self.require_cache()
+        tracker = self.tracker_with_both_hands().assign(
+            enableBlackout=["True", "False", "False"]
+        )
+        cache = extractor._TrialSignalCache(tracker)
+        first_times = cache.time_seconds()
+        second_times = cache.time_seconds()
+        first_blackout = cache.blackout_values()
+        second_blackout = cache.blackout_values()
+        self.assertIs(first_times, second_times)
+        self.assertIs(first_blackout, second_blackout)
+
+    def test_headset_quaternions_are_prepared_once_and_reused(self):
+        extractor = self.require_cache()
+        cache = extractor._TrialSignalCache(self.tracker_with_both_hands())
+        warnings = []
+        first = cache.head_rotations(warnings)
+        second = cache.head_rotations(warnings)
+        self.assertIs(first, second)
+        self.assertEqual(len(first), 3)
+        self.assertEqual(warnings, [])
+
+    def test_focus_sorting_is_cached_without_changing_order(self):
+        extractor = self.require_cache()
+        episodes = [
+            extractor.FocusEpisode("a", "A", "", "", 2.0, 3.0, 1.0),
+            extractor.FocusEpisode("b", "B", "", "", 0.5, 1.0, 0.5),
+        ]
+        cache = extractor._TrialSignalCache(self.tracker_with_both_hands())
+        first = cache.sorted_focus(episodes)
+        second = cache.sorted_focus(episodes)
+        self.assertIs(first, second)
+        self.assertEqual([episode.focus_start_seconds for episode in first], [0.5, 2.0])
+
+    def test_reach_aggregation_reuses_hand_motion_and_preserves_values(self):
+        extractor = self.require_cache()
+        tracker = self.tracker_with_both_hands()
+        intervals = [
+            extractor.ReachInterval("a", "right", 0.0, 0.1, True),
+            extractor.ReachInterval("b", "right", 0.1, 0.2, True),
+        ]
+        with mock.patch.object(
+            extractor,
+            "prepare_hand_motion",
+            wraps=extractor.prepare_hand_motion,
+        ) as prepare:
+            result = extractor.aggregate_trial_reach_features(intervals, tracker)
+        self.assertEqual(prepare.call_count, 1)
+        self.assertAlmostEqual(result.median_reach_duration_seconds, 0.1)
+        self.assertIsNotNone(result.median_reach_path_ratio)
 
 
 if __name__ == "__main__":

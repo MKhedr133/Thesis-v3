@@ -567,6 +567,88 @@ class HandMotionSeries(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class _TrialSignalCache:
+    """Private cache whose lifetime is limited to one tracker trial."""
+
+    def __init__(self, tracker: pd.DataFrame):
+        self.tracker = tracker
+        self._time_seconds: np.ndarray | None = None
+        self._blackout_values: np.ndarray | None = None
+        self._blackout_prepared = False
+        self._hand_motion: dict[str, HandMotionSeries] = {}
+        self._head_rotations: tuple[tuple[float, np.ndarray], ...] | None = None
+        self._head_rotation_prepared = False
+        self._head_rotation_columns_missing = False
+        self._focus_source_id: int | None = None
+        self._sorted_focus: tuple[FocusEpisode, ...] = ()
+
+    def time_seconds(self) -> np.ndarray:
+        if self._time_seconds is None:
+            if "time" not in self.tracker.columns:
+                raise ValueError("Tracker table missing required column: time")
+            self._time_seconds = pd.to_numeric(
+                self.tracker["time"], errors="coerce"
+            ).to_numpy(float)
+        return self._time_seconds
+
+    def blackout_values(self) -> np.ndarray | None:
+        if not self._blackout_prepared:
+            column = self.tracker.get("enableBlackout")
+            if column is None or column.isna().all():
+                self._blackout_values = None
+            else:
+                self._blackout_values = parse_boolean_series(column).to_numpy(bool)
+            self._blackout_prepared = True
+        return self._blackout_values
+
+    def hand_motion(self, hand: str) -> HandMotionSeries:
+        if hand not in self._hand_motion:
+            self._hand_motion[hand] = prepare_hand_motion(self.tracker, hand)
+        return self._hand_motion[hand]
+
+    def head_rotations(
+        self, warnings: list[str]
+    ) -> tuple[tuple[float, np.ndarray], ...]:
+        if not self._head_rotation_prepared:
+            required = ("hmd_rot_x", "hmd_rot_y", "hmd_rot_z", "hmd_rot_w")
+            if any(column not in self.tracker.columns for column in required):
+                self._head_rotation_columns_missing = True
+                self._head_rotations = ()
+            else:
+                times = self.time_seconds()
+                components = [
+                    pd.to_numeric(self.tracker[column], errors="coerce").to_numpy(float)
+                    for column in required
+                ]
+                rotations: list[tuple[float, np.ndarray]] = []
+                for index, timestamp in enumerate(times):
+                    if not np.isfinite(timestamp):
+                        continue
+                    quaternion = np.asarray(
+                        [component[index] for component in components], dtype=float
+                    )
+                    norm = float(np.linalg.norm(quaternion))
+                    if np.isfinite(norm) and norm > 0:
+                        rotations.append((float(timestamp), quaternion / norm))
+                self._head_rotations = tuple(rotations)
+            self._head_rotation_prepared = True
+        if self._head_rotation_columns_missing:
+            add_unique_warning(warnings, "head_rotation_unavailable")
+        return self._head_rotations or ()
+
+    def sorted_focus(self, focus_episodes: Sequence[FocusEpisode]) -> tuple[FocusEpisode, ...]:
+        source_id = id(focus_episodes)
+        if self._focus_source_id != source_id:
+            self._sorted_focus = tuple(
+                sorted(
+                    focus_episodes,
+                    key=lambda episode: episode.focus_start_seconds,
+                )
+            )
+            self._focus_source_id = source_id
+        return self._sorted_focus
+
+
 class ReachDetectionConfig(NamedTuple):
     """Provisional historical settings for movement-based reach onset."""
 
@@ -1141,12 +1223,13 @@ def prepare_hand_motion(tracker: pd.DataFrame, hand: str) -> HandMotionSeries:
     return HandMotionSeries(hand=hand, samples=tuple(samples), warnings=tuple(warnings))
 
 
-def detect_reach_intervals(
+def _detect_reach_intervals_with_cache(
     tracker: pd.DataFrame,
     grab_events: Sequence[ProductGrabEvent],
     config: ReachDetectionConfig | None = None,
     *,
     search_intervals: Sequence[SearchInterval] = (),
+    cache: _TrialSignalCache,
 ) -> ReachDetectionResult:
     """Detect the final sustained movement block before each qualifying grab.
 
@@ -1194,7 +1277,6 @@ def detect_reach_intervals(
         ),
         key=lambda event: event.grab_start_seconds,
     )
-    motion_by_hand: dict[str, HandMotionSeries] = {}
     for event in qualifying_grabs:
         hand = actual_grab_hand(event)
         try:
@@ -1237,11 +1319,9 @@ def detect_reach_intervals(
             )
             continue
 
-        if hand not in motion_by_hand:
-            motion_by_hand[hand] = prepare_hand_motion(tracker, hand)
-            for warning in motion_by_hand[hand].warnings:
-                add_unique_warning(warnings, warning)
-        motion = motion_by_hand[hand]
+        motion = cache.hand_motion(hand)
+        for warning in motion.warnings:
+            add_unique_warning(warnings, warning)
         candidate_samples = [
             sample
             for sample in motion.samples
@@ -1273,15 +1353,20 @@ def detect_reach_intervals(
             config.absolute_speed_threshold_meters_per_second,
             config.peak_speed_fraction * peak_speed,
         )
-        movement_blocks: list[list[HandPositionSample]] = []
+        movement_blocks: list[tuple[list[HandPositionSample], float | None]] = []
         active_block: list[HandPositionSample] = []
+        active_block_onset: float | None = None
         previous_timestamp: float | None = None
+        sample_positions = {
+            id(sample): index for index, sample in enumerate(motion.samples)
+        }
 
         def close_block() -> None:
-            nonlocal active_block
+            nonlocal active_block, active_block_onset
             if active_block:
-                movement_blocks.append(active_block)
+                movement_blocks.append((active_block, active_block_onset))
             active_block = []
+            active_block_onset = None
 
         for sample in candidate_samples:
             timestamp = sample.timestamp_seconds
@@ -1298,6 +1383,29 @@ def detect_reach_intervals(
                 add_unique_warning(warnings, f"non_monotonic_reach_time:{hand}")
                 close_block()
             if float(speed) >= threshold:
+                if not active_block:
+                    sample_index = sample_positions.get(id(sample))
+                    predecessor = (
+                        motion.samples[sample_index - 1]
+                        if sample_index is not None and sample_index > 0
+                        else None
+                    )
+                    predecessor_time = (
+                        predecessor.timestamp_seconds
+                        if predecessor is not None and predecessor.is_valid
+                        else None
+                    )
+                    if predecessor_time is None or not np.isfinite(predecessor_time):
+                        add_unique_warning(
+                            warnings,
+                            f"reach_onset_predecessor_unavailable:{hand}",
+                        )
+                        active_block_onset = None
+                    else:
+                        active_block_onset = max(
+                            float(search_start),
+                            float(predecessor_time),
+                        )
                 active_block.append(sample)
             else:
                 close_block()
@@ -1305,10 +1413,12 @@ def detect_reach_intervals(
         close_block()
 
         qualifying_blocks = [
-            block
-            for block in movement_blocks
-            if block[-1].timestamp_seconds - block[0].timestamp_seconds
-            + 1e-12 >= config.minimum_movement_duration_seconds
+            (block, onset)
+            for block, onset in movement_blocks
+            if onset is not None
+            and block[-1].timestamp_seconds - block[0].timestamp_seconds
+            + 1e-12
+            >= config.minimum_movement_duration_seconds
         ]
         if not qualifying_blocks:
             add_unique_warning(warnings, f"reach_onset_not_found:{hand}")
@@ -1322,8 +1432,7 @@ def detect_reach_intervals(
                 )
             )
             continue
-
-        reach_start = float(qualifying_blocks[-1][0].timestamp_seconds)
+        reach_start = float(qualifying_blocks[-1][1])
         intervals.append(
             ReachInterval(
                 canonical_product_name=event.canonical_product_name,
@@ -1336,11 +1445,30 @@ def detect_reach_intervals(
     return ReachDetectionResult(intervals=tuple(intervals), warnings=tuple(warnings))
 
 
+def detect_reach_intervals(
+    tracker: pd.DataFrame,
+    grab_events: Sequence[ProductGrabEvent],
+    config: ReachDetectionConfig | None = None,
+    *,
+    search_intervals: Sequence[SearchInterval] = (),
+) -> ReachDetectionResult:
+    """Detect reach intervals using a fresh trial cache."""
+    return _detect_reach_intervals_with_cache(
+        tracker,
+        grab_events,
+        config,
+        search_intervals=search_intervals,
+        cache=_TrialSignalCache(tracker),
+    )
+
+
 def _complete_grab_segments_for_hand(
     tracker: pd.DataFrame,
     hand: str,
     catalog: ProductCatalog,
     warnings: list[str],
+    *,
+    time_seconds: np.ndarray | None = None,
 ) -> list[_RawGrabSegment]:
     """Return complete same-hand, same-product segments before gap merging."""
     grab_column = f"is_grabbing_{hand}"
@@ -1354,7 +1482,11 @@ def _complete_grab_segments_for_hand(
 
     grabbing = parse_boolean_series(tracker[grab_column]).to_numpy(bool)
     raw_labels = tracker[object_column]
-    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    times = (
+        time_seconds
+        if time_seconds is not None
+        else pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    )
 
     segments: list[_RawGrabSegment] = []
     active_product: str | None = None
@@ -1451,12 +1583,14 @@ def _merge_grab_segments(
     return merged
 
 
-def detect_product_grab_events(
+def _detect_product_grab_events_with_cache(
     tracker: pd.DataFrame,
     catalog: ProductCatalog,
     difficulty: int,
     language: str,
     config: GrabDetectionConfig | None = None,
+    *,
+    cache: _TrialSignalCache,
 ) -> GrabDetectionResult:
     """Detect complete real-product grabs from both recorded hands.
 
@@ -1476,7 +1610,11 @@ def detect_product_grab_events(
     retained_segments: list[_RawGrabSegment] = []
     for hand in ("left", "right"):
         raw_segments = _complete_grab_segments_for_hand(
-            tracker, hand, catalog, warnings
+            tracker,
+            hand,
+            catalog,
+            warnings,
+            time_seconds=cache.time_seconds(),
         )
         merged_segments = _merge_grab_segments(raw_segments, config, warnings)
         retained_segments.extend(
@@ -1521,9 +1659,29 @@ def detect_product_grab_events(
     return GrabDetectionResult(events=tuple(events), warnings=tuple(warnings))
 
 
-def detect_focus_episodes(
+def detect_product_grab_events(
     tracker: pd.DataFrame,
     catalog: ProductCatalog,
+    difficulty: int,
+    language: str,
+    config: GrabDetectionConfig | None = None,
+) -> GrabDetectionResult:
+    """Detect complete real-product grabs using a fresh trial cache."""
+    return _detect_product_grab_events_with_cache(
+        tracker,
+        catalog,
+        difficulty,
+        language,
+        config,
+        cache=_TrialSignalCache(tracker),
+    )
+
+
+def _detect_focus_episodes_with_cache(
+    tracker: pd.DataFrame,
+    catalog: ProductCatalog,
+    *,
+    cache: _TrialSignalCache,
 ) -> FocusDetectionResult:
     """Detect complete continuous engine-labelled object-focus episodes.
 
@@ -1553,7 +1711,7 @@ def detect_focus_episodes(
         else:
             blink_values[eye] = parse_boolean_series(tracker[column])
 
-    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    times = cache.time_seconds()
     episodes: list[FocusEpisode] = []
     active_key: tuple[str, str] | None = None
     active_raw_name = ""
@@ -1640,6 +1798,18 @@ def detect_focus_episodes(
 
     episodes.sort(key=lambda episode: episode.focus_start_seconds)
     return FocusDetectionResult(episodes=tuple(episodes), warnings=tuple(warnings))
+
+
+def detect_focus_episodes(
+    tracker: pd.DataFrame,
+    catalog: ProductCatalog,
+) -> FocusDetectionResult:
+    """Detect complete focus episodes using a fresh trial cache."""
+    return _detect_focus_episodes_with_cache(
+        tracker,
+        catalog,
+        cache=_TrialSignalCache(tracker),
+    )
 
 
 def detect_list_visits(
@@ -1769,11 +1939,35 @@ def _head_rotation_path_degrees(
     return total
 
 
-def aggregate_trial_locating_features(
+def _head_rotation_path_degrees_from_prepared(
+    rotations: Sequence[tuple[float, np.ndarray]],
+    start: float,
+    end: float,
+    warnings: list[str],
+) -> float | None:
+    """Calculate the existing head-rotation path from prepared samples."""
+    windowed = [
+        quaternion
+        for timestamp, quaternion in rotations
+        if start <= timestamp <= end
+    ]
+    if len(windowed) < 2:
+        add_unique_warning(warnings, "head_rotation_unavailable")
+        return None
+    total = 0.0
+    for previous, current in zip(windowed, windowed[1:]):
+        dot = float(np.clip(abs(np.dot(previous, current)), -1.0, 1.0))
+        total += float(2.0 * np.degrees(np.arccos(dot)))
+    return total if np.isfinite(total) else None
+
+
+def _aggregate_trial_locating_features_with_cache(
     search_intervals: Sequence[SearchInterval],
     focus_episodes: Sequence[FocusEpisode],
     tracker: pd.DataFrame,
     catalog: ProductCatalog | None = None,
+    *,
+    cache: _TrialSignalCache,
 ) -> LocatingFeatureAggregation:
     """Aggregate locating, irrelevant-focus and headset-turning measurements."""
     warnings: list[str] = []
@@ -1781,10 +1975,7 @@ def aggregate_trial_locating_features(
         search_intervals,
         key=lambda interval: interval.qualifying_grab_start_seconds,
     )
-    ordered_focus = sorted(
-        focus_episodes,
-        key=lambda episode: episode.focus_start_seconds,
-    )
+    ordered_focus = cache.sorted_focus(focus_episodes)
     target_names = {
         _focus_name_key(interval.canonical_product_name)
         for interval in ordered_intervals
@@ -1811,6 +2002,8 @@ def aggregate_trial_locating_features(
         irrelevant_duration = 0.0
         seen_focus_labels: set[str] = set()
         for episode in ordered_focus:
+            if episode.focus_start_seconds > target:
+                break
             overlap_start = max(start, episode.focus_start_seconds)
             overlap_end = min(target, episode.focus_end_seconds)
             if overlap_end < overlap_start:
@@ -1828,7 +2021,12 @@ def aggregate_trial_locating_features(
             irrelevant_duration += float(overlap_end - overlap_start)
         irrelevant_values.append(irrelevant_duration)
 
-        turning = _head_rotation_path_degrees(tracker, float(start), float(target), warnings)
+        turning = _head_rotation_path_degrees_from_prepared(
+            cache.head_rotations(warnings),
+            float(start),
+            float(target),
+            warnings,
+        )
         if turning is not None:
             head_turning_values.append(turning)
 
@@ -1846,6 +2044,22 @@ def aggregate_trial_locating_features(
     )
 
 
+def aggregate_trial_locating_features(
+    search_intervals: Sequence[SearchInterval],
+    focus_episodes: Sequence[FocusEpisode],
+    tracker: pd.DataFrame,
+    catalog: ProductCatalog | None = None,
+) -> LocatingFeatureAggregation:
+    """Aggregate locating features using a fresh trial cache."""
+    return _aggregate_trial_locating_features_with_cache(
+        search_intervals,
+        focus_episodes,
+        tracker,
+        catalog,
+        cache=_TrialSignalCache(tracker),
+    )
+
+
 def _reach_path_ratio(
     tracker: pd.DataFrame,
     hand: str,
@@ -1853,9 +2067,11 @@ def _reach_path_ratio(
     grab_start: float,
     minimum_straight_distance_meters: float,
     warnings: list[str],
+    *,
+    motion: HandMotionSeries | None = None,
 ) -> float | None:
     """Calculate one observed 3-D reach path ratio without bridging gaps."""
-    motion = prepare_hand_motion(tracker, hand)
+    motion = motion if motion is not None else prepare_hand_motion(tracker, hand)
     for warning in motion.warnings:
         add_unique_warning(warnings, warning)
 
@@ -1924,10 +2140,12 @@ def _reach_path_ratio(
     return max(1.0, ratio)
 
 
-def aggregate_trial_reach_features(
+def _aggregate_trial_reach_features_with_cache(
     reach_intervals: Sequence[ReachInterval],
     tracker: pd.DataFrame,
     minimum_straight_distance_meters: float = 0.02,
+    *,
+    cache: _TrialSignalCache,
 ) -> ReachFeatureAggregation:
     """Aggregate median reach duration and observed 3-D path ratio."""
     if minimum_straight_distance_meters < 0:
@@ -1968,6 +2186,7 @@ def aggregate_trial_reach_features(
             float(grab),
             minimum_straight_distance_meters,
             warnings,
+            motion=cache.hand_motion(interval.hand),
         )
         if ratio is not None:
             path_ratios.append(ratio)
@@ -1976,6 +2195,20 @@ def aggregate_trial_reach_features(
         median_reach_duration_seconds=(float(np.median(durations)) if durations else None),
         median_reach_path_ratio=(float(np.median(path_ratios)) if path_ratios else None),
         warnings=tuple(warnings),
+    )
+
+
+def aggregate_trial_reach_features(
+    reach_intervals: Sequence[ReachInterval],
+    tracker: pd.DataFrame,
+    minimum_straight_distance_meters: float = 0.02,
+) -> ReachFeatureAggregation:
+    """Aggregate reach features using a fresh trial cache."""
+    return _aggregate_trial_reach_features_with_cache(
+        reach_intervals,
+        tracker,
+        minimum_straight_distance_meters,
+        cache=_TrialSignalCache(tracker),
     )
 
 
@@ -1992,12 +2225,14 @@ def _product_event_key(product: object, grab_start: object) -> tuple[str, float]
     return (_focus_name_key(product), numeric_start)
 
 
-def build_product_grab_features(
+def _build_product_grab_features_with_cache(
     trial_metadata: Mapping[str, object],
     grab_events: Sequence[ProductGrabEvent],
     search_intervals: Sequence[SearchInterval],
     reach_intervals: Sequence[ReachInterval],
     tracker: pd.DataFrame,
+    *,
+    cache: _TrialSignalCache,
 ) -> ProductGrabOutputResult:
     """Build one auditable product-grab table without writing a file."""
     warnings: list[str] = []
@@ -2078,17 +2313,18 @@ def build_product_grab_features(
                         warning = f"negative_reach_duration:{event.hand}"
                         add_unique_warning(row_warnings, warning)
                         add_unique_warning(warnings, warning)
-                    if reach_duration is not None:
-                        reach_path_ratio = _reach_path_ratio(
-                            tracker,
-                            event.hand,
-                            float(reach_start),
-                            float(event.grab_start_seconds),
-                            0.02,
-                            row_warnings,
-                        )
-                        for warning in row_warnings:
-                            add_unique_warning(warnings, warning)
+        if reach_duration is not None:
+            reach_path_ratio = _reach_path_ratio(
+                tracker,
+                event.hand,
+                float(reach_start),
+                float(event.grab_start_seconds),
+                0.02,
+                row_warnings,
+                motion=cache.hand_motion(event.hand),
+            )
+            for warning in row_warnings:
+                add_unique_warning(warnings, warning)
 
         row: dict[str, object] = {key_name: trial_metadata.get(key_name) for key_name in metadata_keys}
         row.update(
@@ -2118,6 +2354,24 @@ def build_product_grab_features(
 
     table = pd.DataFrame(rows, columns=PRODUCT_GRAB_OUTPUT_COLUMNS)
     return ProductGrabOutputResult(table=table, warnings=tuple(warnings))
+
+
+def build_product_grab_features(
+    trial_metadata: Mapping[str, object],
+    grab_events: Sequence[ProductGrabEvent],
+    search_intervals: Sequence[SearchInterval],
+    reach_intervals: Sequence[ReachInterval],
+    tracker: pd.DataFrame,
+) -> ProductGrabOutputResult:
+    """Build product-grab features using a fresh trial cache."""
+    return _build_product_grab_features_with_cache(
+        trial_metadata,
+        grab_events,
+        search_intervals,
+        reach_intervals,
+        tracker,
+        cache=_TrialSignalCache(tracker),
+    )
 
 
 def write_product_grab_features(table: pd.DataFrame, path: Path) -> None:
@@ -2622,22 +2876,23 @@ def write_descriptive_feature_plots(
     return DescriptivePlotResult(paths=tuple(paths), warnings=tuple(warnings))
 
 
-def detect_search_intervals(
+def _detect_search_intervals_with_cache(
     tracker: pd.DataFrame,
     grab_events: Sequence[ProductGrabEvent],
     list_visits: Sequence[ListVisit],
     focus_episodes: Sequence[FocusEpisode],
+    *,
+    cache: _TrialSignalCache,
 ) -> SearchIntervalResult:
     """Build shared search records for qualifying first-time-on-list grabs."""
     if "time" not in tracker:
         raise ValueError("Tracker table is missing required column: time")
 
     warnings: list[str] = []
-    times = pd.to_numeric(tracker["time"], errors="coerce").to_numpy(float)
+    times = cache.time_seconds()
     usable_activity_start: float | None = None
-    blackout_column = "enableBlackout"
-    if blackout_column in tracker and not tracker[blackout_column].isna().all():
-        blackout = parse_boolean_series(tracker[blackout_column]).to_numpy(bool)
+    blackout = cache.blackout_values()
+    if blackout is not None:
         valid_starts = np.flatnonzero(np.isfinite(times) & ~blackout)
         if len(valid_starts):
             usable_activity_start = float(times[valid_starts[0]])
@@ -2662,13 +2917,7 @@ def detect_search_intervals(
             visit.list_visit_end_seconds,
         ),
     )
-    ordered_focus = sorted(
-        focus_episodes,
-        key=lambda episode: (
-            episode.focus_start_seconds,
-            episode.focus_end_seconds,
-        ),
-    )
+    ordered_focus = cache.sorted_focus(focus_episodes)
 
     intervals: list[SearchInterval] = []
     previous_qualifying_grab_start: float | None = None
@@ -2720,13 +2969,17 @@ def detect_search_intervals(
             previous_qualifying_grab_start = grab_start
             continue
 
-        target_focus_candidates = [
-            max(search_start, episode.focus_start_seconds)
-            for episode in ordered_focus
-            if episode.canonical_focus_name == event.canonical_product_name
-            and episode.focus_start_seconds <= grab_start
-            and episode.focus_end_seconds >= search_start
-        ]
+        target_focus_candidates: list[float] = []
+        for episode in ordered_focus:
+            if episode.focus_start_seconds > grab_start:
+                break
+            if (
+                episode.canonical_focus_name == event.canonical_product_name
+                and episode.focus_end_seconds >= search_start
+            ):
+                target_focus_candidates.append(
+                    max(search_start, episode.focus_start_seconds)
+                )
         target_focus_candidates = [
             candidate for candidate in target_focus_candidates if candidate <= grab_start
         ]
@@ -2748,6 +3001,22 @@ def detect_search_intervals(
 
     return SearchIntervalResult(
         intervals=tuple(intervals), warnings=tuple(warnings)
+    )
+
+
+def detect_search_intervals(
+    tracker: pd.DataFrame,
+    grab_events: Sequence[ProductGrabEvent],
+    list_visits: Sequence[ListVisit],
+    focus_episodes: Sequence[FocusEpisode],
+) -> SearchIntervalResult:
+    """Build search intervals using a fresh trial cache."""
+    return _detect_search_intervals_with_cache(
+        tracker,
+        grab_events,
+        list_visits,
+        focus_episodes,
+        cache=_TrialSignalCache(tracker),
     )
 
 
@@ -3026,69 +3295,81 @@ def run_full_extraction(
             try:
                 tracker_result = load_tracker_table(paths.tracker)
                 tracker = tracker_result.table
+                signal_cache = _TrialSignalCache(tracker)
                 tracker_loaded = True
                 tracker_row_count = int(len(tracker))
-                finite_time_row_count = int(
-                    pd.to_numeric(tracker["time"], errors="coerce").notna().sum()
-                )
+                finite_time_row_count = int(np.isfinite(signal_cache.time_seconds()).sum())
                 for warning in tracker_result.warnings:
                     add_unique_warning(trial_warnings, warning)
                     if warning.startswith("repaired_time_header:"):
                         repaired_time_header = True
 
-                grab_result = detect_product_grab_events(
+                grab_result = _detect_product_grab_events_with_cache(
                     tracker,
                     catalog,
                     source_row["difficulty_level"],
                     source_row["language"],
+                    cache=signal_cache,
                 )
                 grab_events = grab_result.events
                 for warning in grab_result.warnings:
                     add_unique_warning(trial_warnings, warning)
 
-                focus_result = detect_focus_episodes(tracker, catalog)
+                focus_result = _detect_focus_episodes_with_cache(
+                    tracker,
+                    catalog,
+                    cache=signal_cache,
+                )
                 for warning in focus_result.warnings:
                     add_unique_warning(trial_warnings, warning)
                 list_visits = detect_list_visits(focus_result.episodes)
 
-                search_result = detect_search_intervals(
+                search_result = _detect_search_intervals_with_cache(
                     tracker,
                     grab_events,
                     list_visits,
                     focus_result.episodes,
+                    cache=signal_cache,
                 )
                 search_intervals = search_result.intervals
                 for warning in search_result.warnings:
                     add_unique_warning(trial_warnings, warning)
 
-                reach_result = detect_reach_intervals(
+                reach_result = _detect_reach_intervals_with_cache(
                     tracker,
                     grab_events,
                     search_intervals=search_intervals,
+                    cache=signal_cache,
                 )
                 reach_intervals = reach_result.intervals
                 for warning in reach_result.warnings:
                     add_unique_warning(trial_warnings, warning)
 
                 pace = aggregate_trial_pace_and_list_rechecks(grab_events, list_visits)
-                locating = aggregate_trial_locating_features(
+                locating = _aggregate_trial_locating_features_with_cache(
                     search_intervals,
                     focus_result.episodes,
                     tracker,
                     catalog,
+                    cache=signal_cache,
                 )
                 for warning in locating.warnings:
                     add_unique_warning(trial_warnings, warning)
-                reach_features = aggregate_trial_reach_features(reach_intervals, tracker)
+                reach_features = _aggregate_trial_reach_features_with_cache(
+                    reach_intervals,
+                    tracker,
+                    cache=signal_cache,
+                )
                 for warning in reach_features.warnings:
                     add_unique_warning(trial_warnings, warning)
 
-                product_result = build_product_grab_features(
+                product_result = _build_product_grab_features_with_cache(
                     metadata,
                     grab_events,
                     search_intervals,
                     reach_intervals,
                     tracker,
+                    cache=signal_cache,
                 )
                 for warning in product_result.warnings:
                     add_unique_warning(trial_warnings, warning)
