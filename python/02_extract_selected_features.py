@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Mapping, Sequence
+import hashlib
+import json
 from pathlib import Path
 import re
 from typing import NamedTuple
@@ -54,6 +56,31 @@ REQUIRED_MASTER_COLUMNS = (
     "difficulty_level",
     "trial_order",
 )
+
+MENTAL_DEMAND_COLUMN_ALIASES = {
+    "participant": "participant",
+    "participant_id": "participant",
+    "group": "group",
+    "participant_group": "group",
+    "condition": "condition",
+    "condition_name": "condition",
+    "trial": "trial_order",
+    "trial_order": "trial_order",
+    "level": "difficulty",
+    "difficulty": "difficulty",
+    "difficulty_level": "difficulty",
+    "md": "mental_demand",
+    "mental demand": "mental_demand",
+    "mental_demand": "mental_demand",
+    "mental_demand_score_0_to_10": "mental_demand",
+}
+
+PERFORMANCE_PERCENT_ALIASES = {
+    "performance_percent",
+    "performance_percentage",
+    "performance_pct",
+    "percent_performance",
+}
 
 # These raw signals are retained for later reviewed microsteps.  Their absence
 # is recorded, not repaired or interpreted during FE-01.1.
@@ -315,6 +342,16 @@ class DescriptivePlotResult(NamedTuple):
     warnings: tuple[str, ...]
 
 
+class FullExtractionResult(NamedTuple):
+    """Completed FE-01 tables, generated files, and unique run warnings."""
+
+    product_grab_table: pd.DataFrame
+    trial_feature_table: pd.DataFrame
+    qc_table: pd.DataFrame
+    output_paths: tuple[Path, ...]
+    warnings: tuple[str, ...]
+
+
 PRODUCT_GRAB_OUTPUT_COLUMNS = (
     "participant_id",
     "session_id",
@@ -356,6 +393,9 @@ TRIAL_FEATURE_COLUMNS = (
     "trial_order",
     "language",
     "performance",
+    "correct_products_collected_count",
+    "performance_percent",
+    "performance_change_from_d0_percentage_points",
     "mental_demand_score_0_to_10",
     "errors_missing",
     "errors_wrong_order",
@@ -378,6 +418,50 @@ TRIAL_FEATURE_COLUMNS = (
     "valid_reach_duration_count",
     "valid_reach_path_ratio_count",
     "processing_warnings",
+)
+
+
+QC_COLUMNS = (
+    "participant_id",
+    "session_id",
+    "source_tracker_csv_filename",
+    "participant_group",
+    "condition_name",
+    "difficulty_level",
+    "trial_order",
+    "language",
+    "tracker_path",
+    "participant_details_path",
+    "tracker_file_exists",
+    "participant_details_file_exists",
+    "tracker_loaded",
+    "tracker_row_count",
+    "finite_time_row_count",
+    "participant_hand",
+    "malformed_time_header_repaired",
+    "processing_status",
+    "real_product_grab_count",
+    "first_time_on_list_grab_count",
+    "list_visit_count",
+    "valid_search_interval_count",
+    "valid_reach_duration_count",
+    "valid_reach_path_ratio_count",
+    "missing_behavioural_measure_count",
+    "mental_demand_available",
+    "warning_count",
+    "processing_warnings",
+)
+
+
+BEHAVIOURAL_MEASURE_COLUMNS = (
+    "median_time_between_qualifying_grabs_seconds",
+    "list_recheck_count",
+    "total_list_recheck_duration_seconds",
+    "median_time_to_target_seconds",
+    "median_irrelevant_focus_duration_seconds",
+    "median_head_turning_degrees",
+    "median_reach_duration_seconds",
+    "median_reach_path_ratio",
 )
 
 
@@ -484,10 +568,11 @@ class HandMotionSeries(NamedTuple):
 
 
 class ReachDetectionConfig(NamedTuple):
-    """Provisional historical settings for reach-onset detection."""
+    """Provisional historical settings for movement-based reach onset."""
 
-    hand_speed_threshold_meters_per_second: float = 0.05
-    minimum_rest_duration_seconds: float = 0.20
+    absolute_speed_threshold_meters_per_second: float = 0.05
+    peak_speed_fraction: float = 0.05
+    minimum_movement_duration_seconds: float = 0.10
 
 
 class ReachInterval(NamedTuple):
@@ -669,6 +754,110 @@ def standardize_trial_table(data: pd.DataFrame) -> pd.DataFrame:
         output["language"] = "EN"
     output["language"] = output["language"].astype(str).str.strip().str.upper()
     return output
+
+
+def _normalise_group(value: object) -> str | None:
+    """Return a case-insensitive participant-group key."""
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip().casefold()
+    return text or None
+
+
+def _performance_key(row: Mapping[str, object]) -> tuple[str, str]:
+    """Build the same-participant/same-condition performance baseline key."""
+    return (str(row["participant_id"]), str(row["condition_name"]))
+
+
+def _derive_performance_metrics(
+    trials: pd.DataFrame,
+) -> tuple[pd.DataFrame, tuple[str, ...]]:
+    """Add explicit count, percentage, and D0-change performance columns.
+
+    The inspected ``performance_1.csv`` stores correct-product counts in its
+    ``performance`` column.  Explicit percentage-named columns take priority
+    when present so an already-percent source is never multiplied twice.
+    """
+    output = trials.copy()
+    warnings: list[str] = []
+    explicit_percent_column = next(
+        (
+            column
+            for column in output.columns
+            if str(column).strip().casefold() in PERFORMANCE_PERCENT_ALIASES
+        ),
+        None,
+    )
+    output["correct_products_collected_count"] = np.nan
+    output["performance_percent"] = np.nan
+    output["performance_change_from_d0_percentage_points"] = np.nan
+    if explicit_percent_column is not None:
+        percent_values = pd.to_numeric(
+            output[explicit_percent_column], errors="coerce"
+        )
+        invalid = output[explicit_percent_column].notna() & ~np.isfinite(
+            percent_values.to_numpy(float)
+        )
+        if bool(invalid.any()):
+            add_unique_warning(warnings, "invalid_performance_percent_values")
+        out_of_range = percent_values.notna() & ~percent_values.between(0, 100)
+        if bool(out_of_range.any()):
+            add_unique_warning(warnings, "performance_percent_out_of_range")
+        output["performance_percent"] = percent_values.where(~out_of_range)
+        if "performance" in output.columns:
+            counts = pd.to_numeric(output["performance"], errors="coerce")
+            output["correct_products_collected_count"] = counts.where(
+                counts.between(0, 20)
+            )
+    elif "performance" in output.columns:
+        counts = pd.to_numeric(output["performance"], errors="coerce")
+        finite_counts = counts.notna() & np.isfinite(counts.to_numpy(float))
+        valid_counts = finite_counts & counts.between(0, 20)
+        if bool((finite_counts & ~valid_counts).any()):
+            add_unique_warning(warnings, "performance_units_unresolved")
+        output["correct_products_collected_count"] = counts.where(valid_counts)
+        output["performance_percent"] = (counts * 5).where(valid_counts)
+        add_unique_warning(warnings, "performance_interpreted_as_correct_product_count")
+    else:
+        add_unique_warning(warnings, "performance_source_unavailable")
+
+    baseline_values: dict[tuple[str, str], list[float]] = {}
+    for row in output.to_dict(orient="records"):
+        if row.get("difficulty_level") == 0:
+            value = _finite_numeric_or_none(row.get("performance_percent"))
+            if value is not None:
+                baseline_values.setdefault(_performance_key(row), []).append(value)
+    baselines: dict[tuple[str, str], float] = {}
+    for key, values in baseline_values.items():
+        if len(values) > 1:
+            add_unique_warning(
+                warnings, f"duplicate_performance_d0_baseline:{key[0]}:{key[1]}"
+            )
+        baselines[key] = float(np.median(values))
+
+    unavailable_keys: set[tuple[str, str]] = set()
+    for index, row in output.iterrows():
+        difficulty = row.get("difficulty_level")
+        if difficulty == 0:
+            continue
+        if difficulty not in (2, 6, 10):
+            add_unique_warning(warnings, f"unsupported_performance_difficulty:{difficulty}")
+            continue
+        key = _performance_key(row)
+        baseline = baselines.get(key)
+        current = _finite_numeric_or_none(row.get("performance_percent"))
+        if baseline is None or current is None:
+            unavailable_keys.add(key)
+            continue
+        output.at[index, "performance_change_from_d0_percentage_points"] = (
+            baseline - current
+        )
+    for participant, condition in sorted(unavailable_keys):
+        add_unique_warning(
+            warnings,
+            f"performance_baseline_or_value_unavailable:{participant}:{condition}",
+        )
+    return output, tuple(warnings)
 
 
 def derive_error_outcomes(performance: pd.DataFrame) -> ErrorOutcomeResult:
@@ -875,14 +1064,24 @@ def load_tracker_table(path: Path) -> TrackerLoadResult:
     trial and explain which measurements are unavailable.
     """
     table = read_table(Path(path))
+    warnings: list[str] = []
     if "time" not in table.columns:
-        raise ValueError("Tracker table is missing required column: time")
+        repaired_columns = [
+            column
+            for column in table.columns
+            if re.fullmatch(r"\d+time", str(column), flags=re.IGNORECASE)
+        ]
+        if len(repaired_columns) == 1:
+            original_column = repaired_columns[0]
+            table = table.rename(columns={original_column: "time"})
+            warnings.append(f"repaired_time_header:{original_column}")
+        else:
+            raise ValueError("Tracker table is missing required column: time")
     table = table.copy()
     table["time"] = pd.to_numeric(table["time"], errors="coerce")
     if table["time"].notna().sum() == 0:
         raise ValueError("Tracker table has no usable recorded time values")
 
-    warnings: list[str] = []
     for column in SUPPORTING_TRACKER_COLUMNS:
         if column not in table:
             table[column] = np.nan
@@ -946,16 +1145,47 @@ def detect_reach_intervals(
     tracker: pd.DataFrame,
     grab_events: Sequence[ProductGrabEvent],
     config: ReachDetectionConfig | None = None,
+    *,
+    search_intervals: Sequence[SearchInterval] = (),
 ) -> ReachDetectionResult:
-    """Detect the final sustained low-speed rest before each qualifying grab."""
+    """Detect the final sustained movement block before each qualifying grab.
+
+    Reach onset is the beginning of the final above-threshold movement block
+    in the accepted search-start-to-grab interval.  The absolute threshold,
+    peak-speed fraction, and sustained duration are provisional historical
+    settings and are not validated here.
+    """
     config = config or ReachDetectionConfig()
-    if config.hand_speed_threshold_meters_per_second < 0:
-        raise ValueError("hand_speed_threshold_meters_per_second cannot be negative")
-    if config.minimum_rest_duration_seconds < 0:
-        raise ValueError("minimum_rest_duration_seconds cannot be negative")
+    if config.absolute_speed_threshold_meters_per_second < 0:
+        raise ValueError("absolute_speed_threshold_meters_per_second cannot be negative")
+    if not 0 <= config.peak_speed_fraction <= 1:
+        raise ValueError("peak_speed_fraction must be between 0 and 1")
+    if config.minimum_movement_duration_seconds < 0:
+        raise ValueError("minimum_movement_duration_seconds cannot be negative")
 
     warnings: list[str] = []
     intervals: list[ReachInterval] = []
+    search_by_key: dict[tuple[str, float], SearchInterval] = {}
+    for search in search_intervals or ():
+        try:
+            key = (
+                clean_product_name(search.canonical_product_name),
+                float(search.qualifying_grab_start_seconds),
+            )
+        except (TypeError, ValueError):
+            add_unique_warning(warnings, "reach_search_interval_key_unavailable")
+            continue
+        if not np.isfinite(key[1]):
+            add_unique_warning(warnings, "reach_search_interval_key_unavailable")
+            continue
+        if key in search_by_key:
+            add_unique_warning(
+                warnings,
+                f"duplicate_reach_search_interval:{key[0]}:{key[1]}",
+            )
+        else:
+            search_by_key[key] = search
+
     qualifying_grabs = sorted(
         (
             event
@@ -967,59 +1197,119 @@ def detect_reach_intervals(
     motion_by_hand: dict[str, HandMotionSeries] = {}
     for event in qualifying_grabs:
         hand = actual_grab_hand(event)
+        try:
+            grab_start = float(event.grab_start_seconds)
+        except (TypeError, ValueError):
+            grab_start = float("nan")
+        search = search_by_key.get(
+            (clean_product_name(event.canonical_product_name), grab_start)
+        )
+        if search is None or not search.is_valid:
+            add_unique_warning(warnings, f"reach_search_interval_unavailable:{hand}")
+            intervals.append(
+                ReachInterval(
+                    canonical_product_name=event.canonical_product_name,
+                    hand=hand,
+                    reach_start_seconds=None,
+                    grab_start_seconds=grab_start,
+                    is_valid=False,
+                )
+            )
+            continue
+        try:
+            search_start = float(search.search_start_seconds)
+        except (TypeError, ValueError):
+            search_start = float("nan")
+        if (
+            not np.isfinite(search_start)
+            or not np.isfinite(grab_start)
+            or search_start > grab_start
+        ):
+            add_unique_warning(warnings, f"reach_interval_boundaries_invalid:{hand}")
+            intervals.append(
+                ReachInterval(
+                    canonical_product_name=event.canonical_product_name,
+                    hand=hand,
+                    reach_start_seconds=None,
+                    grab_start_seconds=grab_start,
+                    is_valid=False,
+                )
+            )
+            continue
+
         if hand not in motion_by_hand:
             motion_by_hand[hand] = prepare_hand_motion(tracker, hand)
             for warning in motion_by_hand[hand].warnings:
                 add_unique_warning(warnings, warning)
         motion = motion_by_hand[hand]
-        pre_grab = [
+        candidate_samples = [
             sample
             for sample in motion.samples
             if sample.timestamp_seconds is not None
-            and sample.timestamp_seconds <= event.grab_start_seconds
+            and search_start <= sample.timestamp_seconds <= grab_start
         ]
-        rest_blocks: list[tuple[list[HandPositionSample], float]] = []
-        active_block: list[HandPositionSample] = []
-        active_start: float | None = None
-        previous_valid_timestamp: float | None = None
-        for sample in pre_grab:
-            if not sample.is_valid or sample.timestamp_seconds is None:
-                if active_block and active_start is not None:
-                    rest_blocks.append((active_block, active_start))
-                active_block = []
-                active_start = None
-                previous_valid_timestamp = None
-                continue
-            is_rest = (
-                sample.step_speed_meters_per_second is not None
-                and sample.step_speed_meters_per_second
-                <= config.hand_speed_threshold_meters_per_second
+        finite_speeds = [
+            float(sample.step_speed_meters_per_second)
+            for sample in candidate_samples
+            if sample.is_valid
+            and sample.step_speed_meters_per_second is not None
+            and np.isfinite(sample.step_speed_meters_per_second)
+        ]
+        if not finite_speeds:
+            add_unique_warning(warnings, f"reach_onset_not_found:{hand}")
+            intervals.append(
+                ReachInterval(
+                    canonical_product_name=event.canonical_product_name,
+                    hand=hand,
+                    reach_start_seconds=None,
+                    grab_start_seconds=grab_start,
+                    is_valid=False,
+                )
             )
-            if (
-                sample.step_speed_meters_per_second is None
-                and not active_block
-            ):
-                is_rest = True
-            if is_rest:
-                if not active_block:
-                    active_start = (
-                        previous_valid_timestamp
-                        if previous_valid_timestamp is not None
-                        else sample.timestamp_seconds
-                    )
+            continue
+
+        peak_speed = max(finite_speeds)
+        threshold = max(
+            config.absolute_speed_threshold_meters_per_second,
+            config.peak_speed_fraction * peak_speed,
+        )
+        movement_blocks: list[list[HandPositionSample]] = []
+        active_block: list[HandPositionSample] = []
+        previous_timestamp: float | None = None
+
+        def close_block() -> None:
+            nonlocal active_block
+            if active_block:
+                movement_blocks.append(active_block)
+            active_block = []
+
+        for sample in candidate_samples:
+            timestamp = sample.timestamp_seconds
+            speed = sample.step_speed_meters_per_second
+            if timestamp is None or not sample.is_valid or speed is None:
+                close_block()
+                previous_timestamp = None
+                continue
+            if not np.isfinite(timestamp) or not np.isfinite(speed):
+                close_block()
+                previous_timestamp = None
+                continue
+            if previous_timestamp is not None and timestamp <= previous_timestamp:
+                add_unique_warning(warnings, f"non_monotonic_reach_time:{hand}")
+                close_block()
+            if float(speed) >= threshold:
                 active_block.append(sample)
-            elif active_block:
-                rest_blocks.append((active_block, active_start))
-                active_block = []
-                active_start = None
-            previous_valid_timestamp = sample.timestamp_seconds
-        if active_block and active_start is not None:
-            rest_blocks.append((active_block, active_start))
-        qualifying_blocks = []
-        for block, rest_start in rest_blocks:
-            rest_duration = block[-1].timestamp_seconds - rest_start
-            if rest_duration >= config.minimum_rest_duration_seconds:
-                qualifying_blocks.append(block)
+            else:
+                close_block()
+            previous_timestamp = float(timestamp)
+        close_block()
+
+        qualifying_blocks = [
+            block
+            for block in movement_blocks
+            if block[-1].timestamp_seconds - block[0].timestamp_seconds
+            + 1e-12 >= config.minimum_movement_duration_seconds
+        ]
         if not qualifying_blocks:
             add_unique_warning(warnings, f"reach_onset_not_found:{hand}")
             intervals.append(
@@ -1027,18 +1317,19 @@ def detect_reach_intervals(
                     canonical_product_name=event.canonical_product_name,
                     hand=hand,
                     reach_start_seconds=None,
-                    grab_start_seconds=event.grab_start_seconds,
+                    grab_start_seconds=grab_start,
                     is_valid=False,
                 )
             )
             continue
-        reach_start = float(qualifying_blocks[-1][-1].timestamp_seconds)
+
+        reach_start = float(qualifying_blocks[-1][0].timestamp_seconds)
         intervals.append(
             ReachInterval(
                 canonical_product_name=event.canonical_product_name,
                 hand=hand,
                 reach_start_seconds=reach_start,
-                grab_start_seconds=event.grab_start_seconds,
+                grab_start_seconds=grab_start,
                 is_valid=True,
             )
         )
@@ -1414,13 +1705,22 @@ def _focus_name_key(value: object) -> str:
     return clean_product_name(value).casefold()
 
 
-def _is_excluded_focus(episode: FocusEpisode, target_names: set[str]) -> bool:
+def _is_excluded_focus(
+    episode: FocusEpisode,
+    target_names: set[str],
+    catalog: ProductCatalog | None = None,
+) -> bool:
     name = _focus_name_key(episode.canonical_focus_name)
     tag = _focus_name_key(episode.cleaned_focus_tag)
     if not name and not tag:
         return True
     if name in target_names:
         return True
+    if catalog is not None:
+        if catalog.canonicalize(name) in catalog.all_canonical_products:
+            return True
+        if catalog.canonicalize(tag) in catalog.all_canonical_products:
+            return True
     excluded = {
         _focus_name_key(value) for value in PLACEHOLDER_OBJECT_NAMES | NON_PRODUCT_OBJECT_NAMES
     }
@@ -1473,6 +1773,7 @@ def aggregate_trial_locating_features(
     search_intervals: Sequence[SearchInterval],
     focus_episodes: Sequence[FocusEpisode],
     tracker: pd.DataFrame,
+    catalog: ProductCatalog | None = None,
 ) -> LocatingFeatureAggregation:
     """Aggregate locating, irrelevant-focus and headset-turning measurements."""
     warnings: list[str] = []
@@ -1515,7 +1816,7 @@ def aggregate_trial_locating_features(
             if overlap_end < overlap_start:
                 continue
             if not _is_explicitly_irrelevant_focus(episode):
-                if _is_excluded_focus(episode, target_names):
+                if _is_excluded_focus(episode, target_names, catalog):
                     continue
                 label = _focus_name_key(episode.canonical_focus_name) or _focus_name_key(
                     episode.cleaned_focus_tag
@@ -2074,6 +2375,8 @@ def _prepare_descriptive_plot_frame(
         "error_change_from_d0",
         *(spec[1] for spec in DESCRIPTIVE_PLOT_SPECS if not spec[1].startswith("__")),
     }
+    if "performance_percent" in frame.columns:
+        metric_columns.add("performance_percent")
     for column in sorted(metric_columns):
         frame[f"__plot_{column}"] = _plot_numeric_column(frame, column, warnings)
     return frame
@@ -2083,8 +2386,19 @@ def _relative_performance_values(
     frame: pd.DataFrame,
     warnings: list[str],
 ) -> pd.Series:
-    """Compute D0-minus-current performance changes for higher difficulties."""
-    performance = frame["__plot_performance"]
+    """Compute same-participant/same-condition D0-minus-current changes.
+
+    Full extraction uses ``performance_percent``.  The legacy ``performance``
+    fallback keeps earlier synthetic FE-01.14 tables readable without changing
+    their values.
+    """
+    if "__plot_performance_percent" in frame.columns:
+        performance = frame["__plot_performance_percent"]
+        if performance.notna().sum() == 0:
+            performance = frame["__plot_performance"]
+    else:
+        performance = frame["__plot_performance"]
+
     baselines: dict[tuple[str, str], list[float]] = {}
     for index in frame.index:
         participant = frame.at[index, "__plot_participant"]
@@ -2093,7 +2407,7 @@ def _relative_performance_values(
         value = performance.at[index]
         if participant is None or condition is None or difficulty != 0:
             continue
-        if value is not None and pd.notna(value) and np.isfinite(float(value)):
+        if pd.notna(value) and np.isfinite(float(value)):
             baselines.setdefault((participant, condition), []).append(float(value))
 
     baseline_medians: dict[tuple[str, str], float] = {}
@@ -2116,13 +2430,13 @@ def _relative_performance_values(
         key = (participant, condition)
         baseline = baseline_medians.get(key)
         value = performance.at[index]
-        if baseline is None:
+        if baseline is None or pd.isna(value) or not np.isfinite(float(value)):
             unavailable_keys.add(key)
-        elif value is not None and pd.notna(value) and np.isfinite(float(value)):
-            changes.at[index] = baseline - float(value)
+            continue
+        changes.at[index] = baseline - float(value)
+
     for participant, condition in sorted(
-        unavailable_keys,
-        key=lambda item: (str(item[0]), str(item[1])),
+        unavailable_keys, key=lambda item: (str(item[0]), str(item[1]))
     ):
         participant_label = participant if participant is not None else "missing participant_id"
         condition_label = condition if condition is not None else "missing condition_name"
@@ -2437,6 +2751,516 @@ def detect_search_intervals(
     )
 
 
+def _finite_numeric_or_none(value: object) -> float | None:
+    """Return a finite numeric value or ``None`` without fabricating data."""
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if np.isfinite(numeric) else None
+
+
+def _read_mental_demand_values(
+    path: Path,
+) -> tuple[dict[tuple[str, str | None, str, str, int | float], list[float]], tuple[str, ...], bool]:
+    """Read and normalize the optional per-trial mental-demand workbook."""
+    warnings: list[str] = []
+    path = Path(path)
+    if not path.is_file():
+        return {}, ("mental_demand_source_unavailable",), False
+    try:
+        source = pd.read_excel(path)
+    except (OSError, ValueError, ImportError) as error:
+        return {}, (f"mental_demand_read_error:{type(error).__name__}",), False
+
+    rename = {
+        column: MENTAL_DEMAND_COLUMN_ALIASES[str(column).strip().casefold()]
+        for column in source.columns
+        if str(column).strip().casefold() in MENTAL_DEMAND_COLUMN_ALIASES
+    }
+    table = source.rename(columns=rename).copy()
+    required = {"participant", "condition", "trial_order", "difficulty", "mental_demand"}
+    missing = sorted(required - set(table.columns))
+    if missing:
+        add_unique_warning(
+            warnings, "mental_demand_columns_missing:" + ",".join(missing)
+        )
+        return {}, tuple(warnings), False
+
+    has_group = "group" in table.columns
+    values: dict[tuple[str, str | None, str, str, int | float], list[float]] = {}
+    for row_number, row in table.iterrows():
+        try:
+            participant = normalize_participant(row["participant"])
+            condition = normalize_condition(row["condition"])
+            trial_order = normalize_trial_order(row["trial_order"])
+            difficulty = normalize_difficulty(row["difficulty"])
+        except (TypeError, ValueError):
+            add_unique_warning(warnings, f"mental_demand_invalid_identifier_row:{row_number + 2}")
+            continue
+        group = _normalise_group(row["group"]) if has_group else None
+        score = _finite_numeric_or_none(row["mental_demand"])
+        if score is None:
+            add_unique_warning(warnings, f"mental_demand_invalid_value_row:{row_number + 2}")
+            continue
+        if score < 0 or score > 10:
+            add_unique_warning(warnings, f"mental_demand_out_of_range_row:{row_number + 2}")
+            continue
+        key = (participant, group, condition, trial_order, difficulty)
+        values.setdefault(key, []).append(score)
+    return values, tuple(warnings), True
+
+
+def _mental_demand_for_trial(
+    row: Mapping[str, object],
+    values: Mapping[tuple[str, str | None, str, str, int | float], Sequence[float]],
+    source_available: bool,
+) -> tuple[float | None, tuple[str, ...]]:
+    """Return one exact mental-demand match and trial-scoped warnings."""
+    if not source_available:
+        return None, ("mental_demand_source_unavailable",)
+    key = (
+        str(row["participant_id"]),
+        _normalise_group(row.get("participant_group")),
+        str(row["condition_name"]),
+        str(row["trial_order"]),
+        row["difficulty_level"],
+    )
+    matched = list(values.get(key, ()))
+    if not matched:
+        return None, (
+            "mental_demand_match_missing:"
+            f"{key[0]}:{key[2]}:{key[3]}:D{key[4]}",
+        )
+    if len(matched) > 1:
+        return float(np.median(matched)), (
+            "duplicate_mental_demand_match:"
+            f"{key[0]}:{key[2]}:{key[3]}:D{key[4]}",
+        )
+    return float(matched[0]), ()
+
+
+def _error_outcome_key(record: ErrorOutcomeRecord) -> tuple[object, ...]:
+    """Build the trial identity used to attach normalized error outcomes."""
+    return (
+        record.participant_id,
+        record.session_id,
+        record.condition_name,
+        record.difficulty_level,
+        record.trial_order,
+    )
+
+
+def _concat_fixed_tables(
+    tables: Sequence[pd.DataFrame],
+    columns: Sequence[str],
+) -> pd.DataFrame:
+    """Concatenate per-trial tables while preserving an explicit schema."""
+    if not tables:
+        return pd.DataFrame(columns=list(columns))
+    return pd.concat(tables, ignore_index=True).reindex(columns=list(columns))
+
+
+def _write_feature_extraction_manifest(
+    path: Path,
+    performance_path: Path,
+    raw_root: Path,
+    correct_lists_path: Path,
+    output_names: Sequence[str],
+    trial_table: pd.DataFrame,
+    product_table: pd.DataFrame,
+    qc_table: pd.DataFrame,
+    warnings: Sequence[str],
+    mental_demand_path: Path | None = None,
+    mental_demand_available_count: int = 0,
+    performance_units: str = "unknown",
+) -> None:
+    """Write stable provenance for one full extraction run."""
+    extractor_bytes = Path(__file__).read_bytes()
+    manifest = {
+        "schema_version": "feature_extraction_v2",
+        "extractor": {
+            "file": Path(__file__).name,
+            "sha256": hashlib.sha256(extractor_bytes).hexdigest(),
+        },
+        "inputs": {
+            "performance": str(Path(performance_path)),
+            "raw_root": str(Path(raw_root)),
+            "correct_lists": str(Path(correct_lists_path)),
+            "mental_demand": str(Path(mental_demand_path))
+            if mental_demand_path is not None
+            else None,
+        },
+        "settings": {
+            "grab_minimum_duration_seconds": GrabDetectionConfig().minimum_duration_seconds,
+            "grab_merge_gap_seconds": GrabDetectionConfig().merge_gap_seconds,
+            "reach_absolute_speed_threshold_meters_per_second": ReachDetectionConfig().absolute_speed_threshold_meters_per_second,
+            "reach_peak_speed_fraction": ReachDetectionConfig().peak_speed_fraction,
+            "reach_minimum_movement_duration_seconds": ReachDetectionConfig().minimum_movement_duration_seconds,
+            "minimum_straight_distance_meters": 0.02,
+            "performance_units": performance_units,
+        },
+        "outputs": list(output_names),
+        "counts": {
+            "trial_rows": int(len(trial_table)),
+            "product_grab_rows": int(len(product_table)),
+            "qc_rows": int(len(qc_table)),
+            "failed_trials": int((qc_table["processing_status"] == "failed").sum())
+            if "processing_status" in qc_table
+            else 0,
+            "repaired_time_headers": int(
+                qc_table["malformed_time_header_repaired"].fillna(False).astype(bool).sum()
+            )
+            if "malformed_time_header_repaired" in qc_table
+            else 0,
+        },
+        "mental_demand_available_count": int(mental_demand_available_count),
+        "warnings": list(warnings),
+    }
+    Path(path).write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
+def run_full_extraction(
+    performance_path: Path,
+    raw_root: Path,
+    correct_lists_path: Path,
+    output_dir: Path,
+    limit: int | None = None,
+    mental_demand_path: Path | None = None,
+) -> FullExtractionResult:
+    """Run FE-01.1--FE-01.14 for every normalized trial and write outputs.
+
+    Each trial is isolated: a missing or unusable tracker produces a failed
+    QC row and an otherwise complete trial row with unavailable behavioural
+    measurements.  Raw input files are read only; the one known ``digits+time``
+    header typo is repaired in the in-memory tracker table by
+    :func:`load_tracker_table`.
+    """
+    if limit is not None and limit < 1:
+        raise ValueError("--limit must be at least 1")
+
+    performance_path = Path(performance_path)
+    raw_root = Path(raw_root)
+    correct_lists_path = Path(correct_lists_path)
+    output_dir = Path(output_dir)
+
+    trials = standardize_trial_table(read_table(performance_path))
+    source_has_explicit_percentage = any(
+        str(column).strip().casefold() in PERFORMANCE_PERCENT_ALIASES
+        for column in trials.columns
+    )
+    if limit is not None:
+        trials = trials.head(limit).copy()
+    catalog = parse_correct_lists(correct_lists_path)
+    trials, performance_warnings = _derive_performance_metrics(trials)
+    error_result = derive_error_outcomes(trials)
+
+    resolved_mental_demand_path = (
+        Path(mental_demand_path)
+        if mental_demand_path is not None
+        else correct_lists_path.parent / "mental_demand.xlsx"
+    )
+    mental_demand_values, mental_demand_warnings, mental_demand_source_available = (
+        _read_mental_demand_values(resolved_mental_demand_path)
+    )
+
+    run_warnings: list[str] = []
+    for warning in performance_warnings:
+        add_unique_warning(run_warnings, warning)
+    for warning in error_result.warnings:
+        add_unique_warning(run_warnings, warning)
+    for warning in mental_demand_warnings:
+        add_unique_warning(run_warnings, warning)
+
+    error_by_key: dict[tuple[object, ...], ErrorOutcomeRecord] = {}
+    for record in error_result.records:
+        key = _error_outcome_key(record)
+        if key in error_by_key:
+            add_unique_warning(run_warnings, f"duplicate_error_outcome:{key}")
+        else:
+            error_by_key[key] = record
+
+    product_tables: list[pd.DataFrame] = []
+    trial_tables: list[pd.DataFrame] = []
+    qc_rows: list[dict[str, object]] = []
+
+    for source_row in trials.to_dict(orient="records"):
+        metadata = dict(source_row)
+        trial_warnings: list[str] = []
+        mental_demand_value, mental_demand_trial_warnings = _mental_demand_for_trial(
+            source_row,
+            mental_demand_values,
+            mental_demand_source_available,
+        )
+        metadata["mental_demand_score_0_to_10"] = mental_demand_value
+        for warning in mental_demand_trial_warnings:
+            add_unique_warning(trial_warnings, warning)
+        paths = build_trial_paths(source_row, raw_root)
+        tracker_exists = paths.tracker.is_file()
+        details_exists = paths.participant_details.is_file()
+        participant_hand, hand_warnings = read_participant_hand(paths.participant_details)
+        for warning in hand_warnings:
+            add_unique_warning(trial_warnings, warning)
+
+        tracker_loaded = False
+        tracker_row_count: int | None = None
+        finite_time_row_count: int | None = None
+        repaired_time_header = False
+        tracker: pd.DataFrame | None = None
+        grab_events: tuple[ProductGrabEvent, ...] = ()
+        search_intervals: tuple[SearchInterval, ...] = ()
+        reach_intervals: tuple[ReachInterval, ...] = ()
+        list_visits: tuple[ListVisit, ...] = ()
+        pace: PaceAndListRecheckAggregation | None = None
+        locating: LocatingFeatureAggregation | None = None
+        reach_features: ReachFeatureAggregation | None = None
+        product_result: ProductGrabOutputResult | None = None
+        validity_counts: dict[str, object] | None = None
+
+        if not tracker_exists:
+            add_unique_warning(trial_warnings, "tracker_file_missing")
+        else:
+            try:
+                tracker_result = load_tracker_table(paths.tracker)
+                tracker = tracker_result.table
+                tracker_loaded = True
+                tracker_row_count = int(len(tracker))
+                finite_time_row_count = int(
+                    pd.to_numeric(tracker["time"], errors="coerce").notna().sum()
+                )
+                for warning in tracker_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+                    if warning.startswith("repaired_time_header:"):
+                        repaired_time_header = True
+
+                grab_result = detect_product_grab_events(
+                    tracker,
+                    catalog,
+                    source_row["difficulty_level"],
+                    source_row["language"],
+                )
+                grab_events = grab_result.events
+                for warning in grab_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+
+                focus_result = detect_focus_episodes(tracker, catalog)
+                for warning in focus_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+                list_visits = detect_list_visits(focus_result.episodes)
+
+                search_result = detect_search_intervals(
+                    tracker,
+                    grab_events,
+                    list_visits,
+                    focus_result.episodes,
+                )
+                search_intervals = search_result.intervals
+                for warning in search_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+
+                reach_result = detect_reach_intervals(
+                    tracker,
+                    grab_events,
+                    search_intervals=search_intervals,
+                )
+                reach_intervals = reach_result.intervals
+                for warning in reach_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+
+                pace = aggregate_trial_pace_and_list_rechecks(grab_events, list_visits)
+                locating = aggregate_trial_locating_features(
+                    search_intervals,
+                    focus_result.episodes,
+                    tracker,
+                    catalog,
+                )
+                for warning in locating.warnings:
+                    add_unique_warning(trial_warnings, warning)
+                reach_features = aggregate_trial_reach_features(reach_intervals, tracker)
+                for warning in reach_features.warnings:
+                    add_unique_warning(trial_warnings, warning)
+
+                product_result = build_product_grab_features(
+                    metadata,
+                    grab_events,
+                    search_intervals,
+                    reach_intervals,
+                    tracker,
+                )
+                for warning in product_result.warnings:
+                    add_unique_warning(trial_warnings, warning)
+                if not product_result.table.empty:
+                    for warning_cell in product_result.table["processing_warnings"].fillna(""):
+                        for warning in str(warning_cell).split(";"):
+                            if warning:
+                                add_unique_warning(trial_warnings, warning)
+                product_tables.append(product_result.table)
+
+                validity_counts = {
+                    "real_product_grab_count": len(grab_events),
+                    "first_time_on_list_grab_count": sum(
+                        event.is_on_list and event.is_first_time_on_list
+                        for event in grab_events
+                    ),
+                    "list_visit_count": len(list_visits),
+                    "valid_search_interval_count": sum(
+                        interval.is_valid for interval in search_intervals
+                    ),
+                    "valid_reach_duration_count": int(
+                        product_result.table["reach_duration_seconds"].notna().sum()
+                    ),
+                    "valid_reach_path_ratio_count": int(
+                        product_result.table["reach_path_ratio"].notna().sum()
+                    ),
+                }
+            except (OSError, ValueError, pd.errors.ParserError) as error:
+                add_unique_warning(
+                    trial_warnings,
+                    f"tracker_processing_failed:{type(error).__name__}:{error}",
+                )
+
+        error_key = (
+            str(source_row["participant_id"]),
+            str(source_row["session_id"]),
+            str(source_row["condition_name"]),
+            source_row["difficulty_level"],
+            str(source_row["trial_order"]),
+        )
+        error_record = error_by_key.get(error_key)
+        if error_record is None:
+            add_unique_warning(trial_warnings, "error_outcome_unmatched")
+
+        trial_result = build_trial_features(
+            metadata,
+            pace,
+            locating,
+            reach_features,
+            error_record,
+            validity_counts,
+        )
+        trial_table = trial_result.table.copy()
+        for warning in trial_result.warnings:
+            add_unique_warning(trial_warnings, warning)
+        trial_table.loc[0, "processing_warnings"] = ";".join(trial_warnings)
+        trial_tables.append(trial_table)
+
+        missing_measure_count: int | None
+        if tracker_loaded:
+            missing_measure_count = int(
+                sum(pd.isna(trial_table.loc[0, column]) for column in BEHAVIOURAL_MEASURE_COLUMNS)
+            )
+        else:
+            missing_measure_count = None
+        status = "failed" if not tracker_loaded else ("warning" if trial_warnings else "ok")
+        qc_rows.append(
+            {
+                **{key: source_row.get(key) for key in REQUIRED_MASTER_COLUMNS + ("language",)},
+                "tracker_path": str(paths.tracker),
+                "participant_details_path": str(paths.participant_details),
+                "tracker_file_exists": tracker_exists,
+                "participant_details_file_exists": details_exists,
+                "tracker_loaded": tracker_loaded,
+                "tracker_row_count": tracker_row_count,
+                "finite_time_row_count": finite_time_row_count,
+                "participant_hand": participant_hand,
+                "malformed_time_header_repaired": repaired_time_header,
+                "processing_status": status,
+                "real_product_grab_count": (
+                    validity_counts.get("real_product_grab_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "first_time_on_list_grab_count": (
+                    validity_counts.get("first_time_on_list_grab_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "list_visit_count": (
+                    validity_counts.get("list_visit_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "valid_search_interval_count": (
+                    validity_counts.get("valid_search_interval_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "valid_reach_duration_count": (
+                    validity_counts.get("valid_reach_duration_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "valid_reach_path_ratio_count": (
+                    validity_counts.get("valid_reach_path_ratio_count")
+                    if validity_counts is not None
+                    else None
+                ),
+                "missing_behavioural_measure_count": missing_measure_count,
+                "mental_demand_available": mental_demand_value is not None,
+                "warning_count": len(trial_warnings),
+                "processing_warnings": ";".join(trial_warnings),
+            }
+        )
+        for warning in trial_warnings:
+            add_unique_warning(run_warnings, warning)
+
+    product_table = _concat_fixed_tables(product_tables, PRODUCT_GRAB_OUTPUT_COLUMNS)
+    trial_table = _concat_fixed_tables(trial_tables, TRIAL_FEATURE_COLUMNS)
+    qc_table = _concat_fixed_tables([pd.DataFrame(qc_rows)], QC_COLUMNS)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    product_path = output_dir / "product_grab_features_v2.csv"
+    trial_path = output_dir / "trial_features_v2.csv"
+    qc_path = output_dir / "feature_extraction_qc.csv"
+    manifest_path = output_dir / "feature_extraction_manifest.json"
+    write_product_grab_features(product_table, product_path)
+    write_trial_features(trial_table, trial_path)
+    qc_table.to_csv(qc_path, index=False, encoding="utf-8", na_rep="")
+
+    plot_result = write_descriptive_feature_plots(trial_table, output_dir)
+    for warning in plot_result.warnings:
+        add_unique_warning(run_warnings, warning)
+
+    output_names = [
+        product_path.name,
+        trial_path.name,
+        qc_path.name,
+        manifest_path.name,
+        *(path.relative_to(output_dir).as_posix() for path in plot_result.paths),
+    ]
+    _write_feature_extraction_manifest(
+        manifest_path,
+        performance_path,
+        raw_root,
+        correct_lists_path,
+        output_names,
+        trial_table,
+        product_table,
+        qc_table,
+        run_warnings,
+        mental_demand_path=resolved_mental_demand_path,
+        mental_demand_available_count=int(
+            trial_table["mental_demand_score_0_to_10"].notna().sum()
+        ),
+        performance_units=(
+            "explicit_percentage"
+            if source_has_explicit_percentage
+            else "correct_product_count"
+        ),
+    )
+    output_paths = (product_path, trial_path, qc_path, manifest_path, *plot_result.paths)
+    return FullExtractionResult(
+        product_grab_table=product_table,
+        trial_feature_table=trial_table,
+        qc_table=qc_table,
+        output_paths=tuple(output_paths),
+        warnings=tuple(run_warnings),
+    )
+
+
 def build_argument_parser() -> argparse.ArgumentParser:
     """Create the read-only FE-01.1 command-line interface."""
     parser = argparse.ArgumentParser(
@@ -2445,7 +3269,24 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--performance", type=Path, required=True)
     parser.add_argument("--raw-root", type=Path, required=True)
     parser.add_argument("--correct-lists", type=Path, required=True)
+    parser.add_argument(
+        "--mental-demand",
+        type=Path,
+        default=None,
+        help="Optional mental-demand workbook; defaults beside CorrectLists.txt.",
+    )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--run-full-extraction",
+        action="store_true",
+        help="Run FE-01.1--FE-01.14 and write the agreed output files.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("outputs") / "feature_extraction_v2",
+        help="Output directory used with --run-full-extraction.",
+    )
     return parser
 
 
@@ -2454,6 +3295,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_argument_parser().parse_args(argv)
     if arguments.limit is not None and arguments.limit < 1:
         raise ValueError("--limit must be at least 1")
+
+    if arguments.run_full_extraction:
+        result = run_full_extraction(
+            arguments.performance,
+            arguments.raw_root,
+            arguments.correct_lists,
+            arguments.output_dir,
+            limit=arguments.limit,
+            mental_demand_path=arguments.mental_demand,
+        )
+        print(f"Loaded trial rows: {len(result.trial_feature_table)}")
+        print(f"Product-grab rows: {len(result.product_grab_table)}")
+        print(f"QC rows: {len(result.qc_table)}")
+        print(f"Output files written: {len(result.output_paths)}")
+        print(f"Run warnings: {len(result.warnings)}")
+        return 0
 
     trials = standardize_trial_table(read_table(arguments.performance))
     if arguments.limit is not None:

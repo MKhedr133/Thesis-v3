@@ -1393,6 +1393,24 @@ class LocatingFeatureTests(unittest.TestCase):
 
         self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 0.0)
 
+    def test_catalog_products_are_excluded_from_irrelevant_time(self):
+        extractor = self.require_api()
+        catalog = extractor.ProductCatalog(
+            {
+                (0, "EN"): ("Red Apple", "Green Plant"),
+                (0, "NL"): ("Rode Appel", "Groene Plant"),
+            }
+        )
+        summary = extractor.aggregate_trial_locating_features(
+            [self.interval(0.0, 5.0)],
+            [self.focus(1.0, 3.0, name="green plant", tag="plant")],
+            self.tracker([0.0, 1.0]),
+            catalog,
+        )
+
+        self.assertAlmostEqual(summary.median_irrelevant_focus_duration_seconds, 0.0)
+        self.assertFalse(any("unclassifiable_focus:green plant" in w for w in summary.warnings))
+
     def test_npc_is_explicitly_irrelevant(self):
         summary = self.aggregate(
             [self.interval(0.0, 5.0)],
@@ -1649,7 +1667,7 @@ class HandMotionTests(unittest.TestCase):
 
 
 class ReachOnsetTests(unittest.TestCase):
-    """Check FE-01.9 final sustained pre-grab movement blocks."""
+    """Check FE-01.9 final sustained above-threshold movement blocks."""
 
     def require_api(self):
         self.assertIsNotNone(EXTRACTOR)
@@ -1674,82 +1692,122 @@ class ReachOnsetTests(unittest.TestCase):
         )
 
     @staticmethod
-    def tracker(times, positions):
+    def tracker(times, positions, *, hand="right"):
         return pd.DataFrame(
             {
                 "time": times,
-                "right_pos_x": [position[0] for position in positions],
-                "right_pos_y": [position[1] for position in positions],
-                "right_pos_z": [position[2] for position in positions],
+                f"{hand}_pos_x": [position[0] for position in positions],
+                f"{hand}_pos_y": [position[1] for position in positions],
+                f"{hand}_pos_z": [position[2] for position in positions],
             }
         )
 
-    def detect(self, tracker, grabs, config=None):
-        extractor = self.require_api()
-        return extractor.detect_reach_intervals(tracker, grabs, config)
+    @staticmethod
+    def search(product="red apple", grab_start=1.0, search_start=0.0, valid=True):
+        return EXTRACTOR.SearchInterval(
+            canonical_product_name=product,
+            qualifying_grab_start_seconds=grab_start,
+            search_start_seconds=search_start,
+            first_target_focus_seconds=search_start,
+            is_valid=valid,
+        )
 
-    def test_final_sustained_rest_selects_following_reach_onset(self):
+    def detect(self, tracker, grabs, searches=(), config=None):
+        extractor = self.require_api()
+        return extractor.detect_reach_intervals(
+            tracker, grabs, config, search_intervals=searches
+        )
+
+    def test_straight_movement_selects_movement_start(self):
         result = self.detect(
             self.tracker(
-                [0.0, 0.1, 0.2, 0.3, 0.6, 1.0],
+                [0.0, 0.1, 0.2, 0.3, 0.4, 0.5],
                 [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                 (0.1, 0.0, 0.0), (0.4, 0.0, 0.0), (0.8, 0.0, 0.0)],
+                 (0.1, 0.0, 0.0), (0.2, 0.0, 0.0), (0.3, 0.0, 0.0)],
             ),
-            [self.grab(1.0)],
+            [self.grab(0.5)],
+            [self.search(grab_start=0.5)],
         )
 
         interval = result.intervals[0]
-        self.assertAlmostEqual(interval.reach_start_seconds, 0.2)
-        self.assertAlmostEqual(interval.grab_start_seconds, 1.0)
+        self.assertAlmostEqual(interval.reach_start_seconds, 0.3)
+        self.assertAlmostEqual(interval.grab_start_seconds, 0.5)
         self.assertTrue(interval.is_valid)
 
-    def test_multiple_rest_blocks_use_the_final_qualifying_block(self):
+    def test_multiple_movement_blocks_select_the_final_qualifying_block(self):
         result = self.detect(
             self.tracker(
-                [0.0, 0.1, 0.2, 0.4, 0.5, 0.6, 0.7, 0.8, 1.0],
-                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                 (0.2, 0.0, 0.0), (0.3, 0.0, 0.0), (0.4, 0.0, 0.0),
-                 (0.4, 0.0, 0.0), (0.4, 0.0, 0.0), (0.8, 0.0, 0.0)],
+                [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.2, 0.0, 0.0),
+                 (0.2, 0.0, 0.0), (0.2, 0.0, 0.0), (0.4, 0.0, 0.0),
+                 (0.6, 0.0, 0.0), (0.8, 0.0, 0.0), (0.8, 0.0, 0.0),
+                 (0.8, 0.0, 0.0), (0.8, 0.0, 0.0)],
             ),
             [self.grab(1.0)],
+            [self.search()],
         )
 
-        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.8)
+        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.5)
 
-    def test_rest_duration_threshold_is_configurable_and_provisional(self):
-        extractor = self.require_api()
-        config = extractor.ReachDetectionConfig(
-            hand_speed_threshold_meters_per_second=0.05,
-            minimum_rest_duration_seconds=0.30,
-        )
+    def test_pause_before_final_reach_does_not_select_earlier_movement(self):
         result = self.detect(
             self.tracker(
-                [0.0, 0.1, 0.2, 0.3, 0.6],
-                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
-                 (0.2, 0.0, 0.0), (0.5, 0.0, 0.0)],
-            ),
-            [self.grab(0.6)],
-            config,
-        )
-
-        self.assertFalse(result.intervals[0].is_valid)
-
-    def test_no_qualifying_rest_produces_invalid_interval_and_warning(self):
-        result = self.detect(
-            self.tracker(
-                [0.0, 0.2, 0.4, 0.8],
-                [(0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.6, 0.0, 0.0), (1.0, 0.0, 0.0)],
+                [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+                [(0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.4, 0.0, 0.0),
+                 (0.4, 0.0, 0.0), (0.4, 0.0, 0.0), (0.4, 0.0, 0.0),
+                 (0.6, 0.0, 0.0), (0.8, 0.0, 0.0), (0.8, 0.0, 0.0)],
             ),
             [self.grab(0.8)],
+            [self.search(grab_start=0.8)],
+        )
+
+        self.assertAlmostEqual(result.intervals[0].reach_start_seconds, 0.6)
+
+    def test_below_threshold_noise_does_not_create_a_reach(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2, 0.3],
+                [(0.0, 0.0, 0.0), (0.001, 0.0, 0.0), (0.002, 0.0, 0.0),
+                 (0.003, 0.0, 0.0)],
+            ),
+            [self.grab(0.3)],
+            [self.search(grab_start=0.3)],
         )
 
         self.assertFalse(result.intervals[0].is_valid)
         self.assertIn("reach_onset_not_found:right", result.warnings)
 
+    def test_movement_shorter_than_minimum_is_not_retained(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.05, 0.10, 0.20],
+                [(0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.01, 0.0, 0.0),
+                 (0.01, 0.0, 0.0)],
+            ),
+            [self.grab(0.20)],
+            [self.search(grab_start=0.20)],
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+        self.assertIn("reach_onset_not_found:right", result.warnings)
+
+    def test_no_search_interval_keeps_reach_missing(self):
+        result = self.detect(
+            self.tracker(
+                [0.0, 0.1, 0.2],
+                [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.2, 0.0, 0.0)],
+            ),
+            [self.grab(0.2)],
+        )
+
+        self.assertFalse(result.intervals[0].is_valid)
+        self.assertIn("reach_search_interval_unavailable:right", result.warnings)
+
     def test_missing_hand_motion_keeps_interval_missing(self):
         result = self.detect(
             pd.DataFrame({"time": [0.0, 1.0]}),
             [self.grab(1.0)],
+            [self.search()],
         )
 
         self.assertFalse(result.intervals[0].is_valid)
@@ -1767,6 +1825,7 @@ class ReachOnsetTests(unittest.TestCase):
                 self.grab(0.7, product="red apple", first=False),
                 self.grab(0.8, product="orange bottle", on_list=False, first=False),
             ],
+            [self.search(grab_start=0.6)],
         )
 
         self.assertEqual(len(result.intervals), 1)
@@ -1781,7 +1840,11 @@ class ReachOnsetTests(unittest.TestCase):
                 "left_pos_z": [0.0] * 5,
             }
         )
-        result = extractor.detect_reach_intervals(tracker, [self.grab(0.6, hand="left")])
+        result = extractor.detect_reach_intervals(
+            tracker,
+            [self.grab(0.6, hand="left")],
+            search_intervals=[self.search(grab_start=0.6)],
+        )
 
         self.assertEqual(result.intervals[0].hand, "left")
         self.assertTrue(result.intervals[0].is_valid)
@@ -2266,6 +2329,9 @@ class TrialFeatureOutputTests(unittest.TestCase):
         "trial_order",
         "language",
         "performance",
+        "correct_products_collected_count",
+        "performance_percent",
+        "performance_change_from_d0_percentage_points",
         "mental_demand_score_0_to_10",
         "errors_missing",
         "errors_wrong_order",
@@ -2602,6 +2668,276 @@ class DescriptivePlotTests(unittest.TestCase):
             result = extractor.write_descriptive_feature_plots(table, Path(directory))
         self.assertEqual(len(result.paths), 13)
         self.assertFalse(result.warnings)
+
+
+class FullExtractionOrchestrationTests(unittest.TestCase):
+    """Check FE-01.15 full-dataset orchestration and output files."""
+
+    def require_api(self):
+        self.assertIsNotNone(EXTRACTOR)
+        self.assertTrue(
+            hasattr(EXTRACTOR, "run_full_extraction"),
+            "FE-01.15 full extraction API not implemented",
+        )
+        return EXTRACTOR
+
+    @staticmethod
+    def _write_catalog(root: Path):
+        catalog = root / "CorrectLists.txt"
+        definitions = []
+        for difficulty in (0, 2, 6, 10):
+            definitions.extend(
+                [
+                    f"correctLists.level{difficulty}.EN = {{'Apple'}};",
+                    f"correctLists.level{difficulty}.NL = {{'Appel'}};",
+                ]
+            )
+        catalog.write_text("\n".join(definitions), encoding="utf-8")
+        return catalog
+
+    @staticmethod
+    def _tracker_rows():
+        columns = [
+            "time",
+            "enableBlackout",
+            "focus_object_name",
+            "focus_object_tag",
+            "is_left_eye_blinking",
+            "is_right_eye_blinking",
+            "is_grabbing_right",
+            "grabbed_object_right",
+            "is_grabbing_left",
+            "grabbed_object_left",
+            "right_pos_x",
+            "right_pos_y",
+            "right_pos_z",
+            "left_pos_x",
+            "left_pos_y",
+            "left_pos_z",
+            "hmd_rot_x",
+            "hmd_rot_y",
+            "hmd_rot_z",
+            "hmd_rot_w",
+        ]
+        rows = [
+            [0.0, "False", "Tablet", "tablet", "False", "False", "False", "noObjectGrabbed", "False", "noObjectGrabbed", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.1, "False", "Apple", "Product", "False", "False", "True", "Apple", "False", "noObjectGrabbed", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.3, "False", "Apple", "Product", "False", "False", "True", "Apple", "False", "noObjectGrabbed", 0.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            [0.6, "False", "", "", "False", "False", "False", "noObjectGrabbed", "False", "noObjectGrabbed", 0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        ]
+        return columns, rows
+
+    @classmethod
+    def _write_tracker(cls, raw_root: Path, participant: str, session: str, filename: str, malformed=False):
+        tracker_dir = raw_root / "P1" / "P01_HMD_Data" / participant / session / "trackers"
+        details_dir = raw_root / "P1" / "P01_HMD_Data" / participant / session / "session_info"
+        tracker_dir.mkdir(parents=True, exist_ok=True)
+        details_dir.mkdir(parents=True, exist_ok=True)
+        columns, rows = cls._tracker_rows()
+        if malformed:
+            columns[0] = "483383time"
+        lines = [";".join(columns)]
+        lines.extend(";".join(map(str, row)) for row in rows)
+        tracker_path = tracker_dir / filename
+        tracker_path.write_text("\n".join(lines), encoding="utf-8")
+        (details_dir / "participant_details.csv").write_text("side\nR\n", encoding="utf-8")
+        return tracker_path
+
+    @classmethod
+    def _write_performance(cls, root: Path, include_missing_tracker=False):
+        performance = root / "performance_1.csv"
+        rows = [
+            "participant;session;trial;group;condition;trial2;level3;language;performance;errors_total;errors_missing;errors_wrongOrder;errors_collectedMoreThanOnce;errors_notInList",
+            "P1;S001;T001;Young;Visual;T1;0;EN;9;1;1;0;0;0",
+            "P1;S002;T001;Young;Visual;T1;2;EN;7;3;1;1;1;0",
+        ]
+        if include_missing_tracker:
+            rows.append("P1;S003;T001;Young;Visual;T1;6;EN;6;2;1;1;0;0")
+        performance.write_text("\n".join(rows), encoding="utf-8")
+        return performance
+
+    def _fixture(self, include_missing_tracker=False):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(root, ignore_errors=True))
+        raw_root = root / "raw"
+        self._write_catalog(root)
+        performance = self._write_performance(root, include_missing_tracker)
+        self._write_tracker(raw_root, "P01", "S001", "data_collector_vr_sample_T001.csv")
+        self._write_tracker(
+            raw_root,
+            "P01",
+            "S002",
+            "data_collector_vr_sample_T001.csv",
+            malformed=True,
+        )
+        return root, performance, raw_root, root / "CorrectLists.txt"
+
+    def test_full_runner_writes_fixed_outputs_plots_and_repairs_header(self):
+        extractor = self.require_api()
+        root, performance, raw_root, correct_lists = self._fixture()
+        malformed_tracker = raw_root / "P1" / "P01_HMD_Data" / "P01" / "S002" / "trackers" / "data_collector_vr_sample_T001.csv"
+        before = malformed_tracker.read_bytes()
+        output_dir = root / "outputs"
+        result = extractor.run_full_extraction(
+            performance,
+            raw_root,
+            correct_lists,
+            output_dir,
+        )
+        self.assertEqual(len(result.trial_feature_table), 2)
+        self.assertEqual(len(result.product_grab_table), 2)
+        self.assertEqual(list(result.trial_feature_table.columns), list(extractor.TRIAL_FEATURE_COLUMNS))
+        self.assertIn("mental_demand_score_0_to_10", result.trial_feature_table)
+        self.assertTrue(result.trial_feature_table["mental_demand_score_0_to_10"].isna().all())
+        self.assertTrue(any("repaired_time_header" in warning.lower() for warning in result.warnings))
+        self.assertEqual(before, malformed_tracker.read_bytes())
+        expected = {
+            "product_grab_features_v2.csv",
+            "trial_features_v2.csv",
+            "feature_extraction_qc.csv",
+            "feature_extraction_manifest.json",
+        }
+        root_files = {path.name for path in output_dir.iterdir() if path.is_file()}
+        plot_files = {path.name for path in (output_dir / "plots").iterdir() if path.is_file()}
+        self.assertEqual(root_files, expected)
+        self.assertEqual(len(plot_files), 13)
+
+    def test_missing_tracker_isolated_in_failed_qc_row_and_error_change_maps(self):
+        extractor = self.require_api()
+        root, performance, raw_root, correct_lists = self._fixture(include_missing_tracker=True)
+        output_dir = root / "outputs"
+        result = extractor.run_full_extraction(
+            performance,
+            raw_root,
+            correct_lists,
+            output_dir,
+        )
+        self.assertEqual(len(result.trial_feature_table), 3)
+        d2 = result.trial_feature_table.loc[
+            result.trial_feature_table["difficulty_level"] == 2,
+            "error_change_from_d0",
+        ].iloc[0]
+        self.assertEqual(float(d2), 2.0)
+        failed = result.qc_table.loc[result.qc_table["processing_status"] == "failed"]
+        self.assertEqual(len(failed), 1)
+        self.assertTrue(pd.isna(result.trial_feature_table.iloc[2]["median_reach_duration_seconds"]))
+        self.assertTrue(any("mental_demand_source_unavailable" in warning.lower() for warning in result.warnings))
+
+
+class CorrectionIntegrationTests(unittest.TestCase):
+    """Check corrected performance units and mental-demand joins."""
+
+    @staticmethod
+    def _write_fixture(root: Path):
+        correct_lists = root / "CorrectLists.txt"
+        correct_lists.write_text(
+            "\n".join(
+                f"correctLists.level{difficulty}.EN = {{'Red Apple'}};\n"
+                f"correctLists.level{difficulty}.NL = {{'Rode Appel'}};"
+                for difficulty in (0, 2, 6, 10)
+            ),
+            encoding="utf-8",
+        )
+        performance = root / "performance_1.csv"
+        rows = [
+            "participant;session;trial;group;condition;trial2;level3;language;performance;errors_total;errors_missing;errors_wrongOrder;errors_collectedMoreThanOnce;errors_notInList",
+            "P1;S001;T001;Young;Visual;T1;0;EN;9;0;0;0;0;0",
+            "P1;S002;T001;Young;Visual;T1;2;EN;8;1;0;1;0;0",
+            "P1;S003;T001;Young;Visual;T1;6;EN;9;2;0;2;0;0",
+            "P1;S004;T001;Young;Visual;T1;10;EN;10;3;0;3;0;0",
+        ]
+        performance.write_text("\n".join(rows), encoding="utf-8")
+        mental = pd.DataFrame(
+            {
+                "Participant": ["P01"] * 4,
+                "Group": ["Young"] * 4,
+                "Condition": ["Visual"] * 4,
+                "Trial": ["T1"] * 4,
+                "Level": [0, 2, 6, 10],
+                "MD": [0, 10, 5, 10],
+            }
+        )
+        mental.to_excel(root / "mental_demand.xlsx", index=False)
+        raw_root = root / "raw"
+        for session in ("S001", "S002", "S003", "S004"):
+            trial_root = raw_root / "P1" / "P01_HMD_Data" / "P01" / session
+            tracker_dir = trial_root / "trackers"
+            details_dir = trial_root / "session_info"
+            tracker_dir.mkdir(parents=True, exist_ok=True)
+            details_dir.mkdir(parents=True, exist_ok=True)
+            (tracker_dir / "data_collector_vr_sample_T001.csv").write_text(
+                "time,enableBlackout\n0.0,True\n0.1,False\n",
+                encoding="utf-8",
+            )
+            (details_dir / "participant_details.csv").write_text(
+                "side\nR\n", encoding="utf-8"
+            )
+        return performance, raw_root, correct_lists
+
+    def test_default_mental_demand_and_count_to_percentage_conversion(self):
+        extractor = EXTRACTOR
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            performance, raw_root, correct_lists = self._write_fixture(root)
+            result = extractor.run_full_extraction(
+                performance, raw_root, correct_lists, root / "out"
+            )
+        table = result.trial_feature_table
+        self.assertEqual(table["correct_products_collected_count"].tolist(), [9.0, 8.0, 9.0, 10.0])
+        self.assertEqual(table["performance_percent"].tolist(), [45.0, 40.0, 45.0, 50.0])
+        self.assertTrue(pd.isna(table.loc[0, "performance_change_from_d0_percentage_points"]))
+        self.assertEqual(
+            table["performance_change_from_d0_percentage_points"].iloc[1:].tolist(),
+            [5.0, 0.0, -5.0],
+        )
+        self.assertEqual(table["mental_demand_score_0_to_10"].tolist(), [0.0, 10.0, 5.0, 10.0])
+        self.assertTrue(result.qc_table["mental_demand_available"].all())
+
+    def test_explicit_mental_demand_path_overrides_default(self):
+        extractor = EXTRACTOR
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            performance, raw_root, correct_lists = self._write_fixture(root)
+            override = root / "override.xlsx"
+            pd.DataFrame(
+                {
+                    "Participant": ["P01"],
+                    "Group": ["Young"],
+                    "Condition": ["Visual"],
+                    "Trial": ["T1"],
+                    "Level": [0],
+                    "MD": [10],
+                }
+            ).to_excel(override, index=False)
+            result = extractor.run_full_extraction(
+                performance,
+                raw_root,
+                correct_lists,
+                root / "out",
+                mental_demand_path=override,
+            )
+        self.assertEqual(result.trial_feature_table.loc[0, "mental_demand_score_0_to_10"], 10.0)
+
+    def test_wrong_trial_identifiers_leave_mental_demand_missing_with_warning(self):
+        extractor = EXTRACTOR
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            performance, raw_root, correct_lists = self._write_fixture(root)
+            pd.DataFrame(
+                {
+                    "Participant": ["P02"],
+                    "Group": ["Young"],
+                    "Condition": ["Auditory"],
+                    "Trial": ["T4"],
+                    "Level": [10],
+                    "MD": [7],
+                }
+            ).to_excel(root / "mental_demand.xlsx", index=False)
+            result = extractor.run_full_extraction(
+                performance, raw_root, correct_lists, root / "out"
+            )
+        self.assertTrue(result.trial_feature_table["mental_demand_score_0_to_10"].isna().all())
+        self.assertTrue(any("mental_demand_match_missing" in warning for warning in result.warnings))
 
 
 if __name__ == "__main__":
