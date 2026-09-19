@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """MOD-07 — Training-only RI versus RI+RS comparison and selective bootstrap.
 
-The immediate MOD-07 random-effects decision is restricted to the two primary
-outcomes (relative performance and mental demand) across the three experimental
-conditions. The ordinary training-only comparison is run separately from the
-participant bootstrap so bootstrap stability evidence is generated only for
-explicitly selected condition × outcome pairs.
+The immediate MOD-07 random-effects evidence base covers all 10 accepted
+Gaussian targets (relative performance, mental demand, and eight continuous
+behavioural features) across the three experimental conditions. The ordinary
+training-only comparison is run separately from the participant bootstrap so
+bootstrap stability evidence is generated only for explicitly selected
+condition × target pairs.
 
 Frozen methodological rules:
 - use only the 26 participants assigned to training by MOD-06;
@@ -63,16 +64,13 @@ from MOD_06_participant_split import (
 )
 
 
-SCRIPT_VERSION = "2.0.0"
-METHOD_ID = "training_m0_ri_vs_ri_rs_selective_cluster_bootstrap_v2"
+SCRIPT_VERSION = "2.1.0"
+METHOD_ID = "training_m0_ri_vs_ri_rs_full_compare_selective_bootstrap_v3"
 BOOTSTRAP_REPLICATES = 2000
 BOOTSTRAP_SEED = 20260919
 BOOTSTRAP_BIT_GENERATOR = "PCG64"
 
-PRIMARY_TARGETS = (
-    "performance_change_from_d0_percentage_points",
-    "mental_demand_score_0_to_10",
-)
+COMPARE_TARGETS = tuple(GAUSSIAN_TARGETS)
 
 EXPECTED_TRAIN = 26
 EXPECTED_TEST = 6
@@ -112,7 +110,7 @@ def default_worker_count() -> int:
 
 
 def build_m0_target_specs(
-    targets: Iterable[str] = PRIMARY_TARGETS,
+    targets: Iterable[str] = COMPARE_TARGETS,
 ) -> dict[str, TargetSpec]:
     """Return difficulty-only M0 formulas for requested Gaussian targets."""
     requested = tuple(targets)
@@ -135,12 +133,12 @@ def build_m0_target_specs(
     return specs
 
 
-def primary_pairs() -> tuple[Pair, ...]:
-    """Return the six frozen immediate MOD-07 condition × outcome pairs."""
+def comparison_pairs() -> tuple[Pair, ...]:
+    """Return all 30 condition × Gaussian-target pairs for Stage A."""
     return tuple(
         (condition, target)
         for condition in CONDITIONS
-        for target in PRIMARY_TARGETS
+        for target in COMPARE_TARGETS
     )
 
 
@@ -420,7 +418,7 @@ def compare_training_random_effects(
     pairs: Sequence[Pair] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[Pair, pd.DataFrame]]:
     """Fit ordinary M0 RI/RI+RS pairs on the original training set."""
-    selected = tuple(pairs if pairs is not None else primary_pairs())
+    selected = tuple(pairs if pairs is not None else comparison_pairs())
     targets = tuple(dict.fromkeys(target for _, target in selected))
     specs = build_m0_target_specs(targets)
 
@@ -567,7 +565,7 @@ def _draw_signature(draw_ids: Iterable[str]) -> str:
 def load_selected_pairs(
     path: Path,
     *,
-    allowed_targets: Iterable[str] = PRIMARY_TARGETS,
+    allowed_targets: Iterable[str] = COMPARE_TARGETS,
     allowed_conditions: Iterable[str] = CONDITIONS,
 ) -> tuple[Pair, ...]:
     """Read and strictly validate selected condition × target pairs."""
@@ -596,8 +594,8 @@ def load_selected_pairs(
         )
     if bad_targets:
         raise Mod07Error(
-            "Selected-pairs CSV contains targets outside the current "
-            f"primary-outcome scope: {bad_targets}"
+            "Selected-pairs CSV contains targets outside the accepted "
+            f"Gaussian MixedLM scope: {bad_targets}"
         )
     if frame.duplicated(required).any():
         raise Mod07Error("Selected-pairs CSV contains duplicate pairs")
@@ -1198,7 +1196,7 @@ def run_compare_only(
         modeling_data, assignments, split_manifest
     )
     comparison, audit, _ = compare_training_random_effects(
-        training, pairs=primary_pairs()
+        training, pairs=comparison_pairs()
     )
     return comparison, audit, training_ids, test_ids
 
@@ -1371,7 +1369,7 @@ def main() -> int:
             split_manifest=split_manifest,
             training_ids=training_ids,
             test_ids=test_ids,
-            pairs=primary_pairs(),
+            pairs=comparison_pairs(),
         )
         paths = write_compare_outputs(
             comparison=comparison,
@@ -1385,7 +1383,7 @@ def main() -> int:
             else 0
         )
         print(f"Wrote MOD-07 compare-only outputs to: {args.output_dir}")
-        print(f"Primary condition-outcome pairs: {len(primary_pairs())}")
+        print(f"Gaussian condition-target pairs: {len(comparison_pairs())}")
         print(f"Training participants used: {len(training_ids)}")
         print(f"Held-out test participants used: 0 of {len(test_ids)}")
         print(f"RI/RI+RS pairs converged: {paired}/{len(comparison)}")
