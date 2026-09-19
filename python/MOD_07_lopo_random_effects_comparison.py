@@ -448,11 +448,17 @@ def build_audit(
         complete_summary = False
         if len(comparison_rows) == 1:
             row = comparison_rows.iloc[0]
+            ri_count = _safe_float(
+                row.get("ri_lopo_participant_count", np.nan)
+            )
+            ri_rs_count = _safe_float(
+                row.get("ri_rs_lopo_participant_count", np.nan)
+            )
             complete_summary = (
-                int(row.get("ri_lopo_participant_count", 0))
-                == EXPECTED_PARTICIPANTS
-                and int(row.get("ri_rs_lopo_participant_count", 0))
-                == EXPECTED_PARTICIPANTS
+                np.isfinite(ri_count)
+                and np.isfinite(ri_rs_count)
+                and int(ri_count) == EXPECTED_PARTICIPANTS
+                and int(ri_rs_count) == EXPECTED_PARTICIPANTS
             )
 
         status = "pass" if full_ok and lopo_ok and complete_summary else "problem"
