@@ -117,6 +117,27 @@ def _predict_fixed_effects(result, test: pd.DataFrame) -> np.ndarray:
     return np.asarray(result.predict(test), dtype=float)
 
 
+def _pooled_r2(observed, predicted) -> float:
+    """Return R² across pooled held-out predictions.
+
+    This is standard out-of-fold R²: 1 - SSE/SST, where SST is calculated
+    around the mean of the held-out observed values. Negative values are valid
+    and indicate predictions worse than the held-out mean benchmark.
+    """
+    observed_array = np.asarray(observed, dtype=float)
+    predicted_array = np.asarray(predicted, dtype=float)
+    finite = np.isfinite(observed_array) & np.isfinite(predicted_array)
+    observed_array = observed_array[finite]
+    predicted_array = predicted_array[finite]
+    if len(observed_array) < 2:
+        return np.nan
+    ss_tot = float(np.sum((observed_array - np.mean(observed_array)) ** 2))
+    if ss_tot <= 0:
+        return np.nan
+    ss_res = float(np.sum((observed_array - predicted_array) ** 2))
+    return 1.0 - ss_res / ss_tot
+
+
 def resolve_job_count(requested: int, *, cpu_count: int | None = None) -> int:
     """Resolve ``0`` to a conservative automatic process count.
 
@@ -734,12 +755,7 @@ def run_lopo_prediction(
                 finite = np.isfinite(observed) & np.isfinite(predicted)
                 observed = observed[finite]
                 predicted = predicted[finite]
-                if len(observed) >= 2:
-                    ss_res = float(np.sum((observed - predicted) ** 2))
-                    ss_tot = float(np.sum((observed - np.mean(observed)) ** 2))
-                    lopo_r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
-                else:
-                    lopo_r2 = np.nan
+                lopo_r2 = _pooled_r2(observed, predicted)
 
                 summary_rows.append({
                     "condition_name": condition,
