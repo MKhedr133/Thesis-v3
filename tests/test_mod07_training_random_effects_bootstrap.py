@@ -337,7 +337,7 @@ class Mod07Tests(unittest.TestCase):
                     },
                     {
                         "condition_name": "Cognitive",
-                        "target_name": "total_error_count",
+                        "target_name": "median_reach_duration_seconds",
                     },
                 ]
             ).to_csv(valid_path, index=False)
@@ -350,7 +350,7 @@ class Mod07Tests(unittest.TestCase):
                 [
                     {
                         "condition_name": "Visual",
-                        "target_name": "median_reach_duration_seconds",
+                        "target_name": "not_a_gaussian_target",
                     }
                 ]
             ).to_csv(invalid_path, index=False)
