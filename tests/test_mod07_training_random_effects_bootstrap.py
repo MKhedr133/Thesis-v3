@@ -52,8 +52,29 @@ def synthetic_data() -> pd.DataFrame:
                             "mental_demand_score_0_to_10": float(
                                 stage + condition_index + number / 100
                             ),
+                            "median_time_between_qualifying_grabs_seconds": float(
+                                stage + number / 20
+                            ),
+                            "list_recheck_count": float(
+                                (stage + number) % 4
+                            ),
+                            "total_list_recheck_duration_seconds": float(
+                                stage * 2 + number / 10
+                            ),
+                            "median_time_to_target_seconds": float(
+                                stage + number / 15
+                            ),
+                            "median_irrelevant_focus_duration_seconds": float(
+                                stage / 2 + number / 50
+                            ),
+                            "median_head_turning_degrees": float(
+                                stage * 10 + number
+                            ),
                             "median_reach_duration_seconds": float(
                                 stage + number / 10
+                            ),
+                            "median_reach_path_ratio": float(
+                                1.0 + stage / 10 + number / 1000
                             ),
                         }
                     )
@@ -156,23 +177,24 @@ class Mod07Tests(unittest.TestCase):
             self.manifest,
         )
 
-    def test_default_scope_is_exactly_six_primary_pairs(self):
-        pairs = MOD07.primary_pairs()
+    def test_default_scope_is_all_30_gaussian_pairs(self):
+        pairs = MOD07.comparison_pairs()
 
-        self.assertEqual(len(pairs), 6)
+        self.assertEqual(len(pairs), 30)
         self.assertEqual(
             {target for _, target in pairs},
-            {
-                "performance_change_from_d0_percentage_points",
-                "mental_demand_score_0_to_10",
-            },
+            set(MOD07.GAUSSIAN_TARGETS),
         )
         self.assertEqual(
             {condition for condition, _ in pairs},
             {"Visual", "Auditory", "Cognitive"},
         )
-        self.assertNotIn(
+        self.assertIn(
             "median_reach_duration_seconds",
+            {target for _, target in pairs},
+        )
+        self.assertNotIn(
+            "total_error_count",
             {target for _, target in pairs},
         )
 
@@ -216,7 +238,7 @@ class Mod07Tests(unittest.TestCase):
                 self.manifest,
             )
 
-    def test_compare_only_uses_six_pairs_and_no_bootstrap(self):
+    def test_compare_only_uses_30_pairs_and_no_bootstrap(self):
         with patch.object(
             MOD07,
             "fit_mixedlm_with_fallback",
@@ -232,8 +254,8 @@ class Mod07Tests(unittest.TestCase):
                 split_manifest=self.manifest,
             )
 
-        self.assertEqual(len(comparison), 6)
-        self.assertEqual(len(audit), 6)
+        self.assertEqual(len(comparison), 30)
+        self.assertEqual(len(audit), 30)
         self.assertEqual(len(training_ids), 26)
         self.assertEqual(len(test_ids), 6)
         self.assertTrue(comparison["paired_converged"].all())
@@ -304,7 +326,7 @@ class Mod07Tests(unittest.TestCase):
             0.2,
         )
 
-    def test_selected_pairs_csv_accepts_only_primary_pairs(self):
+    def test_selected_pairs_csv_accepts_any_gaussian_pair_only(self):
         with tempfile.TemporaryDirectory() as directory:
             valid_path = Path(directory) / "valid.csv"
             pd.DataFrame(
@@ -315,9 +337,7 @@ class Mod07Tests(unittest.TestCase):
                     },
                     {
                         "condition_name": "Cognitive",
-                        "target_name": (
-                            "performance_change_from_d0_percentage_points"
-                        ),
+                        "target_name": "total_error_count",
                     },
                 ]
             ).to_csv(valid_path, index=False)
@@ -337,7 +357,7 @@ class Mod07Tests(unittest.TestCase):
 
             with self.assertRaisesRegex(
                 MOD07.Mod07Error,
-                "primary-outcome scope",
+                "Gaussian MixedLM scope",
             ):
                 MOD07.load_selected_pairs(invalid_path)
 
