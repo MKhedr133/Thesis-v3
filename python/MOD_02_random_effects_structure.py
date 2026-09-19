@@ -50,7 +50,7 @@ ALL_TARGETS = (*GAUSSIAN_TARGETS, *PENDING_COUNT_TARGETS)
 
 PERFORMANCE_DIFFICULTY_COLUMN = "performance_difficulty_stage"
 AGE_TERM = "C(participant_group, Treatment(reference='Young'))"
-FIXED_EFFECTS_TEMPLATE = "{D} * " + AGE_TERM + " + {D} * tmt_z"
+FIXED_EFFECTS_TEMPLATE = "{D} * " + AGE_TERM + " + {D} * tmt_b_seconds"
 
 
 @dataclass(frozen=True)
@@ -129,23 +129,6 @@ def _row_signature(frame: pd.DataFrame) -> str:
         rows = [str(i) for i in frame.index]
     return sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
 
-
-def add_full_data_tmt_z(data: pd.DataFrame) -> pd.DataFrame:
-    """Add full-data TMT z-score from unique participants (association/RI stage only)."""
-    out = data.copy(deep=True)
-    if "tmt_b_seconds" not in out.columns:
-        raise ValueError("tmt_b_seconds is required")
-    participant = out[["participant_id", "tmt_b_seconds"]].drop_duplicates("participant_id")
-    values = pd.to_numeric(participant["tmt_b_seconds"], errors="coerce")
-    if values.isna().any() or len(values) < 2:
-        raise ValueError("TMT-B must be finite for at least two unique participants")
-    mean = float(values.mean())
-    sd = float(values.std(ddof=1))
-    if not np.isfinite(sd) or sd <= 0:
-        raise ValueError("TMT-B standard deviation must be positive")
-    tmt_map = dict(zip(participant["participant_id"].astype(str), ((values - mean) / sd).astype(float)))
-    out["tmt_z"] = out["participant_id"].astype(str).map(tmt_map)
-    return out
 
 
 def fit_mixedlm_with_fallback(
@@ -234,7 +217,7 @@ def compare_random_effects(
     conditions: tuple[str, ...] = CONDITIONS,
 ) -> RandomEffectsRunResult:
     """Fit paired RI/RI+RS models and return evidence without selecting a winner."""
-    data = add_full_data_tmt_z(modeling_data)
+    data = modeling_data.copy(deep=True)
     rows: list[dict[str, object]] = []
     audits: list[dict[str, object]] = []
     errors: list[str] = []
