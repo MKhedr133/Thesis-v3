@@ -7,9 +7,9 @@ effects structures:
     RI     : random intercept only
     RI_RS  : random intercept + random difficulty slope
 
-TMT-B is standardized from unique training participants inside each fold. Held-
-out prediction is population/fixed-effect only; no held-out participant random
-effect is estimated from test outcomes. The RI versus RI+RS structure is not selected here.
+TMT-B enters candidate models in raw seconds via ``tmt_b_seconds``. Held-out
+prediction is population/fixed-effect only; no held-out participant random effect
+is estimated from test outcomes. The RI versus RI+RS structure is not selected here.
 
 Runtime strategy
 ----------------
@@ -334,110 +334,85 @@ def _run_family_task(task: FamilyTask) -> FamilyResult:
         train = frame.loc[~test_mask].copy()
         test = frame.loc[test_mask].copy()
 
-        train_participant_tmt = train[
-            ["participant_id", "tmt_b_seconds"]
-        ].drop_duplicates("participant_id")
-        tmt_values = pd.to_numeric(
-            train_participant_tmt["tmt_b_seconds"], errors="coerce"
-        )
-        tmt_mean = float(tmt_values.mean())
-        tmt_sd = float(tmt_values.std(ddof=1))
-
-        if not np.isfinite(tmt_sd) or tmt_sd <= 0:
-            errors.append(
-                f"{task.condition}/{task.target}/{task.random_structure}/{heldout}: "
-                "invalid training TMT SD"
-            )
-            family_failures += len(registry)
-        else:
-            train["tmt_z"] = (
-                pd.to_numeric(train["tmt_b_seconds"], errors="coerce") - tmt_mean
-            ) / tmt_sd
-            test["tmt_z"] = (
-                pd.to_numeric(test["tmt_b_seconds"], errors="coerce") - tmt_mean
-            ) / tmt_sd
-
-            for model_id, rhs_template in registry.items():
-                formula = f"{task.target} ~ {rhs_template.format(D=task.difficulty_column)}"
-                try:
-                    result, optimizer, fit_warnings, fit_errors = (
-                        MOD02.fit_mixedlm_with_fallback(
-                            formula,
-                            train,
-                            task.random_structure,
-                            task.difficulty_column,
-                        )
+        for model_id, rhs_template in registry.items():
+            formula = f"{task.target} ~ {rhs_template.format(D=task.difficulty_column)}"
+            try:
+                result, optimizer, fit_warnings, fit_errors = (
+                    MOD02.fit_mixedlm_with_fallback(
+                        formula,
+                        train,
+                        task.random_structure,
+                        task.difficulty_column,
                     )
-                    warnings_out.extend(
-                        f"{task.condition}/{task.target}/{task.random_structure}/"
-                        f"{heldout}/{model_id}: {warning}"
-                        for warning in fit_warnings
+                )
+                warnings_out.extend(
+                    f"{task.condition}/{task.target}/{task.random_structure}/"
+                    f"{heldout}/{model_id}: {warning}"
+                    for warning in fit_warnings
+                )
+                if result is None or not bool(getattr(result, "converged", False)):
+                    raise RuntimeError(
+                        "training fit failed/non-converged: " + " | ".join(fit_errors)
                     )
-                    if result is None or not bool(getattr(result, "converged", False)):
-                        raise RuntimeError(
-                            "training fit failed/non-converged: " + " | ".join(fit_errors)
-                        )
 
-                    predictions = _predict_fixed_effects(result, test)
-                    observed = pd.to_numeric(
-                        test[task.target], errors="coerce"
-                    ).to_numpy(float)
-                    if len(predictions) != len(test):
-                        raise RuntimeError("Prediction length mismatch")
-                    abs_error = np.abs(observed - predictions)
+                predictions = _predict_fixed_effects(result, test)
+                observed = pd.to_numeric(
+                    test[task.target], errors="coerce"
+                ).to_numpy(float)
+                if len(predictions) != len(test):
+                    raise RuntimeError("Prediction length mismatch")
+                abs_error = np.abs(observed - predictions)
 
-                    for local_idx, (_, row) in enumerate(test.iterrows()):
-                        prediction_rows.append({
-                            "heldout_participant": heldout,
-                            "condition_name": task.condition,
-                            "target_name": task.target,
-                            "model_id": model_id,
-                            "random_structure": task.random_structure,
-                            "difficulty_level": row.get("difficulty_level", np.nan),
-                            "observed": observed[local_idx],
-                            "predicted": predictions[local_idx],
-                            "residual": observed[local_idx] - predictions[local_idx],
-                            "absolute_error": abs_error[local_idx],
-                            "training_participant_count": int(
-                                train["participant_id"].nunique()
-                            ),
-                            "training_observation_count": int(len(train)),
-                            "training_tmt_mean": tmt_mean,
-                            "training_tmt_sd": tmt_sd,
-                            "optimizer": optimizer,
-                            "prediction_scope": "fixed_effect_population_only",
-                        })
-
-                    participant_rows.append({
-                        "participant_id": heldout,
+                for local_idx, (_, row) in enumerate(test.iterrows()):
+                    prediction_rows.append({
+                        "heldout_participant": heldout,
                         "condition_name": task.condition,
                         "target_name": task.target,
                         "model_id": model_id,
                         "random_structure": task.random_structure,
-                        "valid_prediction_count": int(len(test)),
-                        "participant_mae": float(np.mean(abs_error)),
-                        "participant_rmse": float(
-                            np.sqrt(np.mean((observed - predictions) ** 2))
+                        "difficulty_level": row.get("difficulty_level", np.nan),
+                        "observed": observed[local_idx],
+                        "predicted": predictions[local_idx],
+                        "residual": observed[local_idx] - predictions[local_idx],
+                        "absolute_error": abs_error[local_idx],
+                        "training_participant_count": int(
+                            train["participant_id"].nunique()
                         ),
-                        "fold_status": "pass",
+                        "training_observation_count": int(len(train)),
+                        "optimizer": optimizer,
+                        "prediction_scope": "fixed_effect_population_only",
                     })
-                except Exception as exc:
-                    family_failures += 1
-                    errors.append(
-                        f"{task.condition}/{task.target}/{task.random_structure}/"
-                        f"{heldout}/{model_id}: {type(exc).__name__}: {exc}"
-                    )
-                    participant_rows.append({
-                        "participant_id": heldout,
-                        "condition_name": task.condition,
-                        "target_name": task.target,
-                        "model_id": model_id,
-                        "random_structure": task.random_structure,
-                        "valid_prediction_count": 0,
-                        "participant_mae": np.nan,
-                        "participant_rmse": np.nan,
-                        "fold_status": "fail",
-                    })
+
+                participant_rows.append({
+                    "participant_id": heldout,
+                    "condition_name": task.condition,
+                    "target_name": task.target,
+                    "model_id": model_id,
+                    "random_structure": task.random_structure,
+                    "valid_prediction_count": int(len(test)),
+                    "participant_mae": float(np.mean(abs_error)),
+                    "participant_rmse": float(
+                        np.sqrt(np.mean((observed - predictions) ** 2))
+                    ),
+                    "fold_status": "pass",
+                })
+            except Exception as exc:
+                family_failures += 1
+                errors.append(
+                    f"{task.condition}/{task.target}/{task.random_structure}/"
+                    f"{heldout}/{model_id}: {type(exc).__name__}: {exc}"
+                )
+                participant_rows.append({
+                    "participant_id": heldout,
+                    "condition_name": task.condition,
+                    "target_name": task.target,
+                    "model_id": model_id,
+                    "random_structure": task.random_structure,
+                    "valid_prediction_count": 0,
+                    "participant_mae": np.nan,
+                    "participant_rmse": np.nan,
+                    "fold_status": "fail",
+                })
 
         completed_participants.append(heldout)
         completed_set.add(heldout)
