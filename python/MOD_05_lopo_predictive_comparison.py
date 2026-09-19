@@ -704,6 +704,7 @@ def run_lopo_prediction(
             "resumed_from_checkpoint": family.resumed_from_checkpoint,
         })
 
+    predictions = pd.DataFrame(prediction_rows)
     participant_errors = pd.DataFrame(participant_rows)
     summary_rows: list[dict[str, object]] = []
     if len(participant_errors):
@@ -718,6 +719,28 @@ def run_lopo_prediction(
             m0 = model_mae.get("M0", np.nan)
             for model_id, mae in model_mae.items():
                 model_rows = family.loc[family["model_id"].eq(model_id)]
+                prediction_subset = predictions.loc[
+                    predictions["condition_name"].eq(condition)
+                    & predictions["target_name"].eq(target)
+                    & predictions["random_structure"].eq(structure)
+                    & predictions["model_id"].eq(model_id)
+                ].copy()
+                observed = pd.to_numeric(
+                    prediction_subset["observed"], errors="coerce"
+                ).to_numpy(float)
+                predicted = pd.to_numeric(
+                    prediction_subset["predicted"], errors="coerce"
+                ).to_numpy(float)
+                finite = np.isfinite(observed) & np.isfinite(predicted)
+                observed = observed[finite]
+                predicted = predicted[finite]
+                if len(observed) >= 2:
+                    ss_res = float(np.sum((observed - predicted) ** 2))
+                    ss_tot = float(np.sum((observed - np.mean(observed)) ** 2))
+                    lopo_r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else np.nan
+                else:
+                    lopo_r2 = np.nan
+
                 summary_rows.append({
                     "condition_name": condition,
                     "target_name": target,
@@ -726,9 +749,14 @@ def run_lopo_prediction(
                     "participant_count": int(
                         model_rows["participant_id"].nunique()
                     ),
+                    "prediction_count": int(len(observed)),
                     "participant_balanced_mae": float(mae),
                     "participant_balanced_rmse": float(
                         model_rows["participant_rmse"].mean()
+                    ),
+                    "lopo_r2": float(lopo_r2) if np.isfinite(lopo_r2) else np.nan,
+                    "lopo_r2_definition": (
+                        "1-SSE/SST across pooled held-out row predictions"
                     ),
                     "delta_mae_vs_m0": (
                         float(m0 - mae) if np.isfinite(m0) else np.nan
@@ -742,7 +770,7 @@ def run_lopo_prediction(
         not errors,
         tuple(errors),
         tuple(warnings_out),
-        pd.DataFrame(prediction_rows),
+        predictions,
         participant_errors,
         pd.DataFrame(summary_rows),
         pd.DataFrame(check_rows),
