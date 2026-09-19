@@ -93,6 +93,24 @@ class ParticipantSplitTests(unittest.TestCase):
         self.assertEqual(len(assignments), 32)
         self.assertFalse(assignments["participant_id"].duplicated().any())
 
+    def test_participant_assignment_is_shared_across_conditions(self):
+        data = synthetic_trials()
+        assignments = MOD06.build_participant_split(data)
+        joined = data.merge(
+            assignments[["participant_id", "partition"]],
+            on="participant_id",
+            how="left",
+            validate="many_to_one",
+        )
+
+        self.assertFalse(joined["partition"].isna().any())
+        self.assertTrue(
+            joined.groupby("participant_id")["partition"].nunique().eq(1).all()
+        )
+        self.assertTrue(
+            joined.groupby("participant_id")["condition_name"].nunique().eq(3).all()
+        )
+
     def test_input_row_order_does_not_change_assignment(self):
         data = synthetic_trials()
         shuffled = data.sample(frac=1.0, random_state=123).reset_index(drop=True)
