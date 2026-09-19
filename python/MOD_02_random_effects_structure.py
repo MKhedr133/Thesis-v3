@@ -154,22 +154,56 @@ def fit_mixedlm_with_fallback(
     )
     warnings_out: list[str] = []
     errors: list[str] = []
+    successful_fits: list[tuple[str, object]] = []
     last = None
-    used = ""
+    last_method = ""
+
     for method in methods:
-        used = method
         with pywarnings.catch_warnings(record=True) as caught:
             pywarnings.simplefilter("always")
             try:
-                result = model.fit(reml=False, method=method, maxiter=maxiter, disp=False)
+                result = model.fit(
+                    reml=False,
+                    method=method,
+                    maxiter=maxiter,
+                    disp=False,
+                )
                 last = result
+                last_method = method
+                successful_fits.append((method, result))
             except Exception as exc:  # statsmodels optimizer failures vary by backend
                 errors.append(f"{method}: {type(exc).__name__}: {exc}")
                 result = None
-            warnings_out.extend(f"{method}: {w.category.__name__}: {w.message}" for w in caught)
-        if result is not None and bool(getattr(result, "converged", False)):
-            return result, used, tuple(warnings_out), tuple(errors)
-    return last, used, tuple(warnings_out), tuple(errors)
+            warnings_out.extend(
+                f"{method}: {w.category.__name__}: {w.message}" for w in caught
+            )
+
+    converged_fits = [
+        (method, result)
+        for method, result in successful_fits
+        if bool(getattr(result, "converged", False))
+    ]
+    if converged_fits:
+        def log_likelihood(item: tuple[str, object]) -> float:
+            value = getattr(item[1], "llf", np.nan)
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return float("-inf")
+            return numeric if np.isfinite(numeric) else float("-inf")
+
+        selected_method, selected_result = max(
+            converged_fits,
+            key=log_likelihood,
+        )
+        return (
+            selected_result,
+            selected_method,
+            tuple(warnings_out),
+            tuple(errors),
+        )
+
+    return last, last_method, tuple(warnings_out), tuple(errors)
 
 
 def _target_role(target: str) -> str:
