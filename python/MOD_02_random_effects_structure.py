@@ -50,7 +50,7 @@ ALL_TARGETS = (*GAUSSIAN_TARGETS, *PENDING_COUNT_TARGETS)
 
 PERFORMANCE_DIFFICULTY_COLUMN = "performance_difficulty_stage"
 AGE_TERM = "C(participant_group, Treatment(reference='Young'))"
-FIXED_EFFECTS_TEMPLATE = "{D} * " + AGE_TERM + " + {D} * tmt_z"
+FIXED_EFFECTS_TEMPLATE = "{D} * " + AGE_TERM + " + {D} * tmt_b_seconds"
 
 
 @dataclass(frozen=True)
@@ -130,23 +130,6 @@ def _row_signature(frame: pd.DataFrame) -> str:
     return sha256("\n".join(sorted(rows)).encode("utf-8")).hexdigest()
 
 
-def add_full_data_tmt_z(data: pd.DataFrame) -> pd.DataFrame:
-    """Add full-data TMT z-score from unique participants (association/RI stage only)."""
-    out = data.copy(deep=True)
-    if "tmt_b_seconds" not in out.columns:
-        raise ValueError("tmt_b_seconds is required")
-    participant = out[["participant_id", "tmt_b_seconds"]].drop_duplicates("participant_id")
-    values = pd.to_numeric(participant["tmt_b_seconds"], errors="coerce")
-    if values.isna().any() or len(values) < 2:
-        raise ValueError("TMT-B must be finite for at least two unique participants")
-    mean = float(values.mean())
-    sd = float(values.std(ddof=1))
-    if not np.isfinite(sd) or sd <= 0:
-        raise ValueError("TMT-B standard deviation must be positive")
-    tmt_map = dict(zip(participant["participant_id"].astype(str), ((values - mean) / sd).astype(float)))
-    out["tmt_z"] = out["participant_id"].astype(str).map(tmt_map)
-    return out
-
 
 def fit_mixedlm_with_fallback(
     formula: str,
@@ -171,22 +154,56 @@ def fit_mixedlm_with_fallback(
     )
     warnings_out: list[str] = []
     errors: list[str] = []
+    successful_fits: list[tuple[str, object]] = []
     last = None
-    used = ""
+    last_method = ""
+
     for method in methods:
-        used = method
         with pywarnings.catch_warnings(record=True) as caught:
             pywarnings.simplefilter("always")
             try:
-                result = model.fit(reml=False, method=method, maxiter=maxiter, disp=False)
+                result = model.fit(
+                    reml=False,
+                    method=method,
+                    maxiter=maxiter,
+                    disp=False,
+                )
                 last = result
+                last_method = method
+                successful_fits.append((method, result))
             except Exception as exc:  # statsmodels optimizer failures vary by backend
                 errors.append(f"{method}: {type(exc).__name__}: {exc}")
                 result = None
-            warnings_out.extend(f"{method}: {w.category.__name__}: {w.message}" for w in caught)
-        if result is not None and bool(getattr(result, "converged", False)):
-            return result, used, tuple(warnings_out), tuple(errors)
-    return last, used, tuple(warnings_out), tuple(errors)
+            warnings_out.extend(
+                f"{method}: {w.category.__name__}: {w.message}" for w in caught
+            )
+
+    converged_fits = [
+        (method, result)
+        for method, result in successful_fits
+        if bool(getattr(result, "converged", False))
+    ]
+    if converged_fits:
+        def log_likelihood(item: tuple[str, object]) -> float:
+            value = getattr(item[1], "llf", np.nan)
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return float("-inf")
+            return numeric if np.isfinite(numeric) else float("-inf")
+
+        selected_method, selected_result = max(
+            converged_fits,
+            key=log_likelihood,
+        )
+        return (
+            selected_result,
+            selected_method,
+            tuple(warnings_out),
+            tuple(errors),
+        )
+
+    return last, last_method, tuple(warnings_out), tuple(errors)
 
 
 def _target_role(target: str) -> str:
@@ -234,7 +251,7 @@ def compare_random_effects(
     conditions: tuple[str, ...] = CONDITIONS,
 ) -> RandomEffectsRunResult:
     """Fit paired RI/RI+RS models and return evidence without selecting a winner."""
-    data = add_full_data_tmt_z(modeling_data)
+    data = modeling_data.copy(deep=True)
     rows: list[dict[str, object]] = []
     audits: list[dict[str, object]] = []
     errors: list[str] = []
