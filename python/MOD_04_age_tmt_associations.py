@@ -48,11 +48,11 @@ AGE_TERM = "C(participant_group, Treatment(reference='Young'))"
 PROPOSED_MODEL_RHS = {
     "M0": "{D}",
     "MA": f"{{D}} + {AGE_TERM}",
-    "MT": "{D} + tmt_z",
-    "MAT": f"{{D}} + {AGE_TERM} + tmt_z",
+    "MT": "{D} + tmt_b_seconds",
+    "MAT": f"{{D}} + {AGE_TERM} + tmt_b_seconds",
     "MDA": f"{{D}} + {AGE_TERM} + {{D}}:{AGE_TERM}",
-    "MDT": "{D} + tmt_z + {D}:tmt_z",
-    "MDAT": f"{{D}} + {AGE_TERM} + tmt_z + {{D}}:{AGE_TERM} + {{D}}:tmt_z",
+    "MDT": "{D} + tmt_b_seconds + {D}:tmt_b_seconds",
+    "MDAT": f"{{D}} + {AGE_TERM} + tmt_b_seconds + {{D}}:{AGE_TERM} + {{D}}:tmt_b_seconds",
 }
 PROPOSED_REGISTRY_APPROVED = False
 
@@ -112,21 +112,13 @@ def _eligible_frame(
     if not {"Young", "Old"}.issubset(groups):
         raise ValueError(f"Age groups must include Young and Old; found {sorted(groups)}")
 
-    participant = frame[["participant_id", "tmt_b_seconds"]].drop_duplicates("participant_id")
-    tmt = pd.to_numeric(participant["tmt_b_seconds"], errors="coerce")
-    mean = float(tmt.mean())
-    sd = float(tmt.std(ddof=1))
-    if not np.isfinite(sd) or sd <= 0:
-        raise ValueError("Full-data TMT-B SD must be positive")
-    zmap = dict(
-        zip(
-            participant["participant_id"].astype(str),
-            ((tmt - mean) / sd).astype(float),
-        )
+    frame["tmt_b_seconds"] = pd.to_numeric(
+        frame["tmt_b_seconds"], errors="coerce"
     )
-    frame["tmt_z"] = frame["participant_id"].astype(str).map(zmap)
-    frame.attrs["tmt_mean"] = mean
-    frame.attrs["tmt_sd"] = sd
+    if frame["tmt_b_seconds"].isna().any() or not np.isfinite(
+        frame["tmt_b_seconds"]
+    ).all():
+        raise ValueError("TMT-B must contain finite numeric values in seconds")
     return frame
 
 
@@ -227,8 +219,6 @@ def fit_age_tmt_models(
                                 "optimizer": optimizer,
                                 "warnings": " | ".join(fit_warnings),
                                 "fit_errors": " | ".join(fit_errors),
-                                "tmt_mean_seconds": frame.attrs["tmt_mean"],
-                                "tmt_sd_seconds": frame.attrs["tmt_sd"],
                             })
                             continue
 
@@ -255,8 +245,6 @@ def fit_age_tmt_models(
                             "optimizer": optimizer,
                             "warnings": " | ".join(fit_warnings),
                             "fit_errors": " | ".join(fit_errors),
-                            "tmt_mean_seconds": frame.attrs["tmt_mean"],
-                            "tmt_sd_seconds": frame.attrs["tmt_sd"],
                         })
 
                         cov = result.cov_params().loc[
