@@ -489,7 +489,12 @@ def run_training_lopo(
 def _lopo_wide(
     lopo_summary: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Return one RI-versus-RI+RS LOPO row per condition × target."""
+    """Return RI-versus-RI+RS LOPO evidence per condition × target.
+
+    A completely failed LOPO family may have no model-summary row because
+    MOD-05 constructs summaries only from successful folds. Such a failure is
+    retained as missing predictive evidence rather than aborting MOD-10.
+    """
     summary = lopo_summary.loc[
         lopo_summary["model_id"].eq("MDAT")
     ].copy()
@@ -503,62 +508,70 @@ def _lopo_wide(
                 & summary["target_name"].eq(target)
             ]
 
-            ri_rows = family.loc[
-                family["random_structure"].eq("RI")
-            ]
-            rs_rows = family.loc[
-                family["random_structure"].eq("RI_RS")
-            ]
+            row: dict[str, Any] = {
+                "condition_name": condition,
+                "target_name": target,
+            }
 
-            if len(ri_rows) != 1 or len(rs_rows) != 1:
-                raise Mod10Error(
-                    f"{condition}/{target}: incomplete LOPO summary"
-                )
-
-            ri = ri_rows.iloc[0]
-            rs = rs_rows.iloc[0]
-
-            ri_count = int(ri["participant_count"])
-            rs_count = int(rs["participant_count"])
-
-            if (
-                ri_count != EXPECTED_TRAINING_PARTICIPANTS
-                or rs_count != EXPECTED_TRAINING_PARTICIPANTS
+            for structure, prefix in (
+                ("RI", "ri"),
+                ("RI_RS", "ri_rs"),
             ):
-                raise Mod10Error(
-                    f"{condition}/{target}: LOPO did not contain all "
-                    "26 training participants"
+                structure_rows = family.loc[
+                    family["random_structure"].eq(structure)
+                ]
+
+                if len(structure_rows) > 1:
+                    raise Mod10Error(
+                        f"{condition}/{target}/{structure}: "
+                        "multiple LOPO summary rows found"
+                    )
+
+                if len(structure_rows) == 0:
+                    row[f"{prefix}_lopo_status"] = "failed_no_summary"
+                    row[f"{prefix}_lopo_participant_count"] = 0
+                    row[f"{prefix}_lopo_prediction_count"] = 0
+                    row[f"{prefix}_lopo_mae"] = np.nan
+                    row[f"{prefix}_lopo_r2"] = np.nan
+                    continue
+
+                source = structure_rows.iloc[0]
+
+                participant_count = int(source["participant_count"])
+                prediction_count = int(source["prediction_count"])
+
+                row[f"{prefix}_lopo_status"] = (
+                    "complete"
+                    if participant_count == EXPECTED_TRAINING_PARTICIPANTS
+                    else "partial"
+                )
+                row[f"{prefix}_lopo_participant_count"] = participant_count
+                row[f"{prefix}_lopo_prediction_count"] = prediction_count
+                row[f"{prefix}_lopo_mae"] = _safe_float(
+                    source["participant_balanced_mae"]
+                )
+                row[f"{prefix}_lopo_r2"] = _safe_float(
+                    source["lopo_r2"]
                 )
 
-            ri_mae = _safe_float(ri["participant_balanced_mae"])
-            rs_mae = _safe_float(rs["participant_balanced_mae"])
-            ri_r2 = _safe_float(ri["lopo_r2"])
-            rs_r2 = _safe_float(rs["lopo_r2"])
+            ri_mae = row["ri_lopo_mae"]
+            rs_mae = row["ri_rs_lopo_mae"]
+            ri_r2 = row["ri_lopo_r2"]
+            rs_r2 = row["ri_rs_lopo_r2"]
 
-            rows.append(
-                {
-                    "condition_name": condition,
-                    "target_name": target,
-                    "ri_lopo_participant_count": ri_count,
-                    "ri_rs_lopo_participant_count": rs_count,
-                    "ri_lopo_prediction_count": int(
-                        ri["prediction_count"]
-                    ),
-                    "ri_rs_lopo_prediction_count": int(
-                        rs["prediction_count"]
-                    ),
-                    "ri_lopo_mae": ri_mae,
-                    "ri_rs_lopo_mae": rs_mae,
-                    "ri_lopo_r2": ri_r2,
-                    "ri_rs_lopo_r2": rs_r2,
-                    "delta_lopo_mae_ri_rs_minus_ri": (
-                        rs_mae - ri_mae
-                    ),
-                    "delta_lopo_r2_ri_rs_minus_ri": (
-                        rs_r2 - ri_r2
-                    ),
-                }
+            row["delta_lopo_mae_ri_rs_minus_ri"] = (
+                rs_mae - ri_mae
+                if np.isfinite(rs_mae) and np.isfinite(ri_mae)
+                else np.nan
             )
+
+            row["delta_lopo_r2_ri_rs_minus_ri"] = (
+                rs_r2 - ri_r2
+                if np.isfinite(rs_r2) and np.isfinite(ri_r2)
+                else np.nan
+            )
+
+            rows.append(row)
 
     return pd.DataFrame(rows)
 
@@ -628,10 +641,14 @@ def build_audit(
             )
 
             summary_ok = False
+
             if len(comp) == 1:
                 row = comp.iloc[0]
+
                 summary_ok = (
                     int(row["participant_count"]) == 26
+                    and row["ri_lopo_status"] == "complete"
+                    and row["ri_rs_lopo_status"] == "complete"
                     and int(row["ri_lopo_participant_count"]) == 26
                     and int(row["ri_rs_lopo_participant_count"]) == 26
                 )
