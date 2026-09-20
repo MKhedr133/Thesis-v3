@@ -2,3 +2,4 @@ numpy
 pandas
 matplotlib
 openpyxl
+statsmodels==0.15.0
