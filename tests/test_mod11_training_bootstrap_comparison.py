@@ -1141,6 +1141,57 @@ class BootstrapCheckpointTests(unittest.TestCase):
                 0,
             )
 
+class BootstrapFitAuditTests(unittest.TestCase):
+    def test_failure_count_counts_failed_attempts_without_negative_values(self):
+        fits = pd.DataFrame(
+            [
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                    "convergence_status": "converged",
+                    "prediction_status": "success",
+                    "optimizer": "powell",
+                    "warnings": "",
+                    "fit_errors": "",
+                },
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                    "convergence_status": "failed",
+                    "prediction_status": "not_attempted_fit_failure",
+                    "optimizer": "",
+                    "warnings": "",
+                    "fit_errors": "synthetic failure",
+                },
+            ]
+        )
+
+        audit = MOD11.build_bootstrap_fit_audit(fits)
+
+        row = audit.iloc[0]
+
+        self.assertEqual(
+            row["fit_attempt_count"],
+            2,
+        )
+
+        self.assertEqual(
+            row["prediction_success_count"],
+            1,
+        )
+
+        self.assertEqual(
+            row["fit_or_prediction_failure_count"],
+            1,
+        )
+
+        self.assertGreaterEqual(
+            row["fit_or_prediction_failure_count"],
+            0,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

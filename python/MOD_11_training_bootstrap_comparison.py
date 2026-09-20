@@ -1816,6 +1816,11 @@ def build_bootstrap_fit_audit(
             if optimizer
         )
 
+        successful_attempt = (
+            family["convergence_status"].eq("converged")
+            & family["prediction_status"].eq("success")
+        )
+
         rows.append(
             {
                 "condition_name": condition,
@@ -1835,15 +1840,7 @@ def build_bootstrap_fit_audit(
                     ].eq("success").sum()
                 ),
                 "fit_or_prediction_failure_count": int(
-                    ~(
-                        family[
-                            "convergence_status"
-                        ].eq("converged")
-                        & family[
-                            "prediction_status"
-                        ].eq("success")
-                    )
-                .sum()
+                    (~successful_attempt).sum()
                 ),
                 "warning_attempt_count": int(
                     warnings_present.sum()
