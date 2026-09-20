@@ -1193,5 +1193,55 @@ class BootstrapFitAuditTests(unittest.TestCase):
         )
 
 
+class EligibilityRowCoverageTests(unittest.TestCase):
+    def test_mismatched_oob_rows_make_replicate_ineligible(self):
+        fit_rows = []
+        prediction_rows = []
+
+        for model_id in MOD11.MODEL_IDS:
+            fit_rows.append(
+                {
+                    "bootstrap_replicate": 1,
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": model_id,
+                    "convergence_status": "converged",
+                    "prediction_status": "success",
+                }
+            )
+
+            row_id = (
+                999
+                if model_id == "MDAT"
+                else 1
+            )
+
+            prediction_rows.append(
+                {
+                    "bootstrap_replicate": 1,
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": model_id,
+                    MOD11.ORIGINAL_ROW_ID_COLUMN: row_id,
+                }
+            )
+
+        eligibility = MOD11.build_comparison_eligibility(
+            pd.DataFrame(fit_rows),
+            pd.DataFrame(prediction_rows),
+        )
+
+        row = eligibility.iloc[0]
+
+        self.assertFalse(
+            bool(row["comparison_eligible"])
+        )
+
+        self.assertEqual(
+            row["eligibility_reason"],
+            "oob_prediction_row_mismatch",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

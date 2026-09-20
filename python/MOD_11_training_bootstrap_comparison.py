@@ -1020,9 +1020,11 @@ def build_comparison_eligibility(
     """Identify bootstrap replicates comparable across all candidates.
 
     A condition × target × replicate is comparison eligible only when every
-    requested candidate converged and produced the same complete OOB row set.
+    requested candidate converged and produced exactly one prediction for the
+    same complete set of OOB rows.
 
-    This prevents candidate deltas from comparing different bootstrap samples.
+    The implementation aggregates the prediction table once rather than
+    repeatedly scanning the full table for every bootstrap family.
     """
     required_fit_columns = {
         "bootstrap_replicate",
@@ -1043,10 +1045,39 @@ def build_comparison_eligibility(
             + ", ".join(sorted(missing))
         )
 
-    expected_models = tuple(model_ids)
-    expected_set = set(expected_models)
+    required_prediction_columns = {
+        "bootstrap_replicate",
+        "condition_name",
+        "target_name",
+        "model_id",
+        ORIGINAL_ROW_ID_COLUMN,
+    }
 
-    rows: list[dict[str, object]] = []
+    missing_predictions = (
+        required_prediction_columns
+        - set(predictions.columns)
+    )
+
+    if missing_predictions:
+        raise Mod11Error(
+            "Bootstrap predictions are missing columns: "
+            + ", ".join(
+                sorted(missing_predictions)
+            )
+        )
+
+    expected_models = tuple(
+        str(model_id)
+        for model_id in model_ids
+    )
+
+    expected_model_set = set(
+        expected_models
+    )
+
+    expected_model_count = len(
+        expected_models
+    )
 
     keys = [
         "condition_name",
@@ -1054,122 +1085,228 @@ def build_comparison_eligibility(
         "bootstrap_replicate",
     ]
 
-    for key, family in bootstrap_fits.groupby(
-        keys,
-        sort=False,
-        dropna=False,
-    ):
-        condition, target, replicate = key
+    fits = bootstrap_fits.copy()
 
-        observed_models = list(
-            family["model_id"].astype(str)
+    fits["_model_is_expected"] = (
+        fits["model_id"]
+        .astype(str)
+        .isin(expected_model_set)
+    )
+
+    fits["_fit_success"] = (
+        fits["convergence_status"].eq(
+            "converged"
         )
-
-        unique_models = set(observed_models)
-
-        one_fit_per_model = (
-            len(family) == len(expected_models)
-            and len(unique_models) == len(expected_models)
-            and unique_models == expected_set
+        & fits["prediction_status"].eq(
+            "success"
         )
+    )
 
-        all_fit_success = bool(
-            one_fit_per_model
-            and family[
-                "convergence_status"
-            ].eq("converged").all()
-            and family[
-                "prediction_status"
-            ].eq("success").all()
+    fit_summary = (
+        fits.groupby(
+            keys,
+            sort=False,
+            dropna=False,
         )
-
-        family_predictions = predictions.loc[
-            predictions["condition_name"].eq(condition)
-            & predictions["target_name"].eq(target)
-            & predictions["bootstrap_replicate"].eq(replicate)
-        ].copy()
-
-        row_sets: list[set[object]] = []
-
-        prediction_sets_complete = all_fit_success
-
-        if prediction_sets_complete:
-            for model_id in expected_models:
-                model_predictions = family_predictions.loc[
-                    family_predictions["model_id"].eq(model_id)
-                ]
-
-                row_ids = set(
-                    model_predictions[
-                        ORIGINAL_ROW_ID_COLUMN
-                    ].tolist()
-                )
-
-                if not row_ids:
-                    prediction_sets_complete = False
-                    break
-
-                if (
-                    len(row_ids)
-                    != len(model_predictions)
-                ):
-                    prediction_sets_complete = False
-                    break
-
-                row_sets.append(row_ids)
-
-        same_prediction_rows = bool(
-            prediction_sets_complete
-            and row_sets
-            and all(
-                row_set == row_sets[0]
-                for row_set in row_sets[1:]
-            )
+        .agg(
+            fit_row_count=(
+                "model_id",
+                "size",
+            ),
+            unique_model_count=(
+                "model_id",
+                "nunique",
+            ),
+            all_models_expected=(
+                "_model_is_expected",
+                "all",
+            ),
+            successful_model_count=(
+                "_fit_success",
+                "sum",
+            ),
+            all_fit_success=(
+                "_fit_success",
+                "all",
+            ),
         )
+        .reset_index()
+    )
 
-        eligible = bool(
-            all_fit_success
-            and same_prediction_rows
+    fit_summary[
+        "one_fit_per_model"
+    ] = (
+        fit_summary[
+            "fit_row_count"
+        ].eq(expected_model_count)
+        & fit_summary[
+            "unique_model_count"
+        ].eq(expected_model_count)
+        & fit_summary[
+            "all_models_expected"
+        ]
+    )
+
+    prediction_data = predictions.copy()
+
+    prediction_data[
+        "_model_is_expected"
+    ] = (
+        prediction_data[
+            "model_id"
+        ]
+        .astype(str)
+        .isin(expected_model_set)
+    )
+
+    row_keys = (
+        keys
+        + [ORIGINAL_ROW_ID_COLUMN]
+    )
+
+    prediction_by_row = (
+        prediction_data.groupby(
+            row_keys,
+            sort=False,
+            dropna=False,
         )
-
-        if eligible:
-            reason = "all_models_successful_same_oob_rows"
-        elif not one_fit_per_model:
-            reason = "missing_or_duplicate_model_fit"
-        elif not all_fit_success:
-            reason = "one_or_more_model_fit_or_prediction_failures"
-        else:
-            reason = "oob_prediction_row_mismatch"
-
-        rows.append(
-            {
-                "condition_name": condition,
-                "target_name": target,
-                "bootstrap_replicate": int(replicate),
-                "expected_model_count": len(
-                    expected_models
-                ),
-                "successful_model_count": int(
-                    (
-                        family[
-                            "convergence_status"
-                        ].eq("converged")
-                        & family[
-                            "prediction_status"
-                        ].eq("success")
-                    ).sum()
-                ),
-                "comparison_eligible": eligible,
-                "eligibility_reason": reason,
-                "common_oob_observation_count": (
-                    len(row_sets[0])
-                    if eligible
-                    else 0
-                ),
-            }
+        .agg(
+            prediction_count=(
+                "model_id",
+                "size",
+            ),
+            unique_prediction_model_count=(
+                "model_id",
+                "nunique",
+            ),
+            all_prediction_models_expected=(
+                "_model_is_expected",
+                "all",
+            ),
         )
+        .reset_index()
+    )
 
-    return pd.DataFrame(rows)
+    prediction_by_row[
+        "_row_has_all_models"
+    ] = (
+        prediction_by_row[
+            "prediction_count"
+        ].eq(expected_model_count)
+        & prediction_by_row[
+            "unique_prediction_model_count"
+        ].eq(expected_model_count)
+        & prediction_by_row[
+            "all_prediction_models_expected"
+        ]
+    )
+
+    prediction_summary = (
+        prediction_by_row.groupby(
+            keys,
+            sort=False,
+            dropna=False,
+        )
+        .agg(
+            common_oob_observation_count=(
+                ORIGINAL_ROW_ID_COLUMN,
+                "size",
+            ),
+            all_prediction_rows_common=(
+                "_row_has_all_models",
+                "all",
+            ),
+        )
+        .reset_index()
+    )
+
+    summary = fit_summary.merge(
+        prediction_summary,
+        on=keys,
+        how="left",
+        validate="one_to_one",
+    )
+
+    summary[
+        "common_oob_observation_count"
+    ] = (
+        summary[
+            "common_oob_observation_count"
+        ]
+        .fillna(0)
+        .astype(int)
+    )
+
+    summary[
+        "all_prediction_rows_common"
+    ] = (
+        summary[
+            "all_prediction_rows_common"
+        ]
+        .fillna(False)
+        .astype(bool)
+    )
+
+    summary[
+        "comparison_eligible"
+    ] = (
+        summary[
+            "one_fit_per_model"
+        ]
+        & summary[
+            "all_fit_success"
+        ]
+        & summary[
+            "all_prediction_rows_common"
+        ]
+        & summary[
+            "common_oob_observation_count"
+        ].gt(0)
+    )
+
+    summary[
+        "eligibility_reason"
+    ] = np.select(
+        [
+            summary[
+                "comparison_eligible"
+            ],
+            ~summary[
+                "one_fit_per_model"
+            ],
+            ~summary[
+                "all_fit_success"
+            ],
+        ],
+        [
+            "all_models_successful_same_oob_rows",
+            "missing_or_duplicate_model_fit",
+            (
+                "one_or_more_model_fit_or_"
+                "prediction_failures"
+            ),
+        ],
+        default=(
+            "oob_prediction_row_mismatch"
+        ),
+    )
+
+    summary[
+        "expected_model_count"
+    ] = expected_model_count
+
+    return summary[
+        [
+            "condition_name",
+            "target_name",
+            "bootstrap_replicate",
+            "expected_model_count",
+            "successful_model_count",
+            "comparison_eligible",
+            "eligibility_reason",
+            "common_oob_observation_count",
+        ]
+    ].copy()
 
 
 def filter_to_comparison_eligible_predictions(
