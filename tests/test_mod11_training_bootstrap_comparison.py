@@ -6,6 +6,7 @@ from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -379,6 +380,403 @@ class BootstrapPlanTests(unittest.TestCase):
                 plan,
             )
 
+
+def synthetic_modeling_data_with_outcomes() -> pd.DataFrame:
+    """Extend the Batch-1 synthetic data with two modelling outcomes."""
+    data = synthetic_modeling_data()
+
+    data["condition_name"] = "Visual"
+
+    data["mental_demand_score_0_to_10"] = (
+        1.0
+        + data["difficulty_stage"].astype(float)
+        + data["participant_group"].eq("Old").astype(float) * 0.5
+    )
+
+    # D0 is a structural reference and will be excluded by MOD-11.
+    data["performance_change_from_d0_percentage_points"] = (
+        data["difficulty_stage"].astype(float) * 5.0
+    )
+
+    return data
+
+
+class FakeMixedLMResult:
+    """Minimal converged result used to test MOD-11 orchestration."""
+
+    def __init__(
+        self,
+        *,
+        prediction_value: float = 5.0,
+        llf: float = -100.0,
+        aic: float = 210.0,
+        bic: float = 220.0,
+    ):
+        self.converged = True
+        self.llf = llf
+        self.aic = aic
+        self.bic = bic
+        self.fe_params = pd.Series(
+            [1.0, 2.0],
+            index=["Intercept", "difficulty"],
+        )
+        self.prediction_value = prediction_value
+        self.prediction_frames: list[pd.DataFrame] = []
+
+    def predict(self, frame: pd.DataFrame):
+        self.prediction_frames.append(frame.copy())
+
+        return np.full(
+            len(frame),
+            self.prediction_value,
+            dtype=float,
+        )
+
+
+def fake_mixedlm_fitter(
+    formula,
+    data,
+    random_structure,
+    difficulty_column,
+    *,
+    participant_column="participant_id",
+    **kwargs,
+):
+    """Return a deterministic fake fit with MOD-02-compatible output."""
+    return (
+        FakeMixedLMResult(),
+        "lbfgs",
+        (),
+        (),
+    )
+
+
+class TargetPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.training_data, self.training_ids, _ = (
+            MOD11.prepare_training_data(
+                modeling_data=synthetic_modeling_data_with_outcomes(),
+                holdout_split=synthetic_holdout_split(),
+            )
+        )
+
+    def test_performance_excludes_d0_and_uses_post_d0_stage(self):
+        frame, difficulty_column = MOD11.prepare_target_frame(
+            self.training_data,
+            condition="Visual",
+            target=(
+                "performance_change_from_d0_percentage_points"
+            ),
+        )
+
+        self.assertEqual(
+            difficulty_column,
+            "performance_difficulty_stage",
+        )
+
+        self.assertEqual(len(frame), 26 * 3)
+
+        self.assertFalse(
+            frame["difficulty_level"].eq(0).any()
+        )
+
+        self.assertEqual(
+            set(frame[difficulty_column]),
+            {0.0, 1.0, 2.0},
+        )
+
+    def test_mental_demand_keeps_all_four_stages(self):
+        frame, difficulty_column = MOD11.prepare_target_frame(
+            self.training_data,
+            condition="Visual",
+            target="mental_demand_score_0_to_10",
+        )
+
+        self.assertEqual(
+            difficulty_column,
+            "difficulty_stage",
+        )
+
+        self.assertEqual(len(frame), 26 * 4)
+
+        self.assertEqual(
+            set(frame[difficulty_column]),
+            {0, 1, 2, 3},
+        )
+
+    def test_candidate_formula_uses_target_specific_difficulty(self):
+        formula = MOD11.build_candidate_formula(
+            target="mental_demand_score_0_to_10",
+            model_id="MDT",
+        )
+
+        self.assertEqual(
+            formula,
+            (
+                "mental_demand_score_0_to_10 ~ "
+                "difficulty_stage + tmt_b_seconds + "
+                "difficulty_stage:tmt_b_seconds"
+            ),
+        )
+
+
+class OriginalTrainingFitTests(unittest.TestCase):
+    def setUp(self):
+        self.training_data, _, _ = (
+            MOD11.prepare_training_data(
+                modeling_data=synthetic_modeling_data_with_outcomes(),
+                holdout_split=synthetic_holdout_split(),
+            )
+        )
+
+    def test_original_fit_uses_ri_and_original_participant_clusters(self):
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ) as mocked:
+            evidence = MOD11.fit_original_training_models(
+                self.training_data,
+                conditions=("Visual",),
+                targets=("mental_demand_score_0_to_10",),
+                model_ids=("M0", "MT"),
+            )
+
+        self.assertEqual(len(evidence), 2)
+
+        self.assertTrue(
+            evidence["convergence_status"]
+            .eq("converged")
+            .all()
+        )
+
+        self.assertTrue(
+            evidence["random_structure"]
+            .eq("RI")
+            .all()
+        )
+
+        self.assertTrue(
+            evidence["reml"]
+            .eq(False)
+            .all()
+        )
+
+        self.assertTrue(
+            evidence["participant_count"]
+            .eq(26)
+            .all()
+        )
+
+        self.assertTrue(
+            evidence["aic"]
+            .eq(210.0)
+            .all()
+        )
+
+        self.assertTrue(
+            evidence["bic"]
+            .eq(220.0)
+            .all()
+        )
+
+        self.assertEqual(mocked.call_count, 2)
+
+        for call in mocked.call_args_list:
+            args = call.args
+            kwargs = call.kwargs
+
+            self.assertEqual(
+                args[2],
+                "RI",
+            )
+
+            self.assertEqual(
+                kwargs["participant_column"],
+                "participant_id",
+            )
+
+    def test_original_mt_fit_uses_raw_tmt_seconds(self):
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ) as mocked:
+            MOD11.fit_original_training_models(
+                self.training_data,
+                conditions=("Visual",),
+                targets=("mental_demand_score_0_to_10",),
+                model_ids=("MT",),
+            )
+
+        formula = mocked.call_args.args[0]
+
+        self.assertIn(
+            "tmt_b_seconds",
+            formula,
+        )
+
+        self.assertNotIn(
+            "tmt_b_z",
+            formula,
+        )
+
+
+class BootstrapOobPredictionTests(unittest.TestCase):
+    def setUp(self):
+        (
+            self.training_data,
+            self.training_ids,
+            self.test_ids,
+        ) = MOD11.prepare_training_data(
+            modeling_data=synthetic_modeling_data_with_outcomes(),
+            holdout_split=synthetic_holdout_split(),
+        )
+
+        # Leave the final training participant OOB and duplicate the first.
+        self.omitted = self.training_ids[-1]
+
+        self.sampled = (
+            *self.training_ids[:-1],
+            self.training_ids[0],
+        )
+
+    def test_bootstrap_fit_groups_by_bootstrap_cluster(self):
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ) as mocked:
+            predictions, fits = (
+                MOD11.run_bootstrap_replicate(
+                    self.training_data,
+                    training_participant_ids=self.training_ids,
+                    sampled_participant_ids=self.sampled,
+                    replicate_index=7,
+                    conditions=("Visual",),
+                    targets=("mental_demand_score_0_to_10",),
+                    model_ids=("M0",),
+                )
+            )
+
+        self.assertEqual(mocked.call_count, 1)
+
+        call = mocked.call_args
+
+        self.assertEqual(
+            call.args[2],
+            "RI",
+        )
+
+        self.assertEqual(
+            call.kwargs["participant_column"],
+            MOD11.BOOTSTRAP_CLUSTER_COLUMN,
+        )
+
+        bootstrap_frame = call.args[1]
+
+        self.assertEqual(
+            bootstrap_frame[
+                MOD11.BOOTSTRAP_CLUSTER_COLUMN
+            ].nunique(),
+            26,
+        )
+
+        self.assertEqual(len(fits), 1)
+
+    def test_oob_predictions_contain_only_omitted_participant(self):
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ):
+            predictions, _ = MOD11.run_bootstrap_replicate(
+                self.training_data,
+                training_participant_ids=self.training_ids,
+                sampled_participant_ids=self.sampled,
+                replicate_index=7,
+                conditions=("Visual",),
+                targets=("mental_demand_score_0_to_10",),
+                model_ids=("M0",),
+            )
+
+        self.assertEqual(len(predictions), 4)
+
+        self.assertEqual(
+            set(predictions["participant_id"]),
+            {self.omitted},
+        )
+
+        self.assertTrue(
+            set(predictions["participant_id"])
+            .isdisjoint(self.test_ids)
+        )
+
+        self.assertTrue(
+            predictions["predicted"]
+            .eq(5.0)
+            .all()
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                predictions["absolute_error"]
+            ).all()
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                predictions["squared_error"]
+            ).all()
+        )
+
+    def test_oob_prediction_uses_result_predict_only(self):
+        """Fake result has no random-effect prediction API."""
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ):
+            predictions, _ = MOD11.run_bootstrap_replicate(
+                self.training_data,
+                training_participant_ids=self.training_ids,
+                sampled_participant_ids=self.sampled,
+                replicate_index=7,
+                conditions=("Visual",),
+                targets=("mental_demand_score_0_to_10",),
+                model_ids=("M0",),
+            )
+
+        self.assertEqual(
+            predictions["prediction_scope"].unique().tolist(),
+            ["fixed_effect_population_only"],
+        )
+
+    def test_performance_oob_prediction_excludes_d0(self):
+        with patch.object(
+            MOD11.MOD02,
+            "fit_mixedlm_with_fallback",
+            side_effect=fake_mixedlm_fitter,
+        ):
+            predictions, _ = MOD11.run_bootstrap_replicate(
+                self.training_data,
+                training_participant_ids=self.training_ids,
+                sampled_participant_ids=self.sampled,
+                replicate_index=7,
+                conditions=("Visual",),
+                targets=(
+                    "performance_change_from_d0_percentage_points",
+                ),
+                model_ids=("M0",),
+            )
+
+        self.assertEqual(len(predictions), 3)
+
+        self.assertFalse(
+            predictions["difficulty_level"]
+            .eq(0)
+            .any()
+        )
 
 if __name__ == "__main__":
     unittest.main()
