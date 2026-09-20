@@ -12,7 +12,7 @@ import pandas as pd
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = REPOSITORY_ROOT / "python"
-
+sys.path.insert(0, str(PYTHON_DIR))
 MODULE_PATH = PYTHON_DIR / "MOD_10_training_random_effects_comparison.py"
 
 SPEC = spec_from_file_location(
