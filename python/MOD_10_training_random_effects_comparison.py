@@ -12,7 +12,7 @@ This first implementation establishes and validates that data boundary.
 from __future__ import annotations
 
 import pandas as pd
-
+import MOD_02_random_effects_structure as MOD02
 
 PARTICIPANT_COLUMN = "participant_id"
 GROUP_COLUMN = "participant_group"
@@ -35,6 +35,32 @@ EXPECTED_TEST_GROUP_COUNTS = {
 
 class Mod10Error(ValueError):
     """Raised when the MOD-10 training-data contract is violated."""
+
+
+def build_target_specs() -> dict[str, MOD02.TargetSpec]:
+    """Return the 10 Gaussian MOD-10 targets with the MDAT fixed specification.
+
+    MOD-10 deliberately reuses the MOD-02 target registry so that the
+    difficulty coding and fixed-effects formulas remain identical to the
+    previously defined modelling specification.
+
+    The common fixed-effects structure is MDAT:
+
+        Difficulty
+        + Age
+        + TMT-B
+        + Difficulty × Age
+        + Difficulty × TMT-B
+
+    Relative performance uses performance_difficulty_stage. The remaining
+    Gaussian targets use difficulty_stage.
+    """
+    registry = MOD02.build_internal_registry()
+
+    return {
+        target: registry[target]
+        for target in MOD02.GAUSSIAN_TARGETS
+    }
 
 
 def _normalise_string_column(
