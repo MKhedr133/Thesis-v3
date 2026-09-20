@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-
+import tempfile
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = REPOSITORY_ROOT / "python"
@@ -777,6 +777,370 @@ class BootstrapOobPredictionTests(unittest.TestCase):
             .eq(0)
             .any()
         )
+
+class CommonSupportTests(unittest.TestCase):
+    def _fit_and_prediction_evidence(self):
+        fit_rows = []
+        prediction_rows = []
+
+        for replicate in (1, 2):
+            for model_id in MOD11.MODEL_IDS:
+                failed = (
+                    replicate == 2
+                    and model_id == "MDAT"
+                )
+
+                fit_rows.append(
+                    {
+                        "bootstrap_replicate": replicate,
+                        "condition_name": "Visual",
+                        "target_name": "mental_demand_score_0_to_10",
+                        "model_id": model_id,
+                        "convergence_status": (
+                            "failed" if failed else "converged"
+                        ),
+                        "prediction_status": (
+                            "not_attempted_fit_failure"
+                            if failed
+                            else "success"
+                        ),
+                        "optimizer": "lbfgs",
+                        "warnings": "",
+                        "fit_errors": (
+                            "synthetic failure" if failed else ""
+                        ),
+                    }
+                )
+
+                if not failed:
+                    prediction_rows.append(
+                        {
+                            "bootstrap_replicate": replicate,
+                            "condition_name": "Visual",
+                            "target_name": "mental_demand_score_0_to_10",
+                            "model_id": model_id,
+                            "participant_id": "P01",
+                            MOD11.ORIGINAL_ROW_ID_COLUMN: replicate,
+                            "observed": 10.0,
+                            "predicted": 9.0,
+                            "absolute_error": 1.0,
+                            "squared_error": 1.0,
+                        }
+                    )
+
+        return (
+            pd.DataFrame(fit_rows),
+            pd.DataFrame(prediction_rows),
+        )
+
+    def test_replicate_is_eligible_only_when_all_models_succeed(self):
+        fits, predictions = self._fit_and_prediction_evidence()
+
+        eligibility = MOD11.build_comparison_eligibility(
+            fits,
+            predictions,
+        )
+
+        replicate_1 = eligibility.loc[
+            eligibility["bootstrap_replicate"].eq(1)
+        ].iloc[0]
+
+        replicate_2 = eligibility.loc[
+            eligibility["bootstrap_replicate"].eq(2)
+        ].iloc[0]
+
+        self.assertTrue(
+            bool(replicate_1["comparison_eligible"])
+        )
+
+        self.assertFalse(
+            bool(replicate_2["comparison_eligible"])
+        )
+
+    def test_failed_replicate_is_excluded_for_all_models(self):
+        fits, predictions = self._fit_and_prediction_evidence()
+
+        eligibility = MOD11.build_comparison_eligibility(
+            fits,
+            predictions,
+        )
+
+        filtered = MOD11.filter_to_comparison_eligible_predictions(
+            predictions,
+            eligibility,
+        )
+
+        self.assertEqual(
+            set(filtered["bootstrap_replicate"]),
+            {1},
+        )
+
+        self.assertEqual(
+            set(filtered["model_id"]),
+            set(MOD11.MODEL_IDS),
+        )
+
+
+class LossFirstMetricTests(unittest.TestCase):
+    def test_mae_calculates_errors_before_averaging(self):
+        predictions = pd.DataFrame(
+            {
+                "participant_id": ["P01", "P01"],
+                "bootstrap_replicate": [1, 2],
+                "absolute_error": [4.0, 4.0],
+            }
+        )
+
+        mae = MOD11.participant_balanced_loss_first_mae(
+            predictions,
+            expected_participants=("P01",),
+        )
+
+        # True value 10 with predictions 6 and 14:
+        # prediction-first error would be 0,
+        # but loss-first MAE must be 4.
+        self.assertAlmostEqual(mae, 4.0)
+
+    def test_pooled_r2_uses_mean_squared_loss_before_pooling(self):
+        original = pd.DataFrame(
+            {
+                MOD11.ORIGINAL_ROW_ID_COLUMN: [1, 2],
+                "mental_demand_score_0_to_10": [0.0, 10.0],
+            }
+        )
+
+        predictions = pd.DataFrame(
+            [
+                {
+                    MOD11.ORIGINAL_ROW_ID_COLUMN: 1,
+                    "bootstrap_replicate": 1,
+                    "squared_error": 0.0,
+                },
+                {
+                    MOD11.ORIGINAL_ROW_ID_COLUMN: 1,
+                    "bootstrap_replicate": 2,
+                    "squared_error": 0.0,
+                },
+                {
+                    MOD11.ORIGINAL_ROW_ID_COLUMN: 2,
+                    "bootstrap_replicate": 1,
+                    "squared_error": 16.0,
+                },
+                {
+                    MOD11.ORIGINAL_ROW_ID_COLUMN: 2,
+                    "bootstrap_replicate": 2,
+                    "squared_error": 16.0,
+                },
+            ]
+        )
+
+        r2 = MOD11.pooled_loss_first_oob_r2(
+            predictions,
+            original_frame=original,
+            target="mental_demand_score_0_to_10",
+        )
+
+        # SST = (0 - 5)^2 + (10 - 5)^2 = 50
+        # loss-first SSE = 0 + 16 = 16
+        # R2 = 1 - 16/50 = 0.68
+        self.assertAlmostEqual(r2, 0.68)
+
+    def test_negative_oob_r2_is_preserved(self):
+        original = pd.DataFrame(
+            {
+                MOD11.ORIGINAL_ROW_ID_COLUMN: [1, 2],
+                "mental_demand_score_0_to_10": [0.0, 1.0],
+            }
+        )
+
+        predictions = pd.DataFrame(
+            {
+                MOD11.ORIGINAL_ROW_ID_COLUMN: [1, 2],
+                "bootstrap_replicate": [1, 1],
+                "squared_error": [100.0, 100.0],
+            }
+        )
+
+        r2 = MOD11.pooled_loss_first_oob_r2(
+            predictions,
+            original_frame=original,
+            target="mental_demand_score_0_to_10",
+        )
+
+        self.assertLess(r2, 0.0)
+
+
+class DeltaConventionTests(unittest.TestCase):
+    def test_all_m0_delta_signs_follow_frozen_convention(self):
+        oob_summary = pd.DataFrame(
+            [
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                    "participant_balanced_oob_mae": 2.0,
+                    "pooled_oob_r2": 0.20,
+                },
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "MT",
+                    "participant_balanced_oob_mae": 1.5,
+                    "pooled_oob_r2": 0.30,
+                },
+            ]
+        )
+
+        original_fits = pd.DataFrame(
+            [
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                    "aic": 100.0,
+                    "bic": 110.0,
+                    "convergence_status": "converged",
+                    "optimizer": "lbfgs",
+                    "warnings": "",
+                    "fit_errors": "",
+                },
+                {
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "MT",
+                    "aic": 95.0,
+                    "bic": 108.0,
+                    "convergence_status": "converged",
+                    "optimizer": "lbfgs",
+                    "warnings": "",
+                    "fit_errors": "",
+                },
+            ]
+        )
+
+        combined = MOD11.combine_comparison_evidence(
+            oob_summary,
+            original_fits,
+        )
+
+        mt = combined.loc[
+            combined["model_id"].eq("MT")
+        ].iloc[0]
+
+        self.assertAlmostEqual(
+            mt["delta_mae_vs_m0"],
+            0.5,
+        )
+
+        self.assertAlmostEqual(
+            mt["delta_oob_r2_vs_m0"],
+            0.10,
+        )
+
+        self.assertAlmostEqual(
+            mt["delta_aic_vs_m0"],
+            -5.0,
+        )
+
+        self.assertAlmostEqual(
+            mt["delta_bic_vs_m0"],
+            -2.0,
+        )
+
+        self.assertEqual(
+            mt["selection_status"],
+            "evidence_only_no_automatic_selection",
+        )
+
+
+class BootstrapCheckpointTests(unittest.TestCase):
+    def test_completed_replicates_are_reused_from_checkpoint(self):
+        training_data, training_ids, _ = (
+            MOD11.prepare_training_data(
+                modeling_data=synthetic_modeling_data_with_outcomes(),
+                holdout_split=synthetic_holdout_split(),
+            )
+        )
+
+        plan = MOD11.generate_bootstrap_plan(
+            training_ids,
+            n_replicates=2,
+            seed=123,
+        )
+
+        fake_predictions = pd.DataFrame(
+            [
+                {
+                    "bootstrap_replicate": 1,
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                }
+            ]
+        )
+
+        fake_fits = pd.DataFrame(
+            [
+                {
+                    "bootstrap_replicate": 1,
+                    "condition_name": "Visual",
+                    "target_name": "mental_demand_score_0_to_10",
+                    "model_id": "M0",
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_dir = Path(tmp)
+
+            with patch.object(
+                MOD11,
+                "run_bootstrap_replicate",
+                return_value=(
+                    fake_predictions,
+                    fake_fits,
+                ),
+            ) as first_run:
+                MOD11.run_bootstrap_plan(
+                    training_data,
+                    training_participant_ids=training_ids,
+                    bootstrap_plan=plan,
+                    conditions=("Visual",),
+                    targets=("mental_demand_score_0_to_10",),
+                    model_ids=("M0",),
+                    jobs=1,
+                    checkpoint_dir=checkpoint_dir,
+                    resume=True,
+                    progress=False,
+                )
+
+            self.assertEqual(
+                first_run.call_count,
+                2,
+            )
+
+            with patch.object(
+                MOD11,
+                "run_bootstrap_replicate",
+            ) as second_run:
+                MOD11.run_bootstrap_plan(
+                    training_data,
+                    training_participant_ids=training_ids,
+                    bootstrap_plan=plan,
+                    conditions=("Visual",),
+                    targets=("mental_demand_score_0_to_10",),
+                    model_ids=("M0",),
+                    jobs=1,
+                    checkpoint_dir=checkpoint_dir,
+                    resume=True,
+                    progress=False,
+                )
+
+            self.assertEqual(
+                second_run.call_count,
+                0,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
