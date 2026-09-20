@@ -105,6 +105,79 @@ class TrainingBoundaryTests(unittest.TestCase):
             set(training_ids),
         )
 
+class ModelSpecificationTests(unittest.TestCase):
+    def test_all_10_gaussian_targets_are_registered(self):
+        registry = MOD10.build_target_specs()
+
+        self.assertEqual(len(registry), 10)
+
+        self.assertIn(
+            "performance_change_from_d0_percentage_points",
+            registry,
+        )
+        self.assertIn(
+            "mental_demand_score_0_to_10",
+            registry,
+        )
+
+    def test_performance_uses_post_d0_difficulty_stage(self):
+        registry = MOD10.build_target_specs()
+
+        spec = registry[
+            "performance_change_from_d0_percentage_points"
+        ]
+
+        self.assertEqual(
+            spec.difficulty_column,
+            "performance_difficulty_stage",
+        )
+
+    def test_other_targets_use_four_stage_difficulty(self):
+        registry = MOD10.build_target_specs()
+
+        for target, spec in registry.items():
+            if target == (
+                "performance_change_from_d0_percentage_points"
+            ):
+                continue
+
+            self.assertEqual(
+                spec.difficulty_column,
+                "difficulty_stage",
+            )
+
+    def test_random_effects_comparison_uses_mdat_fixed_effects(self):
+        registry = MOD10.build_target_specs()
+
+        for spec in registry.values():
+            formula = spec.formula
+
+            self.assertIn("tmt_b_seconds", formula)
+            self.assertIn(
+                "C(participant_group, Treatment(reference='Young'))",
+                formula,
+            )
+
+            self.assertIn(
+                f"{spec.difficulty_column} * "
+                "C(participant_group, Treatment(reference='Young'))",
+                formula,
+            )
+
+            self.assertIn(
+                f"{spec.difficulty_column} * tmt_b_seconds",
+                formula,
+            )
+
+    def test_random_effects_comparison_is_not_m0(self):
+        registry = MOD10.build_target_specs()
+
+        for spec in registry.values():
+            self.assertNotEqual(
+                spec.formula,
+                f"{spec.target} ~ {spec.difficulty_column}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
