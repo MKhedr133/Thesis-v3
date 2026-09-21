@@ -8,6 +8,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+import argparse
+from pathlib import Path
+
 import MOD_10_training_random_effects_comparison as MOD10
 
 
@@ -23,6 +26,30 @@ PERFORMANCE_TARGET = (
 RANDOM_STRUCTURE = "RI"
 ALPHA = 0.05
 
+EVIDENCE_FILENAME = "final_association_evidence.csv"
+RETAINED_FILENAME = "retained_feature_sets.csv"
+
+EVIDENCE_COLUMNS = (
+    "condition",
+    "measurement",
+    "difficulty_coefficient",
+    "standard_error",
+    "ci_95_lower",
+    "ci_95_upper",
+    "p_value",
+    "participant_count",
+    "observation_count",
+    "convergence_status",
+    "optimizer",
+    "warnings_errors",
+    "retention_status",
+)
+
+RETAINED_COLUMNS = (
+    "condition",
+    "measurement",
+    "prediction_stage",
+)
 
 class Mod12Error(ValueError):
     """Raised when the MOD-12 analysis contract is violated."""
@@ -312,3 +339,174 @@ def fit_association(
         "warnings_errors": warnings_errors,
         "retention_status": retention_status,
     }
+
+def run_all_associations(
+    training_data: pd.DataFrame,
+) -> pd.DataFrame:
+    """Fit all 30 condition-by-measurement associations."""
+    rows: list[dict[str, object]] = []
+
+    for condition in CONDITIONS:
+        for target in TARGETS:
+            rows.append(
+                fit_association(
+                    training_data,
+                    condition=condition,
+                    target=target,
+                )
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=EVIDENCE_COLUMNS,
+    )
+
+def build_retained_features(
+    evidence: pd.DataFrame,
+) -> pd.DataFrame:
+    """Return the measurements retained for later prediction."""
+    retained = evidence.loc[
+        evidence["retention_status"].eq("retained"),
+        ["condition", "measurement"],
+    ].copy()
+
+    retained["prediction_stage"] = np.where(
+        retained["measurement"].eq(
+            PERFORMANCE_TARGET
+        ),
+        "later_only",
+        "initial_and_later",
+    )
+
+    return retained.loc[
+        :,
+        RETAINED_COLUMNS,
+    ].reset_index(drop=True)
+
+def write_outputs(
+    *,
+    evidence: pd.DataFrame,
+    retained: pd.DataFrame,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    """Write the two final MOD-12 CSV outputs."""
+    output_dir = Path(output_dir)
+
+    evidence_path = (
+        output_dir / EVIDENCE_FILENAME
+    )
+
+    retained_path = (
+        output_dir / RETAINED_FILENAME
+    )
+
+    existing = [
+        path
+        for path in (
+            evidence_path,
+            retained_path,
+        )
+        if path.exists()
+    ]
+
+    if existing:
+        raise Mod12Error(
+            "Refusing to overwrite existing MOD-12 outputs"
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    evidence.to_csv(
+        evidence_path,
+        index=False,
+        encoding="utf-8",
+        na_rep="",
+    )
+
+    retained.to_csv(
+        retained_path,
+        index=False,
+        encoding="utf-8",
+        na_rep="",
+    )
+
+    return evidence_path, retained_path
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__
+    )
+
+    parser.add_argument(
+        "--modeling-data",
+        type=Path,
+        required=True,
+    )
+
+    parser.add_argument(
+        "--holdout-split",
+        type=Path,
+        required=True,
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
+
+    return parser
+
+def main() -> int:
+    args = build_cli_parser().parse_args()
+
+    modeling_data = pd.read_csv(
+        args.modeling_data
+    )
+
+    holdout_split = pd.read_csv(
+        args.holdout_split
+    )
+
+    training_data, _, _ = prepare_training_data(
+        modeling_data=modeling_data,
+        holdout_split=holdout_split,
+    )
+
+    evidence = run_all_associations(
+        training_data
+    )
+
+    retained = build_retained_features(
+        evidence
+    )
+
+    write_outputs(
+        evidence=evidence,
+        retained=retained,
+        output_dir=args.output_dir,
+    )
+
+    print("MOD-12 complete")
+
+    for condition in CONDITIONS:
+        count = int(
+            (
+                retained["condition"]
+                .eq(condition)
+            ).sum()
+        )
+
+        print(
+            f"{condition}: "
+            f"{count} retained"
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

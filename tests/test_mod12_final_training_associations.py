@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -592,6 +593,192 @@ class TargetPreparationTests(unittest.TestCase):
             0.0,
         )
 
+
+class FinalOutputTests(unittest.TestCase):
+    def setUp(self):
+        self.training_data, _, _ = (
+            MOD12.prepare_training_data(
+                modeling_data=synthetic_modeling_data(),
+                holdout_split=synthetic_holdout_split(),
+            )
+        )
+
+    def test_runs_exactly_30_associations(self):
+        def fake_fit(
+            training_data,
+            *,
+            condition,
+            target,
+        ):
+            return {
+                "condition": condition,
+                "measurement": target,
+                "difficulty_coefficient": 0.5,
+                "standard_error": 0.1,
+                "ci_95_lower": 0.3,
+                "ci_95_upper": 0.7,
+                "p_value": 0.01,
+                "participant_count": 26,
+                "observation_count": 104,
+                "convergence_status": "converged",
+                "optimizer": "lbfgs",
+                "warnings_errors": "",
+                "retention_status": "retained",
+            }
+
+        with patch.object(
+            MOD12,
+            "fit_association",
+            side_effect=fake_fit,
+        ) as fitter:
+            evidence = MOD12.run_all_associations(
+                self.training_data
+            )
+
+        self.assertEqual(
+            fitter.call_count,
+            30,
+        )
+
+        self.assertEqual(
+            len(evidence),
+            30,
+        )
+
+        self.assertEqual(
+            set(evidence["condition"]),
+            {"Visual", "Auditory", "Cognitive"},
+        )
+
+    def test_evidence_has_only_required_columns(self):
+        row = {
+            "condition": "Visual",
+            "measurement": "mental_demand_score_0_to_10",
+            "difficulty_coefficient": 0.5,
+            "standard_error": 0.1,
+            "ci_95_lower": 0.3,
+            "ci_95_upper": 0.7,
+            "p_value": 0.01,
+            "participant_count": 26,
+            "observation_count": 104,
+            "convergence_status": "converged",
+            "optimizer": "lbfgs",
+            "warnings_errors": "",
+            "retention_status": "retained",
+        }
+
+        with patch.object(
+            MOD12,
+            "fit_association",
+            return_value=row,
+        ):
+            evidence = MOD12.run_all_associations(
+                self.training_data
+            )
+
+        self.assertEqual(
+            list(evidence.columns),
+            list(MOD12.EVIDENCE_COLUMNS),
+        )
+
+    def test_retained_features_include_only_retained_rows(self):
+        evidence = pd.DataFrame(
+            [
+                {
+                    "condition": "Visual",
+                    "measurement": "mental_demand_score_0_to_10",
+                    "retention_status": "retained",
+                },
+                {
+                    "condition": "Visual",
+                    "measurement": "median_reach_duration_seconds",
+                    "retention_status": "not_retained",
+                },
+                {
+                    "condition": "Auditory",
+                    "measurement": MOD12.PERFORMANCE_TARGET,
+                    "retention_status": "retained",
+                },
+            ]
+        )
+
+        retained = MOD12.build_retained_features(
+            evidence
+        )
+
+        self.assertEqual(len(retained), 2)
+
+        self.assertNotIn(
+            "median_reach_duration_seconds",
+            set(retained["measurement"]),
+        )
+
+    def test_relative_performance_is_later_only(self):
+        evidence = pd.DataFrame(
+            [
+                {
+                    "condition": "Visual",
+                    "measurement": MOD12.PERFORMANCE_TARGET,
+                    "retention_status": "retained",
+                },
+                {
+                    "condition": "Visual",
+                    "measurement": "mental_demand_score_0_to_10",
+                    "retention_status": "retained",
+                },
+            ]
+        )
+
+        retained = MOD12.build_retained_features(
+            evidence
+        )
+
+        performance = retained.loc[
+            retained["measurement"].eq(
+                MOD12.PERFORMANCE_TARGET
+            )
+        ].iloc[0]
+
+        mental_demand = retained.loc[
+            retained["measurement"].eq(
+                "mental_demand_score_0_to_10"
+            )
+        ].iloc[0]
+
+        self.assertEqual(
+            performance["prediction_stage"],
+            "later_only",
+        )
+
+        self.assertEqual(
+            mental_demand["prediction_stage"],
+            "initial_and_later",
+        )
+
+    def test_output_writer_refuses_overwrite(self):
+        evidence = pd.DataFrame(
+            columns=MOD12.EVIDENCE_COLUMNS
+        )
+
+        retained = pd.DataFrame(
+            columns=MOD12.RETAINED_COLUMNS
+        )
+
+        with TemporaryDirectory() as directory:
+            output_dir = Path(directory)
+
+            MOD12.write_outputs(
+                evidence=evidence,
+                retained=retained,
+                output_dir=output_dir,
+            )
+
+            with self.assertRaises(MOD12.Mod12Error):
+                MOD12.write_outputs(
+                    evidence=evidence,
+                    retained=retained,
+                    output_dir=output_dir,
+                )
 
 if __name__ == "__main__":
     unittest.main()
