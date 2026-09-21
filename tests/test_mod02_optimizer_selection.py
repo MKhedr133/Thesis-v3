@@ -135,34 +135,34 @@ class OptimizerSelectionTests(unittest.TestCase):
         )
 
 
-def test_reml_can_be_requested_explicitly(self):
-    model = _FakeModel(
-        {
-            "lbfgs": _FakeResult(
-                llf=-100.0,
-                converged=True,
-            ),
-        }
-    )
-
-    with patch.object(
-        MOD02.smf,
-        "mixedlm",
-        return_value=model,
-    ):
-        MOD02.fit_mixedlm_with_fallback(
-            "outcome ~ difficulty_stage",
-            self._data(),
-            "RI",
-            "difficulty_stage",
-            reml=True,
-            methods=("lbfgs",),
+    def test_reml_can_be_requested_explicitly(self):
+        model = _FakeModel(
+            {
+                "lbfgs": _FakeResult(
+                    llf=-100.0,
+                    converged=True,
+                ),
+            }
         )
 
-    self.assertEqual(
-        model.reml_calls,
-        [True],
-    )
+        with patch.object(
+            MOD02.smf,
+            "mixedlm",
+            return_value=model,
+        ):
+            MOD02.fit_mixedlm_with_fallback(
+                "outcome ~ difficulty_stage",
+                self._data(),
+                "RI",
+                "difficulty_stage",
+                reml=True,
+                methods=("lbfgs",),
+            )
+
+        self.assertEqual(
+            model.reml_calls,
+            [True],
+        )
 
 
 if __name__ == "__main__":
