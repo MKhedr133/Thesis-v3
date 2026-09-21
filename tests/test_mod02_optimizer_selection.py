@@ -38,12 +38,17 @@ class _FakeModel:
     def __init__(self, results):
         self.results = dict(results)
         self.calls: list[str] = []
+        self.reml_calls: list[bool] = []
 
     def fit(self, *, reml, method, maxiter, disp):
         self.calls.append(method)
+        self.reml_calls.append(reml)
+
         outcome = self.results[method]
+
         if isinstance(outcome, Exception):
             raise outcome
+
         return outcome
 
 
@@ -100,6 +105,64 @@ class OptimizerSelectionTests(unittest.TestCase):
         self.assertEqual(model.calls, ["lbfgs", "powell"])
         self.assertIs(result, model.results["lbfgs"])
         self.assertEqual(optimizer, "lbfgs")
+
+    def test_default_estimation_remains_ml(self):
+        model = _FakeModel(
+            {
+                "lbfgs": _FakeResult(
+                    llf=-100.0,
+                    converged=True,
+                ),
+            }
+        )
+
+        with patch.object(
+            MOD02.smf,
+            "mixedlm",
+            return_value=model,
+        ):
+            MOD02.fit_mixedlm_with_fallback(
+                "outcome ~ difficulty_stage",
+                self._data(),
+                "RI",
+                "difficulty_stage",
+                methods=("lbfgs",),
+            )
+
+        self.assertEqual(
+            model.reml_calls,
+            [False],
+        )
+
+
+    def test_reml_can_be_requested_explicitly(self):
+        model = _FakeModel(
+            {
+                "lbfgs": _FakeResult(
+                    llf=-100.0,
+                    converged=True,
+                ),
+            }
+        )
+
+        with patch.object(
+            MOD02.smf,
+            "mixedlm",
+            return_value=model,
+        ):
+            MOD02.fit_mixedlm_with_fallback(
+                "outcome ~ difficulty_stage",
+                self._data(),
+                "RI",
+                "difficulty_stage",
+                reml=True,
+                methods=("lbfgs",),
+            )
+
+        self.assertEqual(
+            model.reml_calls,
+            [True],
+        )
 
 
 if __name__ == "__main__":
