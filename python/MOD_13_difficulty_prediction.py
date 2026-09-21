@@ -1803,6 +1803,129 @@ def load_frozen_models(
     return frozen_models
 
 
+def evaluate_final_test_model(
+    test_data: pd.DataFrame,
+    *,
+    model_id: str,
+    frozen_model: LinearModelFit,
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+]:
+    """Evaluate one already-fitted model on final-test participants."""
+    if frozen_model.model_id != model_id:
+        raise Mod13Error(
+            "Frozen model ID does not match "
+            "requested final-test model"
+        )
+
+    frame = prepare_model_frame(
+        test_data,
+        model_id=model_id,
+    )
+
+    predictions = frozen_model.predict(
+        frame
+    )
+
+    observed = (
+        frame[TARGET_COLUMN]
+        .astype(float)
+    )
+
+    mae = participant_balanced_mae(
+        participant_ids=(
+            frame[PARTICIPANT_COLUMN]
+        ),
+        observed=observed,
+        predicted=predictions,
+    )
+
+    r2 = pooled_r2(
+        observed=observed,
+        predicted=predictions,
+    )
+
+    error = (
+        observed.to_numpy(dtype=float)
+        - predictions.to_numpy(dtype=float)
+    )
+
+    absolute_error = np.abs(
+        error
+    )
+
+    prediction_values = (
+        predictions.to_numpy(
+            dtype=float
+        )
+    )
+
+    out_of_range = (
+        (prediction_values < 0.0)
+        | (prediction_values > 3.0)
+    )
+
+    performance = pd.DataFrame(
+        [
+            {
+                "model": model_id,
+                "participant_count": int(
+                    frame[
+                        PARTICIPANT_COLUMN
+                    ].nunique()
+                ),
+                "eligible_row_count": int(
+                    len(frame)
+                ),
+                "mae": float(mae),
+                "r2": float(r2),
+                (
+                    "out_of_range_"
+                    "prediction_count"
+                ): int(
+                    np.sum(
+                        out_of_range
+                    )
+                ),
+            }
+        ]
+    )
+
+    predictions_table = pd.DataFrame(
+        {
+            "participant_id": (
+                frame[
+                    PARTICIPANT_COLUMN
+                ].to_numpy()
+            ),
+            "model": model_id,
+            "condition": (
+                frame[
+                    CONDITION_COLUMN
+                ].to_numpy()
+            ),
+            "observed_difficulty_stage": (
+                observed.to_numpy(
+                    dtype=float
+                )
+            ),
+            "predicted_difficulty_stage": (
+                prediction_values
+            ),
+            "error": error,
+            "absolute_error": (
+                absolute_error
+            ),
+        }
+    )
+
+    return (
+        performance,
+        predictions_table,
+    )
+
+
 def run_final_test(
     test_data: pd.DataFrame,
     *,
@@ -1916,6 +2039,64 @@ def write_final_test_outputs(
         performance_path,
         predictions_path,
     )
+
+def run_development_cli(
+    *,
+    modeling_data_path: Path,
+    holdout_split_path: Path,
+    output_dir: Path,
+) -> None:
+    """Execute the frozen training-only MOD-13 development pipeline."""
+    modeling_data = pd.read_csv(
+        modeling_data_path
+    )
+
+    holdout_split = pd.read_csv(
+        holdout_split_path
+    )
+
+    (
+        training_data,
+        _,
+        test_ids,
+    ) = prepare_training_data(
+        modeling_data=modeling_data,
+        holdout_split=holdout_split,
+    )
+
+    results = develop_all_models(
+        training_data,
+        forbidden_participant_ids=test_ids,
+    )
+
+    outputs = build_development_outputs(
+        results
+    )
+
+    write_development_outputs(
+        outputs,
+        output_dir=output_dir,
+    )
+
+    print("MOD-13 development complete")
+
+    for _, row in (
+        outputs
+        .bootstrap_performance
+        .iterrows()
+    ):
+        print(
+            f"{row['model']}: "
+            f"N={int(row['participant_count'])}, "
+            f"rows={int(row['eligible_row_count'])}, "
+            f"OOB MAE={row['oob_mae']:.4f}, "
+            f"OOB R2={row['oob_r2']:.4f}"
+        )
+
+    print(
+        "Final-test participants were not evaluated."
+    )
+
 
 def require_final_test_confirmation(
     confirmed: bool,
