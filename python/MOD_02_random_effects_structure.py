@@ -138,10 +138,11 @@ def fit_mixedlm_with_fallback(
     difficulty_column: str,
     *,
     participant_column: str = "participant_id",
+    reml: bool = False,
     maxiter: int = 1000,
     methods: tuple[str, ...] = ("lbfgs", "powell"),
 ):
-    """Fit one statsmodels MixedLM using ML, preserving all optimizer evidence."""
+    """Fit one statsmodels MixedLM and preserve optimizer evidence."""
     if random_structure not in {"RI", "RI_RS"}:
         raise ValueError(f"Unsupported random_structure={random_structure!r}")
     re_formula = "1" if random_structure == "RI" else f"1 + {difficulty_column}"
@@ -163,7 +164,7 @@ def fit_mixedlm_with_fallback(
             pywarnings.simplefilter("always")
             try:
                 result = model.fit(
-                    reml=False,
+                    reml=reml,
                     method=method,
                     maxiter=maxiter,
                     disp=False,

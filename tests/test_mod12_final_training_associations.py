@@ -10,6 +10,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from unittest.mock import patch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = ROOT / "python"
@@ -116,6 +118,288 @@ def synthetic_holdout_split() -> pd.DataFrame:
 
     return pd.DataFrame(rows)
 
+class _FakeAssociationResult:
+    def __init__(
+        self,
+        difficulty_column: str,
+        *,
+        coefficient: float = 0.75,
+        standard_error: float = 0.20,
+        p_value: float = 0.01,
+        ci_lower: float = 0.35,
+        ci_upper: float = 1.15,
+        converged: bool = True,
+    ):
+        self.converged = converged
+        self.llf = -100.0
+
+        self.fe_params = pd.Series(
+            {
+                "Intercept": 99.0,
+                difficulty_column: coefficient,
+            }
+        )
+
+        self.bse = pd.Series(
+            {
+                "Intercept": 9.0,
+                difficulty_column: standard_error,
+            }
+        )
+
+        self.pvalues = pd.Series(
+            {
+                "Intercept": 0.99,
+                difficulty_column: p_value,
+            }
+        )
+
+        self._confidence_intervals = pd.DataFrame(
+            {
+                0: [-999.0, ci_lower],
+                1: [999.0, ci_upper],
+            },
+            index=[
+                "Intercept",
+                difficulty_column,
+            ],
+        )
+
+    def conf_int(self):
+        return self._confidence_intervals
+
+
+class AssociationFitTests(unittest.TestCase):
+    def setUp(self):
+        self.training_data, _, _ = (
+            MOD12.prepare_training_data(
+                modeling_data=synthetic_modeling_data(),
+                holdout_split=synthetic_holdout_split(),
+            )
+        )
+
+    def test_mod12_requests_reml_and_ri(self):
+        target = "mental_demand_score_0_to_10"
+        difficulty_column = "difficulty_stage"
+
+        fake_result = _FakeAssociationResult(
+            difficulty_column,
+        )
+
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                fake_result,
+                "lbfgs",
+                (),
+                (),
+            ),
+        ) as fitter:
+            MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target=target,
+            )
+
+        args = fitter.call_args.args
+        kwargs = fitter.call_args.kwargs
+
+        self.assertEqual(
+            args[0],
+            f"{target} ~ difficulty_stage",
+        )
+
+        self.assertEqual(
+            args[2],
+            "RI",
+        )
+
+        self.assertEqual(
+            args[3],
+            difficulty_column,
+        )
+
+        self.assertTrue(
+            kwargs["reml"]
+        )
+
+    def test_extracts_only_difficulty_inference(self):
+        target = "mental_demand_score_0_to_10"
+
+        fake_result = _FakeAssociationResult(
+            "difficulty_stage",
+            coefficient=0.75,
+            standard_error=0.20,
+            p_value=0.01,
+            ci_lower=0.35,
+            ci_upper=1.15,
+        )
+
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                fake_result,
+                "lbfgs",
+                (),
+                (),
+            ),
+        ):
+            evidence = MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target=target,
+            )
+
+        self.assertEqual(
+            evidence["difficulty_coefficient"],
+            0.75,
+        )
+
+        self.assertEqual(
+            evidence["standard_error"],
+            0.20,
+        )
+
+        self.assertEqual(
+            evidence["ci_95_lower"],
+            0.35,
+        )
+
+        self.assertEqual(
+            evidence["ci_95_upper"],
+            1.15,
+        )
+
+        self.assertEqual(
+            evidence["p_value"],
+            0.01,
+        )
+
+        self.assertEqual(
+            evidence["retention_status"],
+            "retained",
+        )
+
+    def test_p_value_at_or_above_005_is_not_retained(self):
+        fake_result = _FakeAssociationResult(
+            "difficulty_stage",
+            p_value=0.05,
+        )
+
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                fake_result,
+                "powell",
+                (),
+                (),
+            ),
+        ):
+            evidence = MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target="mental_demand_score_0_to_10",
+            )
+
+        self.assertEqual(
+            evidence["retention_status"],
+            "not_retained",
+        )
+
+    def test_failed_fit_is_not_evaluable(self):
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                None,
+                "",
+                (),
+                ("lbfgs: fit failed",),
+            ),
+        ):
+            evidence = MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target="mental_demand_score_0_to_10",
+            )
+
+        self.assertEqual(
+            evidence["convergence_status"],
+            "failed",
+        )
+
+        self.assertEqual(
+            evidence["retention_status"],
+            "not_evaluable",
+        )
+
+        self.assertTrue(
+            np.isnan(
+                evidence["p_value"]
+            )
+        )
+
+    def test_nonconverged_fit_is_not_evaluable(self):
+        fake_result = _FakeAssociationResult(
+            "difficulty_stage",
+            p_value=0.001,
+            converged=False,
+        )
+
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                fake_result,
+                "powell",
+                ("did not converge",),
+                (),
+            ),
+        ):
+            evidence = MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target="mental_demand_score_0_to_10",
+            )
+
+        self.assertEqual(
+            evidence["convergence_status"],
+            "non_converged",
+        )
+
+        self.assertEqual(
+            evidence["retention_status"],
+            "not_evaluable",
+        )
+
+    def test_warnings_and_errors_use_one_column(self):
+        fake_result = _FakeAssociationResult(
+            "difficulty_stage",
+        )
+
+        with patch.object(
+            MOD12.MOD02,
+            "fit_mixedlm_with_fallback",
+            return_value=(
+                fake_result,
+                "lbfgs",
+                ("warning one",),
+                ("powell error",),
+            ),
+        ):
+            evidence = MOD12.fit_association(
+                self.training_data,
+                condition="Visual",
+                target="mental_demand_score_0_to_10",
+            )
+
+        self.assertEqual(
+            evidence["warnings_errors"],
+            "warning one | powell error",
+        )
 
 class TrainingBoundaryTests(unittest.TestCase):
     def test_only_26_training_participants_enter_mod12(self):
