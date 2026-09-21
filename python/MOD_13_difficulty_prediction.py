@@ -23,6 +23,9 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+import argparse
+from pathlib import Path
+
 import MOD_10_training_random_effects_comparison as MOD10
 
 import statsmodels.api as sm
@@ -83,6 +86,12 @@ BOOTSTRAP_REPETITIONS = 500
 BOOTSTRAP_SEED = 20260921
 
 INTERCEPT_NAME = "Intercept"
+
+COEFFICIENTS_FILENAME = "regression_coefficients.csv"
+BOOTSTRAP_PERFORMANCE_FILENAME = "bootstrap_performance.csv"
+
+FINAL_TEST_PERFORMANCE_FILENAME = "final_test_performance.csv"
+FINAL_TEST_PREDICTIONS_FILENAME = "final_test_predictions.csv"
 
 class Mod13Error(ValueError):
     """Raised when the frozen MOD-13 contract is violated."""
@@ -151,6 +160,21 @@ class ModelDevelopmentResult:
     final_fit: LinearModelFit
     coefficient_summary: pd.DataFrame
     performance_summary: pd.DataFrame
+
+@dataclass(frozen=True)
+class DevelopmentOutputs:
+    """Concise output tables from training-only MOD-13 development."""
+
+    coefficients: pd.DataFrame
+    bootstrap_performance: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class FinalTestResult:
+    """Frozen-model evaluation on the six final-test participants."""
+
+    performance: pd.DataFrame
+    predictions: pd.DataFrame
 
 def build_model_registry() -> dict[str, ModelSpec]:
     """Return the four frozen MOD-13 model specifications."""
@@ -1297,4 +1321,817 @@ def develop_model(
         performance_summary=(
             performance_summary
         ),
+    )
+
+def develop_all_models(
+    training_data: pd.DataFrame,
+    *,
+    forbidden_participant_ids: Iterable[str],
+    bootstrap_repetitions: int = BOOTSTRAP_REPETITIONS,
+    bootstrap_seed: int = BOOTSTRAP_SEED,
+) -> dict[str, ModelDevelopmentResult]:
+    """Develop all four frozen MOD-13 models using training data only."""
+    results: dict[
+        str,
+        ModelDevelopmentResult,
+    ] = {}
+
+    for model_id in build_model_registry():
+        results[model_id] = develop_model(
+            training_data,
+            model_id=model_id,
+            forbidden_participant_ids=(
+                forbidden_participant_ids
+            ),
+            bootstrap_repetitions=(
+                bootstrap_repetitions
+            ),
+            bootstrap_seed=(
+                bootstrap_seed
+            ),
+        )
+
+    return results
+
+
+def build_development_outputs(
+    results: dict[
+        str,
+        ModelDevelopmentResult,
+    ],
+) -> DevelopmentOutputs:
+    """Combine all training-only MOD-13 development evidence."""
+    expected_models = tuple(
+        build_model_registry()
+    )
+
+    if tuple(results) != expected_models:
+        raise Mod13Error(
+            "Development results do not contain the "
+            "four frozen MOD-13 models in the expected order"
+        )
+
+    coefficient_parts: list[
+        pd.DataFrame
+    ] = []
+
+    performance_parts: list[
+        pd.DataFrame
+    ] = []
+
+    for model_id in expected_models:
+        result = results[model_id]
+
+        coefficients = (
+            result
+            .coefficient_summary
+            .copy()
+        )
+
+        coefficient_parts.append(
+            coefficients
+        )
+
+        performance = (
+            result
+            .performance_summary
+            .copy()
+        )
+
+        participant_count = int(
+            result
+            .model_frame[
+                PARTICIPANT_COLUMN
+            ]
+            .nunique()
+        )
+
+        eligible_row_count = int(
+            len(result.model_frame)
+        )
+
+        performance.insert(
+            1,
+            "participant_count",
+            participant_count,
+        )
+
+        performance.insert(
+            2,
+            "eligible_row_count",
+            eligible_row_count,
+        )
+
+        performance_parts.append(
+            performance
+        )
+
+    coefficient_table = pd.concat(
+        coefficient_parts,
+        ignore_index=True,
+    )
+
+    performance_table = pd.concat(
+        performance_parts,
+        ignore_index=True,
+    )
+
+    coefficient_columns = (
+        "model",
+        "predictor",
+        "coefficient",
+        "bootstrap_ci_95_lower",
+        "bootstrap_ci_95_upper",
+        "usable_bootstrap_repetitions",
+    )
+
+    performance_columns = (
+        "model",
+        "participant_count",
+        "eligible_row_count",
+        "bootstrap_repetitions",
+        "usable_bootstrap_repetitions",
+        "oob_mae",
+        "mae_ci_95_lower",
+        "mae_ci_95_upper",
+        "oob_r2",
+        "r2_ci_95_lower",
+        "r2_ci_95_upper",
+    )
+
+    return DevelopmentOutputs(
+        coefficients=(
+            coefficient_table.loc[
+                :,
+                coefficient_columns,
+            ]
+        ),
+        bootstrap_performance=(
+            performance_table.loc[
+                :,
+                performance_columns,
+            ]
+        ),
+    )
+
+
+def write_development_outputs(
+    outputs: DevelopmentOutputs,
+    *,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    """Write the two frozen training-development output files."""
+    output_dir = Path(
+        output_dir
+    )
+
+    coefficient_path = (
+        output_dir
+        / COEFFICIENTS_FILENAME
+    )
+
+    performance_path = (
+        output_dir
+        / BOOTSTRAP_PERFORMANCE_FILENAME
+    )
+
+    existing = [
+        path
+        for path in (
+            coefficient_path,
+            performance_path,
+        )
+        if path.exists()
+    ]
+
+    if existing:
+        raise Mod13Error(
+            "Refusing to overwrite existing MOD-13 "
+            "development outputs: "
+            + ", ".join(
+                str(path)
+                for path in existing
+            )
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    outputs.coefficients.to_csv(
+        coefficient_path,
+        index=False,
+        encoding="utf-8",
+    )
+
+    outputs.bootstrap_performance.to_csv(
+        performance_path,
+        index=False,
+        encoding="utf-8",
+    )
+
+    return (
+        coefficient_path,
+        performance_path,
+    )
+
+def prepare_final_test_data(
+    *,
+    modeling_data: pd.DataFrame,
+    holdout_split: pd.DataFrame,
+) -> tuple[
+    pd.DataFrame,
+    tuple[str, ...],
+]:
+    """Return only the six frozen MOD-09 final-test participants."""
+    training_ids, test_ids = (
+        validate_holdout_split(
+            holdout_split
+        )
+    )
+
+    if PARTICIPANT_COLUMN not in modeling_data.columns:
+        raise Mod13Error(
+            f"Missing required column: "
+            f"{PARTICIPANT_COLUMN}"
+        )
+
+    data = modeling_data.copy(
+        deep=True
+    )
+
+    if data[
+        PARTICIPANT_COLUMN
+    ].isna().any():
+        raise Mod13Error(
+            "participant_id contains missing values"
+        )
+
+    data[PARTICIPANT_COLUMN] = (
+        data[
+            PARTICIPANT_COLUMN
+        ]
+        .astype(str)
+        .str.strip()
+    )
+
+    if data[
+        PARTICIPANT_COLUMN
+    ].eq("").any():
+        raise Mod13Error(
+            "participant_id contains blank values"
+        )
+
+    modeling_ids = set(
+        data[PARTICIPANT_COLUMN]
+    )
+
+    expected_ids = (
+        set(training_ids)
+        | set(test_ids)
+    )
+
+    missing_ids = sorted(
+        expected_ids
+        - modeling_ids
+    )
+
+    unexpected_ids = sorted(
+        modeling_ids
+        - expected_ids
+    )
+
+    if missing_ids:
+        raise Mod13Error(
+            "Participants from the frozen split are "
+            "missing from modeling data: "
+            + ", ".join(missing_ids)
+        )
+
+    if unexpected_ids:
+        raise Mod13Error(
+            "Modeling data contain participants not "
+            "present in the frozen split: "
+            + ", ".join(unexpected_ids)
+        )
+
+    test_data = data.loc[
+        data[
+            PARTICIPANT_COLUMN
+        ].isin(test_ids)
+    ].copy()
+
+    observed_test_ids = set(
+        test_data[
+            PARTICIPANT_COLUMN
+        ]
+    )
+
+    if observed_test_ids != set(
+        test_ids
+    ):
+        raise Mod13Error(
+            "Final-test data do not contain exactly "
+            "the six frozen test participants"
+        )
+
+    if not observed_test_ids.isdisjoint(
+        training_ids
+    ):
+        raise Mod13Error(
+            "Training participants entered the "
+            "final-test dataset"
+        )
+
+    if test_data[
+        PARTICIPANT_COLUMN
+    ].nunique() != 6:
+        raise Mod13Error(
+            "Final-test dataset must contain exactly "
+            "six participants"
+        )
+
+    return (
+        test_data.reset_index(
+            drop=True
+        ),
+        test_ids,
+    )
+
+def load_frozen_models(
+    coefficient_table: pd.DataFrame,
+) -> dict[
+    str,
+    LinearModelFit,
+]:
+    """Reconstruct the frozen final models from development coefficients."""
+    required_columns = {
+        "model",
+        "predictor",
+        "coefficient",
+    }
+
+    missing_columns = (
+        required_columns
+        - set(
+            coefficient_table.columns
+        )
+    )
+
+    if missing_columns:
+        raise Mod13Error(
+            "Coefficient table is missing required columns: "
+            + ", ".join(
+                sorted(
+                    missing_columns
+                )
+            )
+        )
+
+    registry = (
+        build_model_registry()
+    )
+
+    observed_models = set(
+        coefficient_table[
+            "model"
+        ].astype(str)
+    )
+
+    expected_models = set(
+        registry
+    )
+
+    if observed_models != expected_models:
+        raise Mod13Error(
+            "Frozen coefficient table must contain "
+            "exactly the four MOD-13 models"
+        )
+
+    frozen_models: dict[
+        str,
+        LinearModelFit,
+    ] = {}
+
+    for model_id, spec in registry.items():
+        model_rows = (
+            coefficient_table.loc[
+                coefficient_table[
+                    "model"
+                ].astype(str).eq(
+                    model_id
+                )
+            ]
+            .copy()
+        )
+
+        if model_rows[
+            "predictor"
+        ].duplicated().any():
+            raise Mod13Error(
+                f"{model_id}: duplicate coefficient terms"
+            )
+
+        expected_terms = (
+            INTERCEPT_NAME,
+            *spec.predictors,
+        )
+
+        observed_terms = set(
+            model_rows[
+                "predictor"
+            ].astype(str)
+        )
+
+        if observed_terms != set(
+            expected_terms
+        ):
+            missing_terms = sorted(
+                set(expected_terms)
+                - observed_terms
+            )
+
+            unexpected_terms = sorted(
+                observed_terms
+                - set(expected_terms)
+            )
+
+            raise Mod13Error(
+                f"{model_id}: coefficient terms do not "
+                "match the frozen model. "
+                f"Missing={missing_terms}; "
+                f"unexpected={unexpected_terms}"
+            )
+
+        indexed = (
+            model_rows
+            .set_index(
+                "predictor"
+            )
+        )
+
+        coefficients = pd.Series(
+            {
+                term: float(
+                    indexed.loc[
+                        term,
+                        "coefficient",
+                    ]
+                )
+                for term in expected_terms
+            },
+            dtype=float,
+        )
+
+        if not np.isfinite(
+            coefficients.to_numpy()
+        ).all():
+            raise Mod13Error(
+                f"{model_id}: frozen coefficients "
+                "contain non-finite values"
+            )
+
+        frozen_models[
+            model_id
+        ] = LinearModelFit(
+            model_id=model_id,
+            predictors=spec.predictors,
+            coefficients=coefficients,
+        )
+
+    return frozen_models
+
+
+def run_final_test(
+    test_data: pd.DataFrame,
+    *,
+    coefficient_table: pd.DataFrame,
+) -> FinalTestResult:
+    """Evaluate frozen MOD-13 equations without any refitting."""
+    frozen_models = (
+        load_frozen_models(
+            coefficient_table
+        )
+    )
+
+    performance_parts: list[
+        pd.DataFrame
+    ] = []
+
+    prediction_parts: list[
+        pd.DataFrame
+    ] = []
+
+    for model_id in build_model_registry():
+        performance, predictions = (
+            evaluate_final_test_model(
+                test_data,
+                model_id=model_id,
+                frozen_model=(
+                    frozen_models[
+                        model_id
+                    ]
+                ),
+            )
+        )
+
+        performance_parts.append(
+            performance
+        )
+
+        prediction_parts.append(
+            predictions
+        )
+
+    return FinalTestResult(
+        performance=pd.concat(
+            performance_parts,
+            ignore_index=True,
+        ),
+        predictions=pd.concat(
+            prediction_parts,
+            ignore_index=True,
+        ),
+    )
+
+
+def write_final_test_outputs(
+    result: FinalTestResult,
+    *,
+    output_dir: Path,
+) -> tuple[Path, Path]:
+    """Write final-test results while refusing accidental overwrite."""
+    output_dir = Path(
+        output_dir
+    )
+
+    performance_path = (
+        output_dir
+        / FINAL_TEST_PERFORMANCE_FILENAME
+    )
+
+    predictions_path = (
+        output_dir
+        / FINAL_TEST_PREDICTIONS_FILENAME
+    )
+
+    existing = [
+        path
+        for path in (
+            performance_path,
+            predictions_path,
+        )
+        if path.exists()
+    ]
+
+    if existing:
+        raise Mod13Error(
+            "Refusing to overwrite existing MOD-13 "
+            "final-test outputs: "
+            + ", ".join(
+                str(path)
+                for path in existing
+            )
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    result.performance.to_csv(
+        performance_path,
+        index=False,
+        encoding="utf-8",
+    )
+
+    result.predictions.to_csv(
+        predictions_path,
+        index=False,
+        encoding="utf-8",
+    )
+
+    return (
+        performance_path,
+        predictions_path,
+    )
+
+def require_final_test_confirmation(
+    confirmed: bool,
+) -> None:
+    """Prevent accidental execution of the one-time final test."""
+    if not confirmed:
+        raise Mod13Error(
+            "Final-test execution requires the explicit "
+            "--confirm-final-test flag"
+        )
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    """Build the MOD-13 command-line interface."""
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+    )
+
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+    )
+
+    develop_parser = (
+        subparsers.add_parser(
+            "develop",
+            help=(
+                "Run training-only MOD-13 "
+                "development"
+            ),
+        )
+    )
+
+    develop_parser.add_argument(
+        "--modeling-data",
+        type=Path,
+        required=True,
+    )
+
+    develop_parser.add_argument(
+        "--holdout-split",
+        type=Path,
+        required=True,
+    )
+
+    develop_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
+
+    final_parser = (
+        subparsers.add_parser(
+            "final-test",
+            help=(
+                "Run the one-time frozen "
+                "final-test evaluation"
+            ),
+        )
+    )
+
+    final_parser.add_argument(
+        "--modeling-data",
+        type=Path,
+        required=True,
+    )
+
+    final_parser.add_argument(
+        "--holdout-split",
+        type=Path,
+        required=True,
+    )
+
+    final_parser.add_argument(
+        "--coefficients",
+        type=Path,
+        required=True,
+        help=(
+            "Frozen regression_coefficients.csv "
+            "created by the develop command"
+        ),
+    )
+
+    final_parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+    )
+
+    final_parser.add_argument(
+        "--confirm-final-test",
+        action="store_true",
+        help=(
+            "Explicitly confirm execution of the "
+            "one-time final-test evaluation"
+        ),
+    )
+
+    return parser
+
+def run_final_test_cli(
+    *,
+    modeling_data_path: Path,
+    holdout_split_path: Path,
+    coefficients_path: Path,
+    output_dir: Path,
+    confirmed: bool,
+) -> None:
+    """Execute the explicit frozen one-time final test."""
+    require_final_test_confirmation(
+        confirmed
+    )
+
+    modeling_data = pd.read_csv(
+        modeling_data_path
+    )
+
+    holdout_split = pd.read_csv(
+        holdout_split_path
+    )
+
+    coefficient_table = pd.read_csv(
+        coefficients_path
+    )
+
+    test_data, _ = (
+        prepare_final_test_data(
+            modeling_data=modeling_data,
+            holdout_split=holdout_split,
+        )
+    )
+
+    result = run_final_test(
+        test_data,
+        coefficient_table=(
+            coefficient_table
+        ),
+    )
+
+    write_final_test_outputs(
+        result,
+        output_dir=output_dir,
+    )
+
+    print(
+        "MOD-13 final test complete"
+    )
+
+    for _, row in (
+        result
+        .performance
+        .iterrows()
+    ):
+        print(
+            f"{row['model']}: "
+            f"N={int(row['participant_count'])}, "
+            f"rows={int(row['eligible_row_count'])}, "
+            f"MAE={row['mae']:.4f}, "
+            f"R2={row['r2']:.4f}, "
+            f"outside[0,3]="
+            f"{int(row['out_of_range_prediction_count'])}"
+        )
+
+def main() -> int:
+    """MOD-13 CLI entry point."""
+    parser = build_cli_parser()
+
+    args = parser.parse_args()
+
+    try:
+        if args.command == "develop":
+            run_development_cli(
+                modeling_data_path=(
+                    args.modeling_data
+                ),
+                holdout_split_path=(
+                    args.holdout_split
+                ),
+                output_dir=(
+                    args.output_dir
+                ),
+            )
+
+        elif args.command == "final-test":
+            run_final_test_cli(
+                modeling_data_path=(
+                    args.modeling_data
+                ),
+                holdout_split_path=(
+                    args.holdout_split
+                ),
+                coefficients_path=(
+                    args.coefficients
+                ),
+                output_dir=(
+                    args.output_dir
+                ),
+                confirmed=(
+                    args.confirm_final_test
+                ),
+            )
+
+        else:
+            raise Mod13Error(
+                f"Unknown command: "
+                f"{args.command}"
+            )
+
+    except Mod13Error as exc:
+        parser.error(
+            str(exc)
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        main()
     )
