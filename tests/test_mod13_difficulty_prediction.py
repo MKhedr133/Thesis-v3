@@ -15,6 +15,9 @@ import pandas as pd
 
 from collections import Counter
 
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = ROOT / "python"
@@ -205,20 +208,12 @@ def synthetic_holdout_split() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def regression_ready_training():
-    """Create deterministic non-collinear data for regression tests."""
-    training, _, test_ids = (
-        MOD13.prepare_training_data(
-            modeling_data=(
-                synthetic_modeling_data()
-            ),
-            holdout_split=(
-                synthetic_holdout_split()
-            ),
-        )
+def regression_ready_modeling_data() -> pd.DataFrame:
+    """Create deterministic non-collinear data for all 32 participants."""
+    data = (
+        synthetic_modeling_data()
+        .copy()
     )
-
-    data = training.copy()
 
     rng = np.random.default_rng(
         12345
@@ -237,7 +232,9 @@ def regression_ready_training():
     )
 
     stage = (
-        data["difficulty_stage"]
+        data[
+            "difficulty_stage"
+        ]
         .astype(float)
         .to_numpy()
     )
@@ -247,34 +244,54 @@ def regression_ready_training():
     ):
         noise = rng.normal(
             loc=0.0,
-            scale=1.0 + index * 0.05,
+            scale=(
+                1.0
+                + index * 0.05
+            ),
             size=len(data),
         )
 
         data[predictor] = (
-            stage * (
+            stage
+            * (
                 0.15
                 + index * 0.03
             )
             + noise
         )
 
-    # Preserve the structural D0 baseline for relative performance.
-    performance = (
-        MOD13.PERFORMANCE_CHANGE_PREDICTOR
-    )
-
+    # Relative performance is structurally zero at D0.
     d0_mask = (
-        data["difficulty_stage"].eq(0)
+        data[
+            "difficulty_stage"
+        ].eq(0)
     )
 
     data.loc[
         d0_mask,
-        performance,
+        MOD13.PERFORMANCE_CHANGE_PREDICTOR,
     ] = 0.0
 
+    return data
+
+
+def regression_ready_training():
+    """Return regression-ready training data and frozen test IDs."""
+    data = (
+        regression_ready_modeling_data()
+    )
+
+    training, _, test_ids = (
+        MOD13.prepare_training_data(
+            modeling_data=data,
+            holdout_split=(
+                synthetic_holdout_split()
+            ),
+        )
+    )
+
     return (
-        data,
+        training,
         test_ids,
     )
 
@@ -1515,6 +1532,223 @@ def regression_ready_training():
         data,
         test_ids,
     )
+
+class DevelopmentOutputTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.training,
+            self.test_ids,
+        ) = regression_ready_training()
+
+    def test_all_four_models_are_developed(
+        self,
+    ):
+        results = (
+            MOD13.develop_all_models(
+                self.training,
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=10,
+                bootstrap_seed=123,
+            )
+        )
+
+        self.assertEqual(
+            tuple(results),
+            (
+                "visual",
+                "auditory",
+                "cognitive_primary",
+                "cognitive_later",
+            ),
+        )
+
+    def test_development_outputs_are_concise(
+        self,
+    ):
+        results = (
+            MOD13.develop_all_models(
+                self.training,
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=10,
+                bootstrap_seed=321,
+            )
+        )
+
+        outputs = (
+            MOD13.build_development_outputs(
+                results
+            )
+        )
+
+        self.assertEqual(
+            set(
+                outputs.coefficients[
+                    "model"
+                ]
+            ),
+            {
+                "visual",
+                "auditory",
+                "cognitive_primary",
+                "cognitive_later",
+            },
+        )
+
+        # 8 Visual terms
+        # + 5 Auditory
+        # + 10 Cognitive primary
+        # + 11 Cognitive later
+        self.assertEqual(
+            len(
+                outputs.coefficients
+            ),
+            34,
+        )
+
+        self.assertEqual(
+            len(
+                outputs.bootstrap_performance
+            ),
+            4,
+        )
+
+    def test_development_writer_refuses_overwrite(
+        self,
+    ):
+        results = (
+            MOD13.develop_all_models(
+                self.training,
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=5,
+                bootstrap_seed=456,
+            )
+        )
+
+        outputs = (
+            MOD13.build_development_outputs(
+                results
+            )
+        )
+
+        with TemporaryDirectory() as directory:
+            output_dir = Path(
+                directory
+            )
+
+            MOD13.write_development_outputs(
+                outputs,
+                output_dir=output_dir,
+            )
+
+            self.assertTrue(
+                (
+                    output_dir
+                    / MOD13.COEFFICIENTS_FILENAME
+                ).exists()
+            )
+
+            self.assertTrue(
+                (
+                    output_dir
+                    / MOD13.BOOTSTRAP_PERFORMANCE_FILENAME
+                ).exists()
+            )
+
+            with self.assertRaises(
+                MOD13.Mod13Error
+            ):
+                MOD13.write_development_outputs(
+                    outputs,
+                    output_dir=output_dir,
+                )
+
+class FrozenModelTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.training,
+            self.test_ids,
+        ) = regression_ready_training()
+
+        results = (
+            MOD13.develop_all_models(
+                self.training,
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=10,
+                bootstrap_seed=777,
+            )
+        )
+
+        self.results = results
+
+        self.outputs = (
+            MOD13.build_development_outputs(
+                results
+            )
+        )
+
+    def test_frozen_models_reproduce_final_training_coefficients(
+        self,
+    ):
+        frozen = (
+            MOD13.load_frozen_models(
+                self.outputs.coefficients
+            )
+        )
+
+        for model_id in frozen:
+            pd.testing.assert_series_equal(
+                frozen[
+                    model_id
+                ].coefficients,
+                self.results[
+                    model_id
+                ].final_fit.coefficients,
+                check_names=False,
+            )
+
+    def test_missing_frozen_coefficient_fails(
+        self,
+    ):
+        broken = (
+            self.outputs
+            .coefficients
+            .copy()
+        )
+
+        mask = (
+            broken[
+                "model"
+            ].eq("visual")
+            & broken[
+                "predictor"
+            ].eq(
+                MOD13
+                .VISUAL_PREDICTORS[0]
+            )
+        )
+
+        broken = broken.loc[
+            ~mask
+        ].copy()
+
+        with self.assertRaises(
+            MOD13.Mod13Error
+        ):
+            MOD13.load_frozen_models(
+                broken
+            )
 
 if __name__ == "__main__":
     unittest.main()
