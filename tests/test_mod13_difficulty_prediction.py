@@ -13,6 +13,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
+from collections import Counter
+
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_DIR = ROOT / "python"
@@ -201,6 +203,80 @@ def synthetic_holdout_split() -> pd.DataFrame:
             )
 
     return pd.DataFrame(rows)
+
+
+def regression_ready_training():
+    """Create deterministic non-collinear data for regression tests."""
+    training, _, test_ids = (
+        MOD13.prepare_training_data(
+            modeling_data=(
+                synthetic_modeling_data()
+            ),
+            holdout_split=(
+                synthetic_holdout_split()
+            ),
+        )
+    )
+
+    data = training.copy()
+
+    rng = np.random.default_rng(
+        12345
+    )
+
+    registry = (
+        MOD13.build_model_registry()
+    )
+
+    predictors = sorted(
+        {
+            predictor
+            for spec in registry.values()
+            for predictor in spec.predictors
+        }
+    )
+
+    stage = (
+        data["difficulty_stage"]
+        .astype(float)
+        .to_numpy()
+    )
+
+    for index, predictor in enumerate(
+        predictors
+    ):
+        noise = rng.normal(
+            loc=0.0,
+            scale=1.0 + index * 0.05,
+            size=len(data),
+        )
+
+        data[predictor] = (
+            stage * (
+                0.15
+                + index * 0.03
+            )
+            + noise
+        )
+
+    # Preserve the structural D0 baseline for relative performance.
+    performance = (
+        MOD13.PERFORMANCE_CHANGE_PREDICTOR
+    )
+
+    d0_mask = (
+        data["difficulty_stage"].eq(0)
+    )
+
+    data.loc[
+        d0_mask,
+        performance,
+    ] = 0.0
+
+    return (
+        data,
+        test_ids,
+    )
 
 
 class TrainingBoundaryTests(
@@ -808,6 +884,637 @@ class ModelFrameTests(
                 ),
             )
 
+
+class LinearRegressionTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.training,
+            self.test_ids,
+        ) = regression_ready_training()
+
+    def test_all_four_models_can_fit(
+        self,
+    ):
+        for model_id in (
+            MOD13
+            .build_model_registry()
+        ):
+            with self.subTest(
+                model_id=model_id
+            ):
+                frame = (
+                    MOD13
+                    .prepare_model_frame(
+                        self.training,
+                        model_id=model_id,
+                        forbidden_participant_ids=(
+                            self.test_ids
+                        ),
+                    )
+                )
+
+                fitted = (
+                    MOD13
+                    .fit_linear_model(
+                        frame,
+                        model_id=model_id,
+                    )
+                )
+
+                expected_terms = (
+                    1
+                    + len(
+                        MOD13
+                        .build_model_registry()[
+                            model_id
+                        ]
+                        .predictors
+                    )
+                )
+
+                self.assertEqual(
+                    len(
+                        fitted.coefficients
+                    ),
+                    expected_terms,
+                )
+
+                self.assertIn(
+                    "Intercept",
+                    fitted.coefficients.index,
+                )
+
+                self.assertTrue(
+                    np.isfinite(
+                        fitted
+                        .coefficients
+                        .to_numpy()
+                    ).all()
+                )
+
+    def test_prediction_is_continuous_and_unclipped(
+        self,
+    ):
+        frame = (
+            MOD13.prepare_model_frame(
+                self.training,
+                model_id="visual",
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+            )
+        )
+
+        fitted = (
+            MOD13.fit_linear_model(
+                frame,
+                model_id="visual",
+            )
+        )
+
+        predictions = (
+            fitted.predict(frame)
+        )
+
+        self.assertEqual(
+            len(predictions),
+            len(frame),
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                predictions.to_numpy()
+            ).all()
+        )
+
+        # Batch 2 must not round predictions.
+        self.assertFalse(
+            np.allclose(
+                predictions,
+                np.round(predictions),
+            )
+        )
+
+
+class MetricTests(
+    unittest.TestCase
+):
+    def test_mae_is_participant_balanced(
+        self,
+    ):
+        participant_ids = pd.Series(
+            [
+                "A",
+                "A",
+                "A",
+                "A",
+                "B",
+            ]
+        )
+
+        observed = pd.Series(
+            [
+                0.0,
+                1.0,
+                2.0,
+                3.0,
+                0.0,
+            ]
+        )
+
+        predicted = pd.Series(
+            [
+                0.0,
+                1.0,
+                2.0,
+                3.0,
+                2.0,
+            ]
+        )
+
+        mae = (
+            MOD13
+            .participant_balanced_mae(
+                participant_ids=(
+                    participant_ids
+                ),
+                observed=observed,
+                predicted=predicted,
+            )
+        )
+
+        # Participant A MAE = 0
+        # Participant B MAE = 2
+        # Equal participant weighting = 1
+        self.assertAlmostEqual(
+            mae,
+            1.0,
+        )
+
+    def test_r2_can_be_negative(
+        self,
+    ):
+        observed = pd.Series(
+            [0.0, 1.0, 2.0, 3.0]
+        )
+
+        predicted = pd.Series(
+            [3.0, 3.0, 0.0, 0.0]
+        )
+
+        r2 = MOD13.pooled_r2(
+            observed=observed,
+            predicted=predicted,
+        )
+
+        self.assertLess(
+            r2,
+            0.0,
+        )
+
+
+class ParticipantBootstrapTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.training,
+            self.test_ids,
+        ) = regression_ready_training()
+
+        self.frame = (
+            MOD13.prepare_model_frame(
+                self.training,
+                model_id="visual",
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+            )
+        )
+
+    def test_bootstrap_resamples_whole_participants(
+        self,
+    ):
+        rng = np.random.default_rng(
+            42
+        )
+
+        (
+            inbag,
+            oob,
+            sampled_ids,
+        ) = (
+            MOD13
+            .draw_participant_bootstrap(
+                self.frame,
+                rng=rng,
+            )
+        )
+
+        self.assertEqual(
+            len(sampled_ids),
+            26,
+        )
+
+        source_counts = (
+            self.frame[
+                "participant_id"
+            ]
+            .value_counts()
+            .to_dict()
+        )
+
+        sampled_counts = Counter(
+            sampled_ids
+        )
+
+        inbag_counts = (
+            inbag[
+                "participant_id"
+            ]
+            .value_counts()
+            .to_dict()
+        )
+
+        for (
+            participant_id,
+            draw_count,
+        ) in sampled_counts.items():
+
+            expected_rows = (
+                source_counts[
+                    participant_id
+                ]
+                * draw_count
+            )
+
+            self.assertEqual(
+                inbag_counts[
+                    participant_id
+                ],
+                expected_rows,
+            )
+
+        sampled_unique = set(
+            sampled_ids
+        )
+
+        expected_oob = (
+            set(source_counts)
+            - sampled_unique
+        )
+
+        self.assertEqual(
+            set(
+                oob["participant_id"]
+            ),
+            expected_oob,
+        )
+
+    def test_bootstrap_is_reproducible(
+        self,
+    ):
+        first = (
+            MOD13
+            .run_participant_bootstrap(
+                self.frame,
+                model_id="visual",
+                repetitions=20,
+                seed=123,
+            )
+        )
+
+        second = (
+            MOD13
+            .run_participant_bootstrap(
+                self.frame,
+                model_id="visual",
+                repetitions=20,
+                seed=123,
+            )
+        )
+
+        pd.testing.assert_frame_equal(
+            first.metrics,
+            second.metrics,
+        )
+
+        pd.testing.assert_frame_equal(
+            first.coefficients,
+            second.coefficients,
+        )
+
+    def test_bootstrap_stores_oob_metrics_and_coefficients(
+        self,
+    ):
+        result = (
+            MOD13
+            .run_participant_bootstrap(
+                self.frame,
+                model_id="visual",
+                repetitions=20,
+                seed=321,
+            )
+        )
+
+        self.assertEqual(
+            len(result.metrics),
+            20,
+        )
+
+        successful = (
+            result.metrics[
+                "status"
+            ].eq("success")
+        )
+
+        self.assertTrue(
+            successful.any()
+        )
+
+        successful_metrics = (
+            result.metrics.loc[
+                successful
+            ]
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                successful_metrics[
+                    "mae"
+                ]
+            ).all()
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                successful_metrics[
+                    "r2"
+                ]
+            ).all()
+        )
+
+        self.assertFalse(
+            result.coefficients.empty
+        )
+
+        self.assertIn(
+            "Intercept",
+            set(
+                result.coefficients[
+                    "predictor"
+                ]
+            ),
+        )
+
+
+class BootstrapSummaryTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.training,
+            self.test_ids,
+        ) = regression_ready_training()
+
+    def test_final_coefficient_comes_from_full_training_fit(
+        self,
+    ):
+        result = (
+            MOD13.develop_model(
+                self.training,
+                model_id="auditory",
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=20,
+                bootstrap_seed=987,
+            )
+        )
+
+        summary = (
+            result.coefficient_summary
+            .set_index("predictor")
+        )
+
+        for (
+            predictor,
+            coefficient,
+        ) in (
+            result
+            .final_fit
+            .coefficients
+            .items()
+        ):
+            self.assertAlmostEqual(
+                summary.loc[
+                    predictor,
+                    "coefficient",
+                ],
+                float(coefficient),
+            )
+
+    def test_coefficient_ci_uses_2_5_and_97_5_percentiles(
+        self,
+    ):
+        result = (
+            MOD13.develop_model(
+                self.training,
+                model_id="auditory",
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=20,
+                bootstrap_seed=654,
+            )
+        )
+
+        predictor = (
+            result
+            .final_fit
+            .coefficients
+            .index[0]
+        )
+
+        draws = (
+            result
+            .bootstrap
+            .coefficients
+            .loc[
+                lambda frame: (
+                    frame["predictor"]
+                    .eq(predictor)
+                ),
+                "coefficient",
+            ]
+            .to_numpy(dtype=float)
+        )
+
+        summary_row = (
+            result
+            .coefficient_summary
+            .loc[
+                lambda frame: (
+                    frame["predictor"]
+                    .eq(predictor)
+                )
+            ]
+            .iloc[0]
+        )
+
+        self.assertAlmostEqual(
+            summary_row[
+                "bootstrap_ci_95_lower"
+            ],
+            np.percentile(
+                draws,
+                2.5,
+            ),
+        )
+
+        self.assertAlmostEqual(
+            summary_row[
+                "bootstrap_ci_95_upper"
+            ],
+            np.percentile(
+                draws,
+                97.5,
+            ),
+        )
+
+    def test_performance_summary_reports_bootstrap_interval(
+        self,
+    ):
+        result = (
+            MOD13.develop_model(
+                self.training,
+                model_id="visual",
+                forbidden_participant_ids=(
+                    self.test_ids
+                ),
+                bootstrap_repetitions=20,
+                bootstrap_seed=111,
+            )
+        )
+
+        summary = (
+            result
+            .performance_summary
+            .iloc[0]
+        )
+
+        self.assertEqual(
+            summary[
+                "bootstrap_repetitions"
+            ],
+            20,
+        )
+
+        self.assertGreater(
+            summary[
+                "usable_bootstrap_repetitions"
+            ],
+            0,
+        )
+
+        self.assertTrue(
+            np.isfinite(
+                summary["oob_mae"]
+            )
+        )
+
+        self.assertLessEqual(
+            summary[
+                "mae_ci_95_lower"
+            ],
+            summary[
+                "oob_mae"
+            ],
+        )
+
+        self.assertGreaterEqual(
+            summary[
+                "mae_ci_95_upper"
+            ],
+            summary[
+                "oob_mae"
+            ],
+        )
+
+def regression_ready_training():
+    """Create deterministic non-collinear data for regression tests."""
+    training, _, test_ids = (
+        MOD13.prepare_training_data(
+            modeling_data=(
+                synthetic_modeling_data()
+            ),
+            holdout_split=(
+                synthetic_holdout_split()
+            ),
+        )
+    )
+
+    data = training.copy()
+
+    rng = np.random.default_rng(
+        12345
+    )
+
+    registry = (
+        MOD13.build_model_registry()
+    )
+
+    predictors = sorted(
+        {
+            predictor
+            for spec in registry.values()
+            for predictor in spec.predictors
+        }
+    )
+
+    stage = (
+        data["difficulty_stage"]
+        .astype(float)
+        .to_numpy()
+    )
+
+    for index, predictor in enumerate(
+        predictors
+    ):
+        noise = rng.normal(
+            loc=0.0,
+            scale=1.0 + index * 0.05,
+            size=len(data),
+        )
+
+        data[predictor] = (
+            stage * (
+                0.15
+                + index * 0.03
+            )
+            + noise
+        )
+
+    # Preserve the structural D0 baseline for relative performance.
+    performance = (
+        MOD13.PERFORMANCE_CHANGE_PREDICTOR
+    )
+
+    d0_mask = (
+        data["difficulty_stage"].eq(0)
+    )
+
+    data.loc[
+        d0_mask,
+        performance,
+    ] = 0.0
+
+    return (
+        data,
+        test_ids,
+    )
 
 if __name__ == "__main__":
     unittest.main()
