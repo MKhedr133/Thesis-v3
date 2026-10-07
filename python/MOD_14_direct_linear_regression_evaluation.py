@@ -29,6 +29,8 @@ import pandas as pd
 
 import MOD_10_training_random_effects_comparison as MOD10
 
+import statsmodels.api as sm
+
 
 PARTICIPANT_COLUMN = "participant_id"
 CONDITION_COLUMN = "condition_name"
@@ -100,6 +102,72 @@ class ModelSpec:
     condition: str
     predictors: tuple[str, ...]
     allowed_stages: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class LinearModelFit:
+    """One directly fitted MOD-14 multiple linear regression."""
+
+    model_id: str
+    predictors: tuple[str, ...]
+    coefficients: pd.Series
+
+    def predict(
+        self,
+        frame: pd.DataFrame,
+    ) -> pd.Series:
+        """Generate raw continuous difficulty-stage predictions."""
+        design = _build_design_matrix(
+            frame,
+            predictors=self.predictors,
+        )
+
+        coefficient_vector = (
+            self.coefficients
+            .loc[
+                design.columns
+            ]
+            .to_numpy(
+                dtype=float
+            )
+        )
+
+        predictions = (
+            design
+            .to_numpy(
+                dtype=float
+            )
+            @ coefficient_vector
+        )
+
+        return pd.Series(
+            predictions,
+            index=frame.index,
+            name=(
+                "predicted_"
+                "difficulty_stage"
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class DirectEvaluationResult:
+    """Direct training/test evaluation for one frozen model."""
+
+    model_id: str
+    condition: str
+    development_frame: pd.DataFrame
+    test_frame: pd.DataFrame
+    fitted_model: LinearModelFit
+    training_mae: float
+    training_r2: float
+    test_mae: float
+    test_r2: float
+    training_out_of_range_count: int
+    test_out_of_range_count: int
+    training_predictions: pd.DataFrame
+    test_predictions: pd.DataFrame
+
 
 
 def build_model_registry() -> dict[str, ModelSpec]:
@@ -640,5 +708,868 @@ def prepare_model_frame(
         ]
         .reset_index(
             drop=True
+        )
+    )
+
+
+def _build_design_matrix(
+    frame: pd.DataFrame,
+    *,
+    predictors: tuple[str, ...],
+) -> pd.DataFrame:
+    """Build the unscaled OLS design matrix with an intercept."""
+    missing_predictors = [
+        predictor
+        for predictor in predictors
+        if predictor not in frame.columns
+    ]
+
+    if missing_predictors:
+        raise Mod14Error(
+            "Missing regression predictors: "
+            f"{missing_predictors}"
+        )
+
+    design = frame.loc[
+        :,
+        list(
+            predictors
+        ),
+    ].copy()
+
+    for predictor in predictors:
+        design[
+            predictor
+        ] = pd.to_numeric(
+            design[
+                predictor
+            ],
+            errors="coerce",
+        )
+
+    values = design.to_numpy(
+        dtype=float
+    )
+
+    if not np.isfinite(
+        values
+    ).all():
+        raise Mod14Error(
+            "Regression design matrix contains "
+            "missing or non-finite values"
+        )
+
+    design.insert(
+        0,
+        "Intercept",
+        1.0,
+    )
+
+    return design
+
+
+def fit_linear_model(
+    frame: pd.DataFrame,
+    *,
+    model_id: str,
+) -> LinearModelFit:
+    """Fit exactly one OLS regression to the supplied development rows."""
+    registry = (
+        build_model_registry()
+    )
+
+    if model_id not in registry:
+        raise Mod14Error(
+            f"Unknown MOD-14 model: "
+            f"{model_id}"
+        )
+
+    spec = registry[
+        model_id
+    ]
+
+    if TARGET_COLUMN not in frame.columns:
+        raise Mod14Error(
+            f"{model_id}: missing target column "
+            f"{TARGET_COLUMN}"
+        )
+
+    design = (
+        _build_design_matrix(
+            frame,
+            predictors=(
+                spec.predictors
+            ),
+        )
+    )
+
+    target = pd.to_numeric(
+        frame[
+            TARGET_COLUMN
+        ],
+        errors="coerce",
+    ).to_numpy(
+        dtype=float
+    )
+
+    if not np.isfinite(
+        target
+    ).all():
+        raise Mod14Error(
+            f"{model_id}: target contains "
+            "missing or non-finite values"
+        )
+
+    observation_count = len(
+        frame
+    )
+
+    parameter_count = (
+        design.shape[1]
+    )
+
+    if (
+        observation_count
+        <= parameter_count
+    ):
+        raise Mod14Error(
+            f"{model_id}: insufficient observations "
+            f"({observation_count}) for "
+            f"{parameter_count} regression parameters"
+        )
+
+    design_values = (
+        design.to_numpy(
+            dtype=float
+        )
+    )
+
+    rank = int(
+        np.linalg.matrix_rank(
+            design_values
+        )
+    )
+
+    if rank < parameter_count:
+        raise Mod14Error(
+            f"{model_id}: regression design matrix "
+            "is rank deficient "
+            f"(rank={rank}, "
+            f"parameters={parameter_count})"
+        )
+
+    try:
+        fitted = sm.OLS(
+            target,
+            design,
+        ).fit()
+
+    except Exception as exc:
+        raise Mod14Error(
+            f"{model_id}: OLS fitting failed"
+        ) from exc
+
+    coefficients = (
+        fitted
+        .params
+        .astype(float)
+    )
+
+    if not np.isfinite(
+        coefficients.to_numpy()
+    ).all():
+        raise Mod14Error(
+            f"{model_id}: fitted coefficients "
+            "contain non-finite values"
+        )
+
+    return LinearModelFit(
+        model_id=model_id,
+        predictors=(
+            spec.predictors
+        ),
+        coefficients=(
+            coefficients
+        ),
+    )
+
+
+def participant_balanced_mae(
+    *,
+    participant_ids: pd.Series,
+    observed: pd.Series,
+    predicted: pd.Series,
+) -> float:
+    """Calculate MAE with equal weight for every participant."""
+    if not (
+        len(
+            participant_ids
+        )
+        == len(
+            observed
+        )
+        == len(
+            predicted
+        )
+    ):
+        raise Mod14Error(
+            "Participant IDs, observations, "
+            "and predictions must have equal length"
+        )
+
+    if len(
+        observed
+    ) == 0:
+        raise Mod14Error(
+            "Cannot calculate MAE "
+            "without observations"
+        )
+
+    evaluation = pd.DataFrame(
+        {
+            PARTICIPANT_COLUMN: (
+                participant_ids
+                .astype(str)
+                .to_numpy()
+            ),
+            "observed": np.asarray(
+                observed,
+                dtype=float,
+            ),
+            "predicted": np.asarray(
+                predicted,
+                dtype=float,
+            ),
+        }
+    )
+
+    if not np.isfinite(
+        evaluation[
+            [
+                "observed",
+                "predicted",
+            ]
+        ].to_numpy()
+    ).all():
+        raise Mod14Error(
+            "MAE inputs contain "
+            "non-finite values"
+        )
+
+    evaluation[
+        "absolute_error"
+    ] = (
+        evaluation[
+            "observed"
+        ]
+        - evaluation[
+            "predicted"
+        ]
+    ).abs()
+
+    participant_mae = (
+        evaluation
+        .groupby(
+            PARTICIPANT_COLUMN,
+            sort=False,
+        )[
+            "absolute_error"
+        ]
+        .mean()
+    )
+
+    if participant_mae.empty:
+        raise Mod14Error(
+            "Cannot calculate MAE "
+            "without participants"
+        )
+
+    return float(
+        participant_mae.mean()
+    )
+
+
+def pooled_r2(
+    *,
+    observed: pd.Series,
+    predicted: pd.Series,
+) -> float:
+    """Calculate ordinary pooled predictive R²."""
+    y_true = np.asarray(
+        observed,
+        dtype=float,
+    )
+
+    y_pred = np.asarray(
+        predicted,
+        dtype=float,
+    )
+
+    if (
+        len(
+            y_true
+        )
+        != len(
+            y_pred
+        )
+    ):
+        raise Mod14Error(
+            "Observed and predicted values "
+            "must have equal length"
+        )
+
+    if len(
+        y_true
+    ) == 0:
+        raise Mod14Error(
+            "Cannot calculate R² "
+            "without observations"
+        )
+
+    if (
+        not np.isfinite(
+            y_true
+        ).all()
+        or not np.isfinite(
+            y_pred
+        ).all()
+    ):
+        raise Mod14Error(
+            "R² inputs contain "
+            "non-finite values"
+        )
+
+    residual_sum_squares = float(
+        np.sum(
+            (
+                y_true
+                - y_pred
+            )
+            ** 2
+        )
+    )
+
+    mean_observed = float(
+        np.mean(
+            y_true
+        )
+    )
+
+    total_sum_squares = float(
+        np.sum(
+            (
+                y_true
+                - mean_observed
+            )
+            ** 2
+        )
+    )
+
+    if total_sum_squares == 0.0:
+        return np.nan
+
+    return float(
+        1.0
+        - (
+            residual_sum_squares
+            / total_sum_squares
+        )
+    )
+
+
+def evaluate_model(
+    *,
+    development_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+    model_id: str,
+) -> DirectEvaluationResult:
+    """Fit once on development data and evaluate training and test data.
+
+    The regression is fitted only to the eligible rows from the original
+    development participants. The already fitted model is then applied to
+    the eligible test rows without refitting.
+    """
+    registry = (
+        build_model_registry()
+    )
+
+    if model_id not in registry:
+        raise Mod14Error(
+            f"Unknown MOD-14 model: "
+            f"{model_id}"
+        )
+
+    spec = registry[
+        model_id
+    ]
+
+    development_frame = (
+        prepare_model_frame(
+            development_data,
+            model_id=model_id,
+        )
+    )
+
+    test_frame = (
+        prepare_model_frame(
+            test_data,
+            model_id=model_id,
+        )
+    )
+
+    development_ids = set(
+        development_frame[
+            PARTICIPANT_COLUMN
+        ]
+    )
+
+    test_ids = set(
+        test_frame[
+            PARTICIPANT_COLUMN
+        ]
+    )
+
+    if not development_ids.isdisjoint(
+        test_ids
+    ):
+        raise Mod14Error(
+            f"{model_id}: participant overlap "
+            "between development and test frames"
+        )
+
+    # The only fitting call in this evaluation.
+    fitted_model = (
+        fit_linear_model(
+            development_frame,
+            model_id=model_id,
+        )
+    )
+
+    training_prediction_values = (
+        fitted_model.predict(
+            development_frame
+        )
+    )
+
+    test_prediction_values = (
+        fitted_model.predict(
+            test_frame
+        )
+    )
+
+    training_observed = (
+        development_frame[
+            TARGET_COLUMN
+        ].astype(float)
+    )
+
+    test_observed = (
+        test_frame[
+            TARGET_COLUMN
+        ].astype(float)
+    )
+
+    training_mae = (
+        participant_balanced_mae(
+            participant_ids=(
+                development_frame[
+                    PARTICIPANT_COLUMN
+                ]
+            ),
+            observed=(
+                training_observed
+            ),
+            predicted=(
+                training_prediction_values
+            ),
+        )
+    )
+
+    training_r2 = (
+        pooled_r2(
+            observed=(
+                training_observed
+            ),
+            predicted=(
+                training_prediction_values
+            ),
+        )
+    )
+
+    test_mae = (
+        participant_balanced_mae(
+            participant_ids=(
+                test_frame[
+                    PARTICIPANT_COLUMN
+                ]
+            ),
+            observed=(
+                test_observed
+            ),
+            predicted=(
+                test_prediction_values
+            ),
+        )
+    )
+
+    test_r2 = (
+        pooled_r2(
+            observed=(
+                test_observed
+            ),
+            predicted=(
+                test_prediction_values
+            ),
+        )
+    )
+
+    training_predictions = (
+        _build_prediction_table(
+            development_frame,
+            model_id=model_id,
+            predictions=(
+                training_prediction_values
+            ),
+        )
+    )
+
+    test_predictions = (
+        _build_prediction_table(
+            test_frame,
+            model_id=model_id,
+            predictions=(
+                test_prediction_values
+            ),
+        )
+    )
+
+    training_out_of_range_count = (
+        _count_out_of_range_predictions(
+            training_prediction_values
+        )
+    )
+
+    test_out_of_range_count = (
+        _count_out_of_range_predictions(
+            test_prediction_values
+        )
+    )
+
+    return DirectEvaluationResult(
+        model_id=model_id,
+        condition=(
+            spec.condition
+        ),
+        development_frame=(
+            development_frame
+        ),
+        test_frame=(
+            test_frame
+        ),
+        fitted_model=(
+            fitted_model
+        ),
+        training_mae=(
+            training_mae
+        ),
+        training_r2=(
+            training_r2
+        ),
+        test_mae=(
+            test_mae
+        ),
+        test_r2=(
+            test_r2
+        ),
+        training_out_of_range_count=(
+            training_out_of_range_count
+        ),
+        test_out_of_range_count=(
+            test_out_of_range_count
+        ),
+        training_predictions=(
+            training_predictions
+        ),
+        test_predictions=(
+            test_predictions
+        ),
+    )
+
+
+def evaluate_all_models(
+    *,
+    development_data: pd.DataFrame,
+    test_data: pd.DataFrame,
+) -> dict[
+    str,
+    DirectEvaluationResult,
+]:
+    """Directly evaluate all four frozen MOD-14 models."""
+    results: dict[
+        str,
+        DirectEvaluationResult,
+    ] = {}
+
+    for model_id in (
+        build_model_registry()
+    ):
+        results[
+            model_id
+        ] = evaluate_model(
+            development_data=(
+                development_data
+            ),
+            test_data=(
+                test_data
+            ),
+            model_id=model_id,
+        )
+
+    return results
+
+
+def build_performance_table(
+    results: dict[
+        str,
+        DirectEvaluationResult,
+    ],
+) -> pd.DataFrame:
+    """Build the direct training-versus-test performance table."""
+    expected_models = tuple(
+        build_model_registry()
+    )
+
+    if tuple(
+        results
+    ) != expected_models:
+        raise Mod14Error(
+            "Evaluation results must contain "
+            "the four frozen MOD-14 models "
+            "in the expected order"
+        )
+
+    rows: list[
+        dict[str, object]
+    ] = []
+
+    for model_id in expected_models:
+        result = results[
+            model_id
+        ]
+
+        development_participant_count = int(
+            result
+            .development_frame[
+                PARTICIPANT_COLUMN
+            ]
+            .nunique()
+        )
+
+        test_participant_count = int(
+            result
+            .test_frame[
+                PARTICIPANT_COLUMN
+            ]
+            .nunique()
+        )
+
+        rows.append(
+            {
+                "model": model_id,
+                "condition": (
+                    result.condition
+                ),
+                (
+                    "development_"
+                    "participant_count"
+                ): (
+                    development_participant_count
+                ),
+                (
+                    "development_"
+                    "row_count"
+                ): int(
+                    len(
+                        result
+                        .development_frame
+                    )
+                ),
+                (
+                    "test_"
+                    "participant_count"
+                ): (
+                    test_participant_count
+                ),
+                "test_row_count": int(
+                    len(
+                        result
+                        .test_frame
+                    )
+                ),
+                "training_mae": float(
+                    result.training_mae
+                ),
+                "test_mae": float(
+                    result.test_mae
+                ),
+                (
+                    "test_minus_"
+                    "training_mae"
+                ): float(
+                    result.test_mae
+                    - result.training_mae
+                ),
+                "training_r2": float(
+                    result.training_r2
+                ),
+                "test_r2": float(
+                    result.test_r2
+                ),
+                (
+                    "training_minus_"
+                    "test_r2"
+                ): float(
+                    result.training_r2
+                    - result.test_r2
+                ),
+                (
+                    "training_out_of_range_"
+                    "prediction_count"
+                ): int(
+                    result
+                    .training_out_of_range_count
+                ),
+                (
+                    "test_out_of_range_"
+                    "prediction_count"
+                ): int(
+                    result
+                    .test_out_of_range_count
+                ),
+            }
+        )
+
+    columns = (
+        "model",
+        "condition",
+        (
+            "development_"
+            "participant_count"
+        ),
+        (
+            "development_"
+            "row_count"
+        ),
+        (
+            "test_"
+            "participant_count"
+        ),
+        "test_row_count",
+        "training_mae",
+        "test_mae",
+        (
+            "test_minus_"
+            "training_mae"
+        ),
+        "training_r2",
+        "test_r2",
+        (
+            "training_minus_"
+            "test_r2"
+        ),
+        (
+            "training_out_of_range_"
+            "prediction_count"
+        ),
+        (
+            "test_out_of_range_"
+            "prediction_count"
+        ),
+    )
+
+    return pd.DataFrame(
+        rows,
+        columns=columns,
+    )
+
+def _build_prediction_table(
+    frame: pd.DataFrame,
+    *,
+    model_id: str,
+    predictions: pd.Series,
+) -> pd.DataFrame:
+    """Build row-level prediction diagnostics."""
+    if len(frame) != len(predictions):
+        raise Mod14Error(
+            f"{model_id}: prediction count "
+            "does not match row count"
+        )
+
+    observed = (
+        frame[
+            TARGET_COLUMN
+        ]
+        .astype(float)
+        .to_numpy()
+    )
+
+    predicted = (
+        predictions
+        .to_numpy(
+            dtype=float
+        )
+    )
+
+    error = (
+        observed
+        - predicted
+    )
+
+    return pd.DataFrame(
+        {
+            "participant_id": (
+                frame[
+                    PARTICIPANT_COLUMN
+                ]
+                .to_numpy()
+            ),
+            "model": model_id,
+            "condition": (
+                frame[
+                    CONDITION_COLUMN
+                ]
+                .to_numpy()
+            ),
+            (
+                "observed_"
+                "difficulty_stage"
+            ): observed,
+            (
+                "predicted_"
+                "difficulty_stage"
+            ): predicted,
+            "error": error,
+            "absolute_error": np.abs(
+                error
+            ),
+        }
+    )
+
+
+def _count_out_of_range_predictions(
+    predictions: pd.Series,
+) -> int:
+    """Count predictions outside the coded range [0, 3]."""
+    values = (
+        predictions
+        .to_numpy(
+            dtype=float
+        )
+    )
+
+    return int(
+        np.sum(
+            (values < 0.0)
+            | (values > 3.0)
         )
     )
