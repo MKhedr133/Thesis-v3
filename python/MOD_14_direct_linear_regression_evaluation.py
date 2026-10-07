@@ -30,6 +30,11 @@ import pandas as pd
 import MOD_10_training_random_effects_comparison as MOD10
 
 import statsmodels.api as sm
+import argparse
+from pathlib import Path
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 
 PARTICIPANT_COLUMN = "participant_id"
@@ -89,6 +94,295 @@ COGNITIVE_LATER_PREDICTORS = (
     PERFORMANCE_CHANGE_PREDICTOR,
 )
 
+MODEL_DISPLAY_NAMES = {
+    "visual": "Visual",
+    "auditory": "Auditory",
+    "cognitive_primary": "Cognitive primary",
+    "cognitive_later": "Cognitive later",
+}
+
+
+def _validate_figure_input(
+    performance: pd.DataFrame,
+) -> None:
+    """Check that the performance table can be plotted."""
+    required_columns = {
+        "model",
+        "training_mae",
+        "test_mae",
+        "training_r2",
+        "test_r2",
+    }
+
+    missing_columns = sorted(
+        required_columns
+        - set(
+            performance.columns
+        )
+    )
+
+    if missing_columns:
+        raise Mod14Error(
+            "Performance table is missing "
+            "required figure columns: "
+            f"{missing_columns}"
+        )
+
+    expected_models = tuple(
+        build_model_registry()
+    )
+
+    observed_models = tuple(
+        performance[
+            "model"
+        ]
+    )
+
+    if observed_models != expected_models:
+        raise Mod14Error(
+            "Performance table must contain "
+            "the four frozen MOD-14 models "
+            "in the expected order"
+        )
+
+
+def _ensure_output_path_available(
+    output_path: Path,
+) -> None:
+    """Prevent silent replacement of an existing output."""
+    if output_path.exists():
+        raise Mod14Error(
+            "Output already exists and "
+            "will not be overwritten: "
+            f"{output_path}"
+        )
+
+
+def plot_training_vs_test_mae(
+    performance: pd.DataFrame,
+    *,
+    output_path: Path,
+) -> None:
+    """Plot grouped training and test participant-balanced MAE."""
+    _validate_figure_input(
+        performance
+    )
+
+    output_path = Path(
+        output_path
+    )
+
+    _ensure_output_path_available(
+        output_path
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    positions = np.arange(
+        len(
+            performance
+        )
+    )
+
+    width = 0.36
+
+    figure, axis = plt.subplots(
+        figsize=(
+            10,
+            6,
+        )
+    )
+
+    training_bars = axis.bar(
+        positions - width / 2,
+        performance[
+            "training_mae"
+        ].to_numpy(
+            dtype=float
+        ),
+        width=width,
+        label="Training",
+    )
+
+    test_bars = axis.bar(
+        positions + width / 2,
+        performance[
+            "test_mae"
+        ].to_numpy(
+            dtype=float
+        ),
+        width=width,
+        label="Test",
+    )
+
+    axis.set_ylabel(
+        "Participant-balanced MAE"
+    )
+
+    axis.set_title(
+        "Training vs test MAE"
+    )
+
+    axis.set_xticks(
+        positions
+    )
+
+    axis.set_xticklabels(
+        [
+            MODEL_DISPLAY_NAMES[
+                model_id
+            ]
+            for model_id
+            in performance[
+                "model"
+            ]
+        ]
+    )
+
+    axis.legend()
+
+    axis.bar_label(
+        training_bars,
+        fmt="%.3f",
+        padding=3,
+    )
+
+    axis.bar_label(
+        test_bars,
+        fmt="%.3f",
+        padding=3,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
+
+
+def plot_training_vs_test_r2(
+    performance: pd.DataFrame,
+    *,
+    output_path: Path,
+) -> None:
+    """Plot grouped training and test pooled R²."""
+    _validate_figure_input(
+        performance
+    )
+
+    output_path = Path(
+        output_path
+    )
+
+    _ensure_output_path_available(
+        output_path
+    )
+
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    positions = np.arange(
+        len(
+            performance
+        )
+    )
+
+    width = 0.36
+
+    figure, axis = plt.subplots(
+        figsize=(
+            10,
+            6,
+        )
+    )
+
+    training_bars = axis.bar(
+        positions - width / 2,
+        performance[
+            "training_r2"
+        ].to_numpy(
+            dtype=float
+        ),
+        width=width,
+        label="Training",
+    )
+
+    test_bars = axis.bar(
+        positions + width / 2,
+        performance[
+            "test_r2"
+        ].to_numpy(
+            dtype=float
+        ),
+        width=width,
+        label="Test",
+    )
+
+    axis.axhline(
+        0.0,
+        linewidth=1.0,
+    )
+
+    axis.set_ylabel(
+        "Pooled R²"
+    )
+
+    axis.set_title(
+        "Training vs test R²"
+    )
+
+    axis.set_xticks(
+        positions
+    )
+
+    axis.set_xticklabels(
+        [
+            MODEL_DISPLAY_NAMES[
+                model_id
+            ]
+            for model_id
+            in performance[
+                "model"
+            ]
+        ]
+    )
+
+    axis.legend()
+
+    axis.bar_label(
+        training_bars,
+        fmt="%.3f",
+        padding=3,
+    )
+
+    axis.bar_label(
+        test_bars,
+        fmt="%.3f",
+        padding=3,
+    )
+
+    figure.tight_layout()
+
+    figure.savefig(
+        output_path,
+        dpi=300,
+        bbox_inches="tight",
+    )
+
+    plt.close(
+        figure
+    )
 
 class Mod14Error(ValueError):
     """Raised when the frozen MOD-14 data contract is violated."""
@@ -1492,6 +1786,125 @@ def build_performance_table(
         columns=columns,
     )
 
+
+def build_coefficients_table(
+    results: dict[
+        str,
+        DirectEvaluationResult,
+    ],
+) -> pd.DataFrame:
+    """Build one coefficient table for all four fitted models."""
+    expected_models = tuple(
+        build_model_registry()
+    )
+
+    if tuple(results) != expected_models:
+        raise Mod14Error(
+            "Evaluation results must contain "
+            "the four frozen MOD-14 models "
+            "in the expected order"
+        )
+
+    rows: list[dict[str, object]] = []
+
+    for model_id in expected_models:
+        result = results[
+            model_id
+        ]
+
+        coefficients = (
+            result
+            .fitted_model
+            .coefficients
+        )
+
+        for predictor, coefficient in (
+            coefficients.items()
+        ):
+            rows.append(
+                {
+                    "model": model_id,
+                    "condition": (
+                        result.condition
+                    ),
+                    "predictor": predictor,
+                    "coefficient": float(
+                        coefficient
+                    ),
+                }
+            )
+
+    return pd.DataFrame(
+        rows,
+        columns=(
+            "model",
+            "condition",
+            "predictor",
+            "coefficient",
+        ),
+    )
+
+
+def combine_prediction_tables(
+    results: dict[
+        str,
+        DirectEvaluationResult,
+    ],
+    *,
+    split: str,
+) -> pd.DataFrame:
+    """Combine row-level prediction tables across all models."""
+    if split not in {
+        "training",
+        "test",
+    }:
+        raise Mod14Error(
+            "Prediction split must be "
+            "'training' or 'test'"
+        )
+
+    expected_models = tuple(
+        build_model_registry()
+    )
+
+    if tuple(results) != expected_models:
+        raise Mod14Error(
+            "Evaluation results must contain "
+            "the four frozen MOD-14 models "
+            "in the expected order"
+        )
+
+    tables: list[
+        pd.DataFrame
+    ] = []
+
+    for model_id in expected_models:
+        result = results[
+            model_id
+        ]
+
+        if split == "training":
+            table = (
+                result
+                .training_predictions
+            )
+        else:
+            table = (
+                result
+                .test_predictions
+            )
+
+        tables.append(
+            table.copy()
+        )
+
+    return pd.concat(
+        tables,
+        axis=0,
+        ignore_index=True,
+    )
+
+
 def _build_prediction_table(
     frame: pd.DataFrame,
     *,
@@ -1572,4 +1985,327 @@ def _count_out_of_range_predictions(
             (values < 0.0)
             | (values > 3.0)
         )
+    )
+
+
+def _build_output_paths(
+    output_dir: Path,
+) -> dict[
+    str,
+    Path,
+]:
+    """Return the six frozen MOD-14 output paths."""
+    output_dir = Path(
+        output_dir
+    )
+
+    return {
+        "performance": (
+            output_dir
+            / "train_test_performance.csv"
+        ),
+        "coefficients": (
+            output_dir
+            / "regression_coefficients.csv"
+        ),
+        "training_predictions": (
+            output_dir
+            / "training_predictions.csv"
+        ),
+        "test_predictions": (
+            output_dir
+            / "test_predictions.csv"
+        ),
+        "mae_figure": (
+            output_dir
+            / "training_vs_test_mae.png"
+        ),
+        "r2_figure": (
+            output_dir
+            / "training_vs_test_r2.png"
+        ),
+    }
+
+
+def write_outputs(
+    *,
+    results: dict[
+        str,
+        DirectEvaluationResult,
+    ],
+    output_dir: Path,
+) -> dict[
+    str,
+    Path,
+]:
+    """Write all six frozen MOD-14 outputs without overwriting."""
+    output_dir = Path(
+        output_dir
+    )
+
+    paths = _build_output_paths(
+        output_dir
+    )
+
+    existing_paths = [
+        path
+        for path in paths.values()
+        if path.exists()
+    ]
+
+    if existing_paths:
+        raise Mod14Error(
+            "MOD-14 outputs already exist and "
+            "will not be overwritten: "
+            + ", ".join(
+                str(path)
+                for path
+                in existing_paths
+            )
+        )
+
+    output_dir.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    performance = (
+        build_performance_table(
+            results
+        )
+    )
+
+    coefficients = (
+        build_coefficients_table(
+            results
+        )
+    )
+
+    training_predictions = (
+        combine_prediction_tables(
+            results,
+            split="training",
+        )
+    )
+
+    test_predictions = (
+        combine_prediction_tables(
+            results,
+            split="test",
+        )
+    )
+
+    performance.to_csv(
+        paths[
+            "performance"
+        ],
+        index=False,
+    )
+
+    coefficients.to_csv(
+        paths[
+            "coefficients"
+        ],
+        index=False,
+    )
+
+    training_predictions.to_csv(
+        paths[
+            "training_predictions"
+        ],
+        index=False,
+    )
+
+    test_predictions.to_csv(
+        paths[
+            "test_predictions"
+        ],
+        index=False,
+    )
+
+    plot_training_vs_test_mae(
+        performance,
+        output_path=(
+            paths[
+                "mae_figure"
+            ]
+        ),
+    )
+
+    plot_training_vs_test_r2(
+        performance,
+        output_path=(
+            paths[
+                "r2_figure"
+            ]
+        ),
+    )
+
+    return paths
+
+
+def build_argument_parser() -> argparse.ArgumentParser:
+    """Build the standalone MOD-14 command-line interface."""
+    parser = argparse.ArgumentParser(
+        description=(
+            "Fit the frozen MOD-13 linear regression "
+            "models directly on the 26 development "
+            "participants and compare training with "
+            "test performance."
+        )
+    )
+
+    parser.add_argument(
+        "--modeling-data",
+        type=Path,
+        required=True,
+        help=(
+            "Path to modeling_data.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--holdout-split",
+        type=Path,
+        required=True,
+        help=(
+            "Path to participant_holdout_split.csv"
+        ),
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        required=True,
+        help=(
+            "Directory for the six MOD-14 outputs"
+        ),
+    )
+
+    return parser
+
+
+def _print_model_summary(
+    performance: pd.DataFrame,
+) -> None:
+    """Print concise training/test results for each model."""
+    for _, row in (
+        performance.iterrows()
+    ):
+        print(
+            f"{row['model']}: "
+            f"training MAE="
+            f"{row['training_mae']:.4f}, "
+            f"R²="
+            f"{row['training_r2']:.4f}; "
+            f"test MAE="
+            f"{row['test_mae']:.4f}, "
+            f"R²="
+            f"{row['test_r2']:.4f}"
+        )
+
+
+def main(
+    argv: list[str] | None = None,
+) -> int:
+    """Run the complete standalone MOD-14 analysis."""
+    parser = (
+        build_argument_parser()
+    )
+
+    args = parser.parse_args(
+        argv
+    )
+
+    if not (
+        args.modeling_data
+        .is_file()
+    ):
+        raise Mod14Error(
+            "Modeling data file does not exist: "
+            f"{args.modeling_data}"
+        )
+
+    if not (
+        args.holdout_split
+        .is_file()
+    ):
+        raise Mod14Error(
+            "Holdout split file does not exist: "
+            f"{args.holdout_split}"
+        )
+
+    modeling_data = pd.read_csv(
+        args.modeling_data
+    )
+
+    holdout_split = pd.read_csv(
+        args.holdout_split
+    )
+
+    (
+        development_data,
+        test_data,
+        development_ids,
+        test_ids,
+    ) = prepare_split_data(
+        modeling_data=(
+            modeling_data
+        ),
+        holdout_split=(
+            holdout_split
+        ),
+    )
+
+    print(
+        "MOD-14 participant split: "
+        f"{len(development_ids)} development, "
+        f"{len(test_ids)} test"
+    )
+
+    results = (
+        evaluate_all_models(
+            development_data=(
+                development_data
+            ),
+            test_data=(
+                test_data
+            ),
+        )
+    )
+
+    performance = (
+        build_performance_table(
+            results
+        )
+    )
+
+    _print_model_summary(
+        performance
+    )
+
+    paths = write_outputs(
+        results=results,
+        output_dir=(
+            args.output_dir
+        ),
+    )
+
+    print(
+        "Outputs:"
+    )
+
+    for path in (
+        paths.values()
+    ):
+        print(
+            f"  {path}"
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(
+        main()
     )
