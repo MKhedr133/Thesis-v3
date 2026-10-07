@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from unittest.mock import patch
+from tempfile import TemporaryDirectory
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -1636,6 +1637,629 @@ class AllModelEvaluationTests(
             ),
             {1, 2, 3},
         )
+
+
+class OutputTableTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.development,
+            self.test,
+            self.development_ids,
+            self.test_ids,
+        ) = regression_ready_split_data()
+
+        self.results = (
+            MOD14.evaluate_all_models(
+                development_data=(
+                    self.development
+                ),
+                test_data=self.test,
+            )
+        )
+
+    def test_coefficient_table_contains_intercept_and_all_predictors(
+        self,
+    ):
+        table = (
+            MOD14.build_coefficients_table(
+                self.results
+            )
+        )
+
+        self.assertEqual(
+            tuple(
+                table.columns
+            ),
+            (
+                "model",
+                "condition",
+                "predictor",
+                "coefficient",
+            ),
+        )
+
+        registry = (
+            MOD14.build_model_registry()
+        )
+
+        for model_id, spec in (
+            registry.items()
+        ):
+            with self.subTest(
+                model_id=model_id
+            ):
+                model_table = (
+                    table.loc[
+                        table[
+                            "model"
+                        ].eq(
+                            model_id
+                        )
+                    ]
+                )
+
+                self.assertEqual(
+                    len(model_table),
+                    (
+                        1
+                        + len(
+                            spec.predictors
+                        )
+                    ),
+                )
+
+                self.assertEqual(
+                    tuple(
+                        model_table[
+                            "predictor"
+                        ]
+                    ),
+                    (
+                        "Intercept",
+                        *spec.predictors,
+                    ),
+                )
+
+                self.assertTrue(
+                    np.isfinite(
+                        model_table[
+                            "coefficient"
+                        ]
+                    ).all()
+                )
+
+    def test_combined_training_predictions_have_required_columns(
+        self,
+    ):
+        table = (
+            MOD14.combine_prediction_tables(
+                self.results,
+                split="training",
+            )
+        )
+
+        self.assertEqual(
+            tuple(
+                table.columns
+            ),
+            (
+                "participant_id",
+                "model",
+                "condition",
+                "observed_difficulty_stage",
+                "predicted_difficulty_stage",
+                "error",
+                "absolute_error",
+            ),
+        )
+
+        self.assertEqual(
+            set(
+                table["model"]
+            ),
+            {
+                "visual",
+                "auditory",
+                "cognitive_primary",
+                "cognitive_later",
+            },
+        )
+
+    def test_combined_test_predictions_have_required_columns(
+        self,
+    ):
+        table = (
+            MOD14.combine_prediction_tables(
+                self.results,
+                split="test",
+            )
+        )
+
+        self.assertEqual(
+            tuple(
+                table.columns
+            ),
+            (
+                "participant_id",
+                "model",
+                "condition",
+                "observed_difficulty_stage",
+                "predicted_difficulty_stage",
+                "error",
+                "absolute_error",
+            ),
+        )
+
+        self.assertEqual(
+            set(
+                table["model"]
+            ),
+            {
+                "visual",
+                "auditory",
+                "cognitive_primary",
+                "cognitive_later",
+            },
+        )
+
+    def test_invalid_prediction_split_is_rejected(
+        self,
+    ):
+        with self.assertRaises(
+            MOD14.Mod14Error
+        ):
+            MOD14.combine_prediction_tables(
+                self.results,
+                split="validation",
+            )
+
+
+class OutputWritingTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.development,
+            self.test,
+            self.development_ids,
+            self.test_ids,
+        ) = regression_ready_split_data()
+
+        self.results = (
+            MOD14.evaluate_all_models(
+                development_data=(
+                    self.development
+                ),
+                test_data=self.test,
+            )
+        )
+
+    def test_write_outputs_creates_exact_required_files(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            paths = (
+                MOD14.write_outputs(
+                    results=(
+                        self.results
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
+                )
+            )
+
+            expected_names = {
+                "train_test_performance.csv",
+                "regression_coefficients.csv",
+                "training_predictions.csv",
+                "test_predictions.csv",
+                "training_vs_test_mae.png",
+                "training_vs_test_r2.png",
+            }
+
+            self.assertEqual(
+                {
+                    path.name
+                    for path
+                    in paths.values()
+                },
+                expected_names,
+            )
+
+            self.assertEqual(
+                {
+                    path.name
+                    for path
+                    in output_dir.iterdir()
+                },
+                expected_names,
+            )
+
+            for path in (
+                paths.values()
+            ):
+                self.assertTrue(
+                    path.is_file()
+                )
+
+                self.assertGreater(
+                    path.stat().st_size,
+                    0,
+                )
+
+    def test_written_performance_csv_matches_builder(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            paths = (
+                MOD14.write_outputs(
+                    results=(
+                        self.results
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
+                )
+            )
+
+            written = pd.read_csv(
+                paths[
+                    "performance"
+                ]
+            )
+
+            expected = (
+                MOD14.build_performance_table(
+                    self.results
+                )
+            )
+
+            pd.testing.assert_frame_equal(
+                written,
+                expected,
+                check_dtype=False,
+            )
+
+    def test_written_coefficients_csv_matches_builder(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            paths = (
+                MOD14.write_outputs(
+                    results=(
+                        self.results
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
+                )
+            )
+
+            written = pd.read_csv(
+                paths[
+                    "coefficients"
+                ]
+            )
+
+            expected = (
+                MOD14.build_coefficients_table(
+                    self.results
+                )
+            )
+
+            pd.testing.assert_frame_equal(
+                written,
+                expected,
+                check_dtype=False,
+            )
+
+    def test_existing_output_is_not_silently_overwritten(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            MOD14.write_outputs(
+                results=(
+                    self.results
+                ),
+                output_dir=(
+                    output_dir
+                ),
+            )
+
+            with self.assertRaises(
+                MOD14.Mod14Error
+            ):
+                MOD14.write_outputs(
+                    results=(
+                        self.results
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
+                )
+
+    def test_partial_existing_output_also_blocks_run(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            output_dir.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            existing = (
+                output_dir
+                / "training_predictions.csv"
+            )
+
+            existing.write_text(
+                "existing file",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(
+                MOD14.Mod14Error
+            ):
+                MOD14.write_outputs(
+                    results=(
+                        self.results
+                    ),
+                    output_dir=(
+                        output_dir
+                    ),
+                )
+
+            self.assertEqual(
+                existing.read_text(
+                    encoding="utf-8"
+                ),
+                "existing file",
+            )
+
+
+class FigureTests(
+    unittest.TestCase
+):
+    def setUp(self):
+        (
+            self.development,
+            self.test,
+            self.development_ids,
+            self.test_ids,
+        ) = regression_ready_split_data()
+
+        self.results = (
+            MOD14.evaluate_all_models(
+                development_data=(
+                    self.development
+                ),
+                test_data=self.test,
+            )
+        )
+
+        self.performance = (
+            MOD14.build_performance_table(
+                self.results
+            )
+        )
+
+    def test_mae_figure_is_written(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_path = (
+                Path(tmp)
+                / "mae.png"
+            )
+
+            MOD14.plot_training_vs_test_mae(
+                self.performance,
+                output_path=(
+                    output_path
+                ),
+            )
+
+            self.assertTrue(
+                output_path.is_file()
+            )
+
+            self.assertGreater(
+                output_path.stat().st_size,
+                0,
+            )
+
+    def test_r2_figure_is_written(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            output_path = (
+                Path(tmp)
+                / "r2.png"
+            )
+
+            MOD14.plot_training_vs_test_r2(
+                self.performance,
+                output_path=(
+                    output_path
+                ),
+            )
+
+            self.assertTrue(
+                output_path.is_file()
+            )
+
+            self.assertGreater(
+                output_path.stat().st_size,
+                0,
+            )
+
+
+class CommandLineTests(
+    unittest.TestCase
+):
+    def test_cli_requires_all_three_paths(
+        self,
+    ):
+        parser = (
+            MOD14.build_argument_parser()
+        )
+
+        with self.assertRaises(
+            SystemExit
+        ):
+            parser.parse_args(
+                []
+            )
+
+    def test_cli_runs_complete_synthetic_analysis(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            modeling_path = (
+                root
+                / "modeling_data.csv"
+            )
+
+            split_path = (
+                root
+                / "participant_holdout_split.csv"
+            )
+
+            output_dir = (
+                root
+                / "mod14_outputs"
+            )
+
+            regression_ready_modeling_data().to_csv(
+                modeling_path,
+                index=False,
+            )
+
+            synthetic_holdout_split().to_csv(
+                split_path,
+                index=False,
+            )
+
+            exit_code = (
+                MOD14.main(
+                    [
+                        "--modeling-data",
+                        str(
+                            modeling_path
+                        ),
+                        "--holdout-split",
+                        str(
+                            split_path
+                        ),
+                        "--output-dir",
+                        str(
+                            output_dir
+                        ),
+                    ]
+                )
+            )
+
+            self.assertEqual(
+                exit_code,
+                0,
+            )
+
+            expected_names = {
+                "train_test_performance.csv",
+                "regression_coefficients.csv",
+                "training_predictions.csv",
+                "test_predictions.csv",
+                "training_vs_test_mae.png",
+                "training_vs_test_r2.png",
+            }
+
+            self.assertEqual(
+                {
+                    path.name
+                    for path
+                    in output_dir.iterdir()
+                },
+                expected_names,
+            )
+
+    def test_cli_does_not_overwrite_existing_outputs(
+        self,
+    ):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            modeling_path = (
+                root
+                / "modeling_data.csv"
+            )
+
+            split_path = (
+                root
+                / "participant_holdout_split.csv"
+            )
+
+            output_dir = (
+                root
+                / "mod14_outputs"
+            )
+
+            regression_ready_modeling_data().to_csv(
+                modeling_path,
+                index=False,
+            )
+
+            synthetic_holdout_split().to_csv(
+                split_path,
+                index=False,
+            )
+
+            arguments = [
+                "--modeling-data",
+                str(
+                    modeling_path
+                ),
+                "--holdout-split",
+                str(
+                    split_path
+                ),
+                "--output-dir",
+                str(
+                    output_dir
+                ),
+            ]
+
+            first_exit_code = (
+                MOD14.main(
+                    arguments
+                )
+            )
+
+            self.assertEqual(
+                first_exit_code,
+                0,
+            )
+
+            with self.assertRaises(
+                MOD14.Mod14Error
+            ):
+                MOD14.main(
+                    arguments
+                )
 
 
 if __name__ == "__main__":
