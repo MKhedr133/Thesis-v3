@@ -1074,26 +1074,8 @@ def select_nonlinear_hyperparameters(
         cv_results["cv_mae"].min()
     )
 
-    # Treat configurations within 0.01 stage units
-    # of the minimum MAE as effectively tied.
-    tied_candidate_indices = [
-        index
-        for index, result in enumerate(results)
-        if result["cv_mae"]
-        <= minimum_cv_mae + CV_MAE_TIE_TOLERANCE
-    ]
-
-    # Prefer the simplest configuration among ties.
-    winning_index = min(
-        tied_candidate_indices,
-        key=lambda index: (
-            _parameter_complexity_key(
-                candidates[index],
-                model_name,
-            ),
-            index,
-        ),
-    )
+    # Select the configuration with the lowest CV MAE.
+    winning_index = int(cv_results["cv_mae"].idxmin())
 
     best_params = dict(
         candidates[winning_index]
