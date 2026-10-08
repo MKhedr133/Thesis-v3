@@ -394,3 +394,512 @@ def test_algorithm_random_states_are_configurable(mod15):
         registry["random_forest_regression"].random_state
         == 123
     )
+
+
+
+# ============================================================
+# MOD-15 — Batch 2
+# Development-only nonlinear model selection
+# ============================================================
+
+def _development_ids():
+    return {f"P{i:02d}" for i in range(1, 27)}
+
+
+def _test_ids():
+    return {f"P{i:02d}" for i in range(27, 33)}
+
+
+def _tree_candidate(depth=2, leaf=1):
+    return {
+        "max_depth": depth,
+        "min_samples_leaf": leaf,
+    }
+
+
+def _forest_candidate(trees=7):
+    # Small forest for synthetic tests only.
+    # Official selection must use 500 trees.
+    return {
+        "n_estimators": trees,
+        "max_depth": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt",
+    }
+
+
+def test_batch2_exact_search_spaces(mod15):
+    assert mod15.CV_N_SPLITS == 5
+    assert mod15.CV_MAE_TIE_TOLERANCE == 0.01
+
+    assert mod15.DECISION_TREE_SEARCH_SPACE == {
+        "max_depth": [2, 3, 4, None],
+        "min_samples_leaf": [1, 2, 4],
+    }
+
+    assert mod15.RANDOM_FOREST_SEARCH_SPACE == {
+        "n_estimators": [500],
+        "max_depth": [2, 3, 4, None],
+        "min_samples_leaf": [1, 2, 4],
+        "max_features": ["sqrt", 1.0],
+    }
+
+
+def test_grouped_cv_keeps_participants_together(
+    mod15, synthetic_trials
+):
+    rows = mod15.prepare_condition_rows(
+        synthetic_trials,
+        condition="Visual",
+        participant_ids=_development_ids(),
+    )
+
+    folds = mod15.make_participant_cv_splits(
+        rows,
+        n_splits=5,
+    )
+
+    assert len(folds) == 5
+
+    validation_ids = []
+    validation_row_positions = []
+
+    for training_idx, validation_idx in folds:
+        training = rows.iloc[training_idx]
+        validation = rows.iloc[validation_idx]
+
+        training_participants = set(
+            training["participant_id"]
+        )
+        validation_participants = set(
+            validation["participant_id"]
+        )
+
+        assert training_participants.isdisjoint(
+            validation_participants
+        )
+
+        assert not (
+            training_participants & _test_ids()
+        )
+
+        assert not (
+            validation_participants & _test_ids()
+        )
+
+        validation_ids.extend(validation_participants)
+        validation_row_positions.extend(
+            validation_idx.tolist()
+        )
+
+    # Every development participant belongs to exactly
+    # one validation fold.
+    assert len(validation_ids) == 26
+    assert set(validation_ids) == _development_ids()
+
+    # Every development row is validated exactly once.
+    assert sorted(validation_row_positions) == list(
+        range(len(rows))
+    )
+
+
+def test_grouped_cv_rejects_too_many_folds(
+    mod15, synthetic_trials
+):
+    rows = mod15.prepare_condition_rows(
+        synthetic_trials,
+        condition="Visual",
+        participant_ids={"P01", "P02"},
+    )
+
+    with pytest.raises(ValueError):
+        mod15.make_participant_cv_splits(
+            rows,
+            n_splits=3,
+        )
+
+
+def test_participant_balanced_mae(mod15):
+    # Participant A: four rows, all correct.
+    # Participant B: one row, absolute error = 2.
+    #
+    # Participant-balanced MAE = (0 + 2) / 2 = 1.
+    # Ordinary pooled MAE = 2 / 5 = 0.4.
+
+    observed = np.array([0, 0, 0, 0, 0])
+    predicted = np.array([0, 0, 0, 0, 2])
+
+    participants = np.array([
+        "A", "A", "A", "A", "B"
+    ])
+
+    score = mod15.participant_balanced_mae(
+        observed,
+        predicted,
+        participants,
+    )
+
+    assert score == pytest.approx(1.0)
+
+
+def test_tree_cv_generates_one_prediction_per_row(
+    mod15, synthetic_trials
+):
+    rows = mod15.prepare_condition_rows(
+        synthetic_trials,
+        condition="Visual",
+        participant_ids=_development_ids(),
+    )
+
+    oof = mod15.evaluate_nonlinear_cv_candidate(
+        rows,
+        condition="Visual",
+        model_name="decision_tree_regression",
+        params=_tree_candidate(),
+        n_splits=5,
+        random_state=42,
+    )
+
+    required_columns = {
+        "participant_id",
+        "observed_difficulty_stage",
+        "predicted_difficulty_stage",
+        "fold",
+    }
+
+    assert required_columns.issubset(oof.columns)
+
+    assert len(oof) == len(rows)
+    assert oof["participant_id"].nunique() == 26
+
+    # All four trials from a participant belong to
+    # one validation fold.
+    assert (
+        oof.groupby("participant_id")["fold"]
+        .nunique()
+        .eq(1)
+        .all()
+    )
+
+    assert oof[
+        "predicted_difficulty_stage"
+    ].notna().all()
+
+    assert np.isfinite(
+        oof["predicted_difficulty_stage"]
+    ).all()
+
+
+def test_both_algorithms_use_identical_eligible_rows(
+    mod15, synthetic_trials
+):
+    rows = mod15.prepare_condition_rows(
+        synthetic_trials,
+        condition="Auditory",
+        participant_ids=_development_ids(),
+    )
+
+    tree_oof = mod15.evaluate_nonlinear_cv_candidate(
+        rows,
+        condition="Auditory",
+        model_name="decision_tree_regression",
+        params=_tree_candidate(),
+        n_splits=5,
+        random_state=42,
+    )
+
+    forest_oof = mod15.evaluate_nonlinear_cv_candidate(
+        rows,
+        condition="Auditory",
+        model_name="random_forest_regression",
+        params=_forest_candidate(),
+        n_splits=5,
+        random_state=42,
+    )
+
+    columns = [
+        "participant_id",
+        "observed_difficulty_stage",
+    ]
+
+    tree_rows = tree_oof[columns].sort_values(
+        columns
+    ).reset_index(drop=True)
+
+    forest_rows = forest_oof[columns].sort_values(
+        columns
+    ).reset_index(drop=True)
+
+    pd.testing.assert_frame_equal(
+        tree_rows,
+        forest_rows,
+    )
+
+
+def test_selection_uses_development_participants_only(
+    mod15, synthetic_trials, monkeypatch
+):
+    data = synthetic_trials.copy()
+
+    # Give the six test participants extreme predictor
+    # values so leakage becomes detectable.
+    test_mask = data["participant_id"].isin(
+        _test_ids()
+    )
+
+    data.loc[
+        test_mask,
+        "median_time_to_target_seconds",
+    ] = 10000.0
+
+    original_fit = DecisionTreeRegressor.fit
+    original_predict = DecisionTreeRegressor.predict
+
+    fitted_matrices = []
+    predicted_matrices = []
+
+    def audited_fit(self, X, y, *args, **kwargs):
+        matrix = np.asarray(X, dtype=float)
+
+        assert matrix.max() < 1000.0
+
+        fitted_matrices.append(matrix.copy())
+
+        return original_fit(
+            self, X, y, *args, **kwargs
+        )
+
+    def audited_predict(self, X, *args, **kwargs):
+        matrix = np.asarray(X, dtype=float)
+
+        assert matrix.max() < 1000.0
+
+        predicted_matrices.append(matrix.copy())
+
+        return original_predict(
+            self, X, *args, **kwargs
+        )
+
+    monkeypatch.setattr(
+        DecisionTreeRegressor,
+        "fit",
+        audited_fit,
+    )
+
+    monkeypatch.setattr(
+        DecisionTreeRegressor,
+        "predict",
+        audited_predict,
+    )
+
+    result = mod15.select_nonlinear_hyperparameters(
+        data,
+        condition="Visual",
+        model_name="decision_tree_regression",
+        development_ids=_development_ids(),
+        candidate_params=[
+            _tree_candidate(depth=2),
+        ],
+        n_splits=5,
+        random_state=42,
+    )
+
+    # Five CV fits, without a final full-data refit.
+    assert len(fitted_matrices) == 5
+    assert len(predicted_matrices) == 5
+
+    assert result["best_params"] == _tree_candidate(
+        depth=2
+    )
+
+
+def test_selection_ignores_test_targets(
+    mod15, synthetic_trials
+):
+    data_a = synthetic_trials.copy()
+    data_b = synthetic_trials.copy()
+
+    # Change every target for the six unseen participants.
+    data_b.loc[
+        data_b["participant_id"].isin(_test_ids()),
+        "difficulty_stage",
+    ] = 3
+
+    kwargs = {
+        "condition": "Visual",
+        "model_name": "decision_tree_regression",
+        "development_ids": _development_ids(),
+        "candidate_params": [
+            _tree_candidate(depth=1),
+            _tree_candidate(depth=2),
+        ],
+        "n_splits": 5,
+        "random_state": 42,
+    }
+
+    result_a = mod15.select_nonlinear_hyperparameters(
+        data_a, **kwargs
+    )
+
+    result_b = mod15.select_nonlinear_hyperparameters(
+        data_b, **kwargs
+    )
+
+    assert (
+        result_a["best_params"]
+        == result_b["best_params"]
+    )
+
+    assert result_a["best_cv_mae"] == pytest.approx(
+        result_b["best_cv_mae"]
+    )
+
+    pd.testing.assert_frame_equal(
+        result_a["cv_results"],
+        result_b["cv_results"],
+    )
+
+
+def test_tree_selects_lower_cv_mae(
+    mod15, synthetic_trials
+):
+    result = mod15.select_nonlinear_hyperparameters(
+        synthetic_trials,
+        condition="Visual",
+        model_name="decision_tree_regression",
+        development_ids=_development_ids(),
+        candidate_params=[
+            _tree_candidate(depth=1),
+            _tree_candidate(depth=2),
+        ],
+        n_splits=5,
+        random_state=42,
+    )
+
+    # The synthetic relationship has four discrete
+    # target stages. Depth 2 can separate all four.
+    assert result["best_params"] == _tree_candidate(
+        depth=2
+    )
+
+    cv_results = result["cv_results"]
+
+    assert len(cv_results) == 2
+    assert "cv_mae" in cv_results.columns
+
+    assert np.isfinite(
+        cv_results["cv_mae"]
+    ).all()
+
+    assert result["best_cv_mae"] == pytest.approx(
+        cv_results["cv_mae"].min()
+    )
+
+
+def test_tied_models_prefer_simpler_configuration(
+    mod15, synthetic_trials
+):
+    data = synthetic_trials.copy()
+
+    # Constant target gives identical predictions
+    # across the tested tree configurations.
+    data.loc[
+        data["condition"] == "Visual",
+        "difficulty_stage",
+    ] = 2
+
+    result = mod15.select_nonlinear_hyperparameters(
+        data,
+        condition="Visual",
+        model_name="decision_tree_regression",
+        development_ids=_development_ids(),
+        candidate_params=[
+            _tree_candidate(depth=None, leaf=1),
+            _tree_candidate(depth=2, leaf=4),
+            _tree_candidate(depth=2, leaf=1),
+        ],
+        n_splits=5,
+        random_state=42,
+    )
+
+    assert result["best_params"] == {
+        "max_depth": 2,
+        "min_samples_leaf": 4,
+    }
+
+
+def test_random_forest_selection_runs(
+    mod15, synthetic_trials
+):
+    result = mod15.select_nonlinear_hyperparameters(
+        synthetic_trials,
+        condition="Auditory",
+        model_name="random_forest_regression",
+        development_ids=_development_ids(),
+        candidate_params=[
+            _forest_candidate(trees=7),
+        ],
+        n_splits=5,
+        random_state=42,
+    )
+
+    assert result["best_params"] == (
+        _forest_candidate(trees=7)
+    )
+
+    assert np.isfinite(
+        result["best_cv_mae"]
+    )
+
+    assert len(result["cv_results"]) == 1
+
+
+def test_random_forest_selection_is_reproducible(
+    mod15, synthetic_trials
+):
+    kwargs = {
+        "condition": "Auditory",
+        "model_name": "random_forest_regression",
+        "development_ids": _development_ids(),
+        "candidate_params": [
+            _forest_candidate(trees=7),
+        ],
+        "n_splits": 5,
+        "random_state": 42,
+    }
+
+    first = mod15.select_nonlinear_hyperparameters(
+        synthetic_trials,
+        **kwargs,
+    )
+
+    second = mod15.select_nonlinear_hyperparameters(
+        synthetic_trials,
+        **kwargs,
+    )
+
+    assert first["best_params"] == second["best_params"]
+
+    assert first["best_cv_mae"] == pytest.approx(
+        second["best_cv_mae"]
+    )
+
+    pd.testing.assert_frame_equal(
+        first["cv_results"],
+        second["cv_results"],
+    )
+
+
+def test_unknown_nonlinear_model_is_rejected(
+    mod15, synthetic_trials
+):
+    with pytest.raises(ValueError):
+        mod15.select_nonlinear_hyperparameters(
+            synthetic_trials,
+            condition="Visual",
+            model_name="multiple_linear_regression",
+            development_ids=_development_ids(),
+            candidate_params=[],
+            n_splits=5,
+            random_state=42,
+        )
