@@ -430,7 +430,6 @@ def _forest_candidate(trees=7):
 
 def test_batch2_exact_search_spaces(mod15):
     assert mod15.CV_N_SPLITS == 5
-    assert mod15.CV_MAE_TIE_TOLERANCE == 0.01
 
     assert mod15.DECISION_TREE_SEARCH_SPACE == {
         "max_depth": [2, 3, 4, None],
@@ -796,36 +795,42 @@ def test_tree_selects_lower_cv_mae(
     )
 
 
-def test_tied_models_prefer_simpler_configuration(
+def test_equal_cv_mae_selects_first_candidate(
     mod15, synthetic_trials
 ):
     data = synthetic_trials.copy()
 
-    # Constant target gives identical predictions
-    # across the tested tree configurations.
+    # Constant target makes every configuration
+    # achieve the same cross-validation MAE.
     data.loc[
         data["condition"] == "Visual",
         "difficulty_stage",
     ] = 2
+
+    candidates = [
+        _tree_candidate(depth=None, leaf=1),
+        _tree_candidate(depth=2, leaf=4),
+        _tree_candidate(depth=2, leaf=1),
+    ]
 
     result = mod15.select_nonlinear_hyperparameters(
         data,
         condition="Visual",
         model_name="decision_tree_regression",
         development_ids=_development_ids(),
-        candidate_params=[
-            _tree_candidate(depth=None, leaf=1),
-            _tree_candidate(depth=2, leaf=4),
-            _tree_candidate(depth=2, leaf=1),
-        ],
+        candidate_params=candidates,
         n_splits=5,
         random_state=42,
     )
 
-    assert result["best_params"] == {
-        "max_depth": 2,
-        "min_samples_leaf": 4,
-    }
+    # All configurations achieve identical CV MAE.
+    assert result["cv_results"]["cv_mae"].eq(0).all()
+
+    # With an exact tie, idxmin() selects the
+    # first configuration in the candidate list.
+    assert result["best_params"] == candidates[0]
+
+    assert result["best_cv_mae"] == pytest.approx(0.0)
 
 
 def test_random_forest_selection_runs(
