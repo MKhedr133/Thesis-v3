@@ -1608,3 +1608,781 @@ def test_batch3_direct_ols_rejects_rank_deficiency(
 
     with pytest.raises(ValueError):
         model.fit(X, y)
+
+
+
+# ============================================================
+# MOD-15 — Batch 4 RED tests
+# CSV outputs, figures, and standalone CLI
+# ============================================================
+
+import matplotlib
+matplotlib.use("Agg")
+
+from matplotlib.figure import Figure
+
+
+BATCH4_CSV_FILES = [
+    "model_comparison_performance.csv",
+    "selected_hyperparameters.csv",
+    "development_cv_results.csv",
+    "training_predictions.csv",
+    "test_predictions.csv",
+]
+
+BATCH4_FIGURE_FILES = [
+    "visual_linear_regression_mae.png",
+    "visual_linear_regression_r2.png",
+    "visual_decision_tree_mae.png",
+    "visual_decision_tree_r2.png",
+    "visual_random_forest_mae.png",
+    "visual_random_forest_r2.png",
+    "auditory_linear_regression_mae.png",
+    "auditory_linear_regression_r2.png",
+    "auditory_decision_tree_mae.png",
+    "auditory_decision_tree_r2.png",
+    "auditory_random_forest_mae.png",
+    "auditory_random_forest_r2.png",
+    "visual_model_comparison_mae.png",
+    "visual_model_comparison_r2.png",
+    "auditory_model_comparison_mae.png",
+    "auditory_model_comparison_r2.png",
+]
+
+
+@pytest.fixture
+def batch4_tables():
+    """Small synthetic tables for output and chart tests."""
+
+    performance_rows = []
+
+    model_names = [
+        "multiple_linear_regression",
+        "decision_tree_regression",
+        "random_forest_regression",
+    ]
+
+    for condition in ["Visual", "Auditory"]:
+        for index, model_name in enumerate(model_names):
+            training_mae = 0.3 + 0.1 * index
+            test_mae = 0.6 + 0.1 * index
+
+            training_r2 = 0.7 - 0.1 * index
+            test_r2 = -0.30 + 0.05 * index
+
+            performance_rows.append({
+                "condition": condition,
+                "model": model_name,
+                "development_participant_count": 26,
+                "development_row_count": 104,
+                "test_participant_count": 6,
+                "test_row_count": 24,
+                "training_mae": training_mae,
+                "test_mae": test_mae,
+                "test_minus_training_mae":
+                    test_mae - training_mae,
+                "training_r2": training_r2,
+                "test_r2": test_r2,
+                "training_minus_test_r2":
+                    training_r2 - test_r2,
+            })
+
+    performance = pd.DataFrame(
+        performance_rows
+    )
+
+    selected_rows = []
+    cv_rows = []
+
+    for condition in ["Visual", "Auditory"]:
+        for model_name in [
+            "decision_tree_regression",
+            "random_forest_regression",
+        ]:
+            is_forest = (
+                model_name == "random_forest_regression"
+            )
+
+            row = {
+                "condition": condition,
+                "model": model_name,
+                "max_depth": 3,
+                "min_samples_leaf": 2,
+                "n_estimators":
+                    500 if is_forest else np.nan,
+                "max_features":
+                    "sqrt" if is_forest else np.nan,
+                "cv_mae": 0.55,
+            }
+
+            selected_rows.append(row)
+
+            cv_rows.append({
+                **row,
+                "candidate_id": 1,
+                "n_splits": 5,
+                "development_participant_count": 26,
+                "development_row_count": 104,
+                "selected": True,
+            })
+
+    selected_hyperparameters = pd.DataFrame(
+        selected_rows
+    )
+
+    development_cv_results = pd.DataFrame(
+        cv_rows
+    )
+
+    prediction_rows = []
+
+    for condition in ["Visual", "Auditory"]:
+        for model_name in model_names:
+            for participant_id in ["P01", "P27"]:
+                observed = 2.0
+                predicted = 1.7
+
+                prediction_rows.append({
+                    "participant_id": participant_id,
+                    "condition": condition,
+                    "model": model_name,
+                    "observed_difficulty_stage": observed,
+                    "predicted_difficulty_stage": predicted,
+                    "error": observed - predicted,
+                    "absolute_error": abs(
+                        observed - predicted
+                    ),
+                })
+
+    all_predictions = pd.DataFrame(
+        prediction_rows
+    )
+
+    training_predictions = (
+        all_predictions.loc[
+            all_predictions["participant_id"] == "P01"
+        ].reset_index(drop=True)
+    )
+
+    test_predictions = (
+        all_predictions.loc[
+            all_predictions["participant_id"] == "P27"
+        ].reset_index(drop=True)
+    )
+
+    return {
+        "performance": performance,
+        "selected_hyperparameters":
+            selected_hyperparameters,
+        "development_cv_results":
+            development_cv_results,
+        "training_predictions":
+            training_predictions,
+        "test_predictions":
+            test_predictions,
+    }
+
+
+def _write_batch4_tables(
+    mod15,
+    tables,
+    output_dir,
+    overwrite=False,
+):
+    return mod15.write_mod15_outputs(
+        performance=tables["performance"],
+        selected_hyperparameters=(
+            tables["selected_hyperparameters"]
+        ),
+        development_cv_results=(
+            tables["development_cv_results"]
+        ),
+        training_predictions=(
+            tables["training_predictions"]
+        ),
+        test_predictions=(
+            tables["test_predictions"]
+        ),
+        output_directory=output_dir,
+        overwrite=overwrite,
+    )
+
+
+def test_batch4_writes_exact_five_csv_files(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "mod15"
+
+    _write_batch4_tables(
+        mod15,
+        batch4_tables,
+        output_dir,
+    )
+
+    actual_files = {
+        path.name
+        for path in output_dir.iterdir()
+        if path.is_file()
+    }
+
+    assert actual_files == set(
+        BATCH4_CSV_FILES
+    )
+
+    for name in BATCH4_CSV_FILES:
+        path = output_dir / name
+
+        assert path.is_file()
+        assert path.stat().st_size > 0
+
+
+def test_batch4_csv_contents_are_preserved(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "mod15"
+
+    _write_batch4_tables(
+        mod15,
+        batch4_tables,
+        output_dir,
+    )
+
+    filenames = {
+        "performance":
+            "model_comparison_performance.csv",
+        "selected_hyperparameters":
+            "selected_hyperparameters.csv",
+        "development_cv_results":
+            "development_cv_results.csv",
+        "training_predictions":
+            "training_predictions.csv",
+        "test_predictions":
+            "test_predictions.csv",
+    }
+
+    for key, filename in filenames.items():
+        actual = pd.read_csv(
+            output_dir / filename
+        )
+
+        expected = batch4_tables[key]
+
+        assert list(actual.columns) == list(
+            expected.columns
+        )
+
+        assert len(actual) == len(expected)
+
+        pd.testing.assert_frame_equal(
+            actual.reset_index(drop=True),
+            expected.reset_index(drop=True),
+            check_dtype=False,
+            check_exact=False,
+            rtol=1e-10,
+            atol=1e-10,
+        )
+
+
+def test_batch4_csv_overwrite_is_blocked(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "mod15"
+    output_dir.mkdir()
+
+    # Place a pre-existing output near the end of
+    # the file list to test overwrite preflight.
+    protected = (
+        output_dir / "test_predictions.csv"
+    )
+
+    protected.write_text(
+        "EXISTING OUTPUT",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileExistsError):
+        _write_batch4_tables(
+            mod15,
+            batch4_tables,
+            output_dir,
+            overwrite=False,
+        )
+
+    assert protected.read_text(
+        encoding="utf-8"
+    ) == "EXISTING OUTPUT"
+
+    # No earlier file should have been written.
+    assert {
+        path.name
+        for path in output_dir.iterdir()
+    } == {"test_predictions.csv"}
+
+
+def test_batch4_explicit_csv_overwrite(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "mod15"
+    output_dir.mkdir()
+
+    protected = (
+        output_dir / "test_predictions.csv"
+    )
+
+    protected.write_text(
+        "EXISTING OUTPUT",
+        encoding="utf-8",
+    )
+
+    _write_batch4_tables(
+        mod15,
+        batch4_tables,
+        output_dir,
+        overwrite=True,
+    )
+
+    assert set(
+        path.name
+        for path in output_dir.iterdir()
+    ) == set(BATCH4_CSV_FILES)
+
+    assert "EXISTING OUTPUT" not in (
+        protected.read_text(encoding="utf-8")
+    )
+
+
+def test_batch4_generates_all_sixteen_figures(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "figures"
+
+    mod15.create_mod15_figures(
+        performance=batch4_tables["performance"],
+        output_directory=output_dir,
+    )
+
+    actual_files = {
+        path.name
+        for path in output_dir.iterdir()
+        if path.is_file()
+    }
+
+    assert actual_files == set(
+        BATCH4_FIGURE_FILES
+    )
+
+    for name in BATCH4_FIGURE_FILES:
+        path = output_dir / name
+
+        assert path.stat().st_size > 1000
+
+        # Verify actual PNG format.
+        with path.open("rb") as file:
+            assert file.read(8) == (
+                b"\x89PNG\r\n\x1a\n"
+            )
+
+
+def test_batch4_charts_have_correct_bars_and_labels(
+    mod15, batch4_tables, tmp_path, monkeypatch
+):
+    captured = {}
+
+    def inspect_savefig(
+        figure,
+        filename,
+        *args,
+        **kwargs,
+    ):
+        ax = figure.axes[0]
+        name = Path(filename).name
+
+        bar_heights = [
+            patch.get_height()
+            for patch in ax.patches
+        ]
+
+        zero_reference = any(
+            len(line.get_ydata()) >= 2
+            and np.allclose(
+                np.asarray(
+                    line.get_ydata(),
+                    dtype=float,
+                ),
+                0.0,
+            )
+            for line in ax.lines
+        )
+
+        captured[name] = {
+            "title": ax.get_title(),
+            "bar_heights": bar_heights,
+            "number_of_labels": len(ax.texts),
+            "zero_reference": zero_reference,
+            "dpi": kwargs.get("dpi", 0),
+            "legend": (
+                [
+                    item.get_text()
+                    for item in ax.get_legend().get_texts()
+                ]
+                if ax.get_legend() is not None
+                else []
+            ),
+        }
+
+    monkeypatch.setattr(
+        Figure,
+        "savefig",
+        inspect_savefig,
+    )
+
+    mod15.create_mod15_figures(
+        performance=batch4_tables["performance"],
+        output_directory=tmp_path / "figures",
+    )
+
+    assert set(captured) == set(
+        BATCH4_FIGURE_FILES
+    )
+
+    for filename, chart in captured.items():
+
+        expected_bars = (
+            6 if "model_comparison" in filename
+            else 2
+        )
+
+        assert len(chart["bar_heights"]) == (
+            expected_bars
+        )
+
+        # Every bar requires a numerical label.
+        assert chart["number_of_labels"] >= (
+            expected_bars
+        )
+
+        assert chart["dpi"] >= 200
+
+        if filename.endswith("_r2.png"):
+            assert chart["zero_reference"]
+
+            # Synthetic test performance includes
+            # negative R² values.
+            assert any(
+                height < 0
+                for height in chart["bar_heights"]
+            )
+
+        if "model_comparison" in filename:
+            assert "Training" in chart["legend"]
+            assert "Test" in chart["legend"]
+
+
+def test_batch4_figures_are_closed_after_saving(
+    mod15, batch4_tables, tmp_path
+):
+    import matplotlib.pyplot as plt
+
+    before = set(plt.get_fignums())
+
+    mod15.create_mod15_figures(
+        performance=batch4_tables["performance"],
+        output_directory=tmp_path / "figures",
+    )
+
+    after = set(plt.get_fignums())
+
+    assert after == before
+
+
+def test_batch4_figure_overwrite_is_blocked(
+    mod15, batch4_tables, tmp_path
+):
+    output_dir = tmp_path / "figures"
+    output_dir.mkdir()
+
+    protected = (
+        output_dir
+        / "auditory_model_comparison_r2.png"
+    )
+
+    protected.write_bytes(
+        b"EXISTING FIGURE"
+    )
+
+    with pytest.raises(FileExistsError):
+        mod15.create_mod15_figures(
+            performance=batch4_tables["performance"],
+            output_directory=output_dir,
+            overwrite=False,
+        )
+
+    assert protected.read_bytes() == (
+        b"EXISTING FIGURE"
+    )
+
+    # Preflight must prevent partial figure output.
+    assert {
+        path.name
+        for path in output_dir.iterdir()
+    } == {protected.name}
+
+
+def test_batch4_full_workflow_with_synthetic_data(
+    mod15,
+    batch3_trials,
+    split_frame,
+    tmp_path,
+    monkeypatch,
+):
+    """
+    Integration test using 32 synthetic participants.
+
+    Restricts CV to one candidate per nonlinear model
+    to keep the test fast. Official analysis still uses
+    the complete hyperparameter search.
+    """
+
+    data_path = tmp_path / "synthetic_trials.csv"
+    split_path = tmp_path / "participant_holdout_split.csv"
+    output_dir = tmp_path / "results"
+
+    batch3_trials.to_csv(
+        data_path,
+        index=False,
+    )
+
+    split_frame.to_csv(
+        split_path,
+        index=False,
+    )
+
+    original_selection = (
+        mod15.select_nonlinear_hyperparameters
+    )
+
+    def fast_synthetic_selection(
+        data,
+        condition,
+        model_name,
+        development_ids,
+        **kwargs,
+    ):
+        if model_name == "decision_tree_regression":
+            candidate = {
+                "max_depth": 3,
+                "min_samples_leaf": 2,
+            }
+        else:
+            candidate = {
+                "n_estimators": 9,
+                "max_depth": 3,
+                "min_samples_leaf": 2,
+                "max_features": "sqrt",
+            }
+
+        return original_selection(
+            data=data,
+            condition=condition,
+            model_name=model_name,
+            development_ids=development_ids,
+            candidate_params=[candidate],
+            n_splits=5,
+            random_state=kwargs.get(
+                "random_state", 42
+            ),
+        )
+
+    monkeypatch.setattr(
+        mod15,
+        "select_nonlinear_hyperparameters",
+        fast_synthetic_selection,
+    )
+
+    mod15.run_mod15_analysis(
+        data_path=data_path,
+        split_path=split_path,
+        output_directory=output_dir,
+        random_state=42,
+    )
+
+    actual_files = {
+        path.name
+        for path in output_dir.iterdir()
+        if path.is_file()
+    }
+
+    assert actual_files == (
+        set(BATCH4_CSV_FILES)
+        | set(BATCH4_FIGURE_FILES)
+    )
+
+    performance = pd.read_csv(
+        output_dir
+        / "model_comparison_performance.csv"
+    )
+
+    assert len(performance) == 6
+
+    assert set(performance["condition"]) == {
+        "Visual", "Auditory"
+    }
+
+    assert set(performance["model"]) == (
+        MODEL_NAMES
+    )
+
+    assert (
+        performance["development_participant_count"]
+        == 26
+    ).all()
+
+    assert (
+        performance["test_participant_count"]
+        == 6
+    ).all()
+
+    selected = pd.read_csv(
+        output_dir / "selected_hyperparameters.csv"
+    )
+
+    assert len(selected) == 4
+
+    assert set(selected["model"]) == {
+        "decision_tree_regression",
+        "random_forest_regression",
+    }
+
+    cv_results = pd.read_csv(
+        output_dir / "development_cv_results.csv"
+    )
+
+    assert len(cv_results) == 4
+
+    training = pd.read_csv(
+        output_dir / "training_predictions.csv"
+    )
+
+    testing = pd.read_csv(
+        output_dir / "test_predictions.csv"
+    )
+
+    assert set(training["participant_id"]) == (
+        _development_ids()
+    )
+
+    assert set(testing["participant_id"]) == (
+        _test_ids()
+    )
+
+    assert len(training) == 2 * 3 * 104
+    assert len(testing) == 2 * 3 * 24
+
+
+def test_batch4_cli_passes_arguments(
+    mod15, monkeypatch, tmp_path
+):
+    captured = []
+
+    def fake_run(
+        data_path,
+        split_path,
+        output_directory,
+        overwrite=False,
+        random_state=42,
+    ):
+        captured.append({
+            "data_path": Path(data_path),
+            "split_path": Path(split_path),
+            "output_directory": Path(
+                output_directory
+            ),
+            "overwrite": overwrite,
+            "random_state": random_state,
+        })
+
+    monkeypatch.setattr(
+        mod15,
+        "run_mod15_analysis",
+        fake_run,
+    )
+
+    data_path = tmp_path / "data.csv"
+    split_path = tmp_path / "split.csv"
+    output_dir = tmp_path / "outputs"
+
+    mod15.main([
+        "--data", str(data_path),
+        "--split", str(split_path),
+        "--output-dir", str(output_dir),
+        "--random-state", "123",
+        "--overwrite",
+    ])
+
+    assert len(captured) == 1
+
+    assert captured[0] == {
+        "data_path": data_path,
+        "split_path": split_path,
+        "output_directory": output_dir,
+        "overwrite": True,
+        "random_state": 123,
+    }
+
+
+def test_batch4_default_cli_overwrite_is_false(
+    mod15, monkeypatch, tmp_path
+):
+    captured = []
+
+    def fake_run(
+        data_path,
+        split_path,
+        output_directory,
+        overwrite=False,
+        random_state=42,
+    ):
+        captured.append(overwrite)
+
+    monkeypatch.setattr(
+        mod15,
+        "run_mod15_analysis",
+        fake_run,
+    )
+
+    mod15.main([
+        "--data", str(tmp_path / "data.csv"),
+        "--split", str(tmp_path / "split.csv"),
+        "--output-dir", str(tmp_path / "results"),
+    ])
+
+    assert captured == [False]
+
+
+
+def test_batch4_runner_rejects_invalid_split(
+    mod15, batch3_trials, split_frame, tmp_path
+):
+    data_path = tmp_path / "synthetic_trials.csv"
+    split_path = tmp_path / "invalid_split.csv"
+    output_dir = tmp_path / "results"
+
+    batch3_trials.to_csv(
+        data_path,
+        index=False,
+    )
+
+    # Deliberately remove one test participant.
+    split_frame.iloc[:-1].to_csv(
+        split_path,
+        index=False,
+    )
+
+    with pytest.raises(ValueError):
+        mod15.run_mod15_analysis(
+            data_path=data_path,
+            split_path=split_path,
+            output_directory=output_dir,
+        )
+
+    assert not output_dir.exists()
