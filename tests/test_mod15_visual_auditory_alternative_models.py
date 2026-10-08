@@ -2147,7 +2147,9 @@ def test_batch4_full_workflow_with_synthetic_data(
     split_path = tmp_path / "participant_holdout_split.csv"
     output_dir = tmp_path / "results"
 
-    batch3_trials.to_csv(
+    batch3_trials.rename(
+        columns={"condition": "condition_name"}
+    ).to_csv(
         data_path,
         index=False,
     )
@@ -2386,3 +2388,21 @@ def test_batch4_runner_rejects_invalid_split(
         )
 
     assert not output_dir.exists()
+
+
+def test_frozen_split_accepts_train_label(
+    mod15, split_frame, tmp_path
+):
+    split_frame = split_frame.copy()
+
+    split_frame["split"] = split_frame["split"].replace(
+        {"development": "train"}
+    )
+
+    path = write_split(split_frame, tmp_path)
+
+    development_ids, test_ids = mod15.load_frozen_split(path)
+
+    assert len(development_ids) == 26
+    assert len(test_ids) == 6
+    assert development_ids.isdisjoint(test_ids)
