@@ -903,3 +903,708 @@ def test_unknown_nonlinear_model_is_rejected(
             n_splits=5,
             random_state=42,
         )
+
+
+
+
+# ============================================================
+# MOD-15 — Batch 3 RED tests
+# Final model fitting and evaluation
+# ============================================================
+
+from sklearn.metrics import r2_score
+
+
+@pytest.fixture
+def batch3_trials(synthetic_trials):
+    """
+    Construct reproducible synthetic trials with
+    independent predictor variation.
+
+    Unlike the original Batch 1 fixture, this produces
+    a full-rank OLS design matrix.
+    """
+    data = synthetic_trials.copy(deep=True)
+
+    rng = np.random.default_rng(1503)
+    stages = data["difficulty_stage"].to_numpy()
+
+    predictors = sorted(
+        set(VISUAL_PREDICTORS)
+        | set(AUDITORY_PREDICTORS)
+    )
+
+    for index, predictor in enumerate(predictors):
+        data[predictor] = (
+            stages * (0.3 + index * 0.07)
+            + rng.normal(
+                loc=0.0,
+                scale=1.2,
+                size=len(data),
+            )
+        )
+
+    return data
+
+
+def _batch3_selected_params():
+    """
+    Small forest for synthetic testing only.
+
+    Official MOD-15 selection retains 500 trees.
+    """
+    return {
+        "decision_tree_regression": {
+            "max_depth": 3,
+            "min_samples_leaf": 2,
+        },
+        "random_forest_regression": {
+            "n_estimators": 9,
+            "max_depth": 3,
+            "min_samples_leaf": 2,
+            "max_features": "sqrt",
+        },
+    }
+
+
+class _Batch3Predictor:
+    """
+    Deterministic test double for evaluation.
+
+    Deliberately provides predict() but no fit(),
+    so evaluation cannot refit the model.
+    """
+
+    def __init__(self, mode="constant"):
+        self.mode = mode
+        self.calls = []
+
+    def predict(self, X):
+        X = np.asarray(X, dtype=float)
+        self.calls.append(X.copy())
+
+        if self.mode == "sequence":
+            return np.linspace(
+                -1.25,
+                4.25,
+                num=len(X),
+            )
+
+        if self.mode == "large_error":
+            return np.full(len(X), 10.0)
+
+        return np.full(len(X), 1.5)
+
+
+def _batch3_fake_models(mode="constant"):
+    return {
+        name: _Batch3Predictor(mode)
+        for name in MODEL_NAMES
+    }
+
+
+def test_batch3_final_models_fit_development_only(
+    mod15, batch3_trials, monkeypatch
+):
+    data = batch3_trials.copy()
+
+    # Extreme unseen-participant values must never
+    # appear in any model's fitting matrix.
+    data.loc[
+        data["participant_id"].isin(_test_ids()),
+        "median_time_to_target_seconds",
+    ] = 10000.0
+
+    fitted_data = {}
+
+    model_classes = {
+        "multiple_linear_regression":
+            mod15.DirectOLSRegressor,
+        "decision_tree_regression":
+            DecisionTreeRegressor,
+        "random_forest_regression":
+            RandomForestRegressor,
+    }
+
+    for name, model_class in model_classes.items():
+        original_fit = model_class.fit
+
+        def make_spy(model_name, original):
+            def audited_fit(self, X, y, *args, **kwargs):
+                fitted_data.setdefault(
+                    model_name, []
+                ).append((
+                    np.asarray(X, dtype=float).copy(),
+                    np.asarray(y, dtype=float).copy(),
+                ))
+
+                return original(
+                    self, X, y, *args, **kwargs
+                )
+            return audited_fit
+
+        monkeypatch.setattr(
+            model_class,
+            "fit",
+            make_spy(name, original_fit),
+        )
+
+    models = mod15.fit_final_condition_models(
+        data,
+        condition="Visual",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    assert set(models) == MODEL_NAMES
+
+    expected_rows = mod15.prepare_condition_rows(
+        data,
+        condition="Visual",
+        participant_ids=_development_ids(),
+    )
+
+    expected_X = expected_rows[
+        VISUAL_PREDICTORS
+    ].to_numpy(dtype=float)
+
+    expected_y = expected_rows[
+        "difficulty_stage"
+    ].to_numpy(dtype=float)
+
+    for name in MODEL_NAMES:
+        # Exactly one final fit per algorithm.
+        assert len(fitted_data[name]) == 1
+
+        actual_X, actual_y = fitted_data[name][0]
+
+        assert actual_X.shape == (104, 7)
+        assert actual_y.shape == (104,)
+
+        np.testing.assert_allclose(
+            actual_X, expected_X
+        )
+        np.testing.assert_allclose(
+            actual_y, expected_y
+        )
+
+        assert np.max(actual_X) < 1000.0
+
+
+def test_batch3_uses_selected_hyperparameters(
+    mod15, batch3_trials
+):
+    models = mod15.fit_final_condition_models(
+        batch3_trials,
+        condition="Auditory",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    tree = models["decision_tree_regression"]
+    forest = models["random_forest_regression"]
+
+    assert isinstance(tree, DecisionTreeRegressor)
+    assert isinstance(forest, RandomForestRegressor)
+
+    assert tree.max_depth == 3
+    assert tree.min_samples_leaf == 2
+
+    assert forest.n_estimators == 9
+    assert forest.max_depth == 3
+    assert forest.min_samples_leaf == 2
+    assert forest.max_features == "sqrt"
+
+    assert tree.random_state == 42
+    assert forest.random_state == 42
+
+    assert hasattr(tree, "tree_")
+    assert hasattr(forest, "estimators_")
+    assert len(forest.estimators_) == 9
+
+
+def test_batch3_performance_output_contract(
+    mod15, batch3_trials
+):
+    models = mod15.fit_final_condition_models(
+        batch3_trials,
+        condition="Visual",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    result = mod15.evaluate_final_condition_models(
+        models=models,
+        data=batch3_trials,
+        condition="Visual",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    assert set(result) == {
+        "performance",
+        "training_predictions",
+        "test_predictions",
+    }
+
+    performance = result["performance"]
+    train = result["training_predictions"]
+    test = result["test_predictions"]
+
+    required_performance_columns = [
+        "condition",
+        "model",
+        "development_participant_count",
+        "development_row_count",
+        "test_participant_count",
+        "test_row_count",
+        "training_mae",
+        "test_mae",
+        "test_minus_training_mae",
+        "training_r2",
+        "test_r2",
+        "training_minus_test_r2",
+    ]
+
+    assert list(performance.columns) == (
+        required_performance_columns
+    )
+
+    assert len(performance) == 3
+    assert set(performance["model"]) == MODEL_NAMES
+    assert set(performance["condition"]) == {"Visual"}
+
+    assert (
+        performance["development_participant_count"]
+        == 26
+    ).all()
+
+    assert (
+        performance["test_participant_count"]
+        == 6
+    ).all()
+
+    assert (
+        performance["development_row_count"]
+        == 104
+    ).all()
+
+    assert (
+        performance["test_row_count"]
+        == 24
+    ).all()
+
+    required_prediction_columns = [
+        "participant_id",
+        "condition",
+        "model",
+        "observed_difficulty_stage",
+        "predicted_difficulty_stage",
+        "error",
+        "absolute_error",
+    ]
+
+    assert list(train.columns) == (
+        required_prediction_columns
+    )
+
+    assert list(test.columns) == (
+        required_prediction_columns
+    )
+
+    assert len(train) == 3 * 104
+    assert len(test) == 3 * 24
+
+    assert set(train["participant_id"]) == (
+        _development_ids()
+    )
+
+    assert set(test["participant_id"]) == (
+        _test_ids()
+    )
+
+    assert set(train["model"]) == MODEL_NAMES
+    assert set(test["model"]) == MODEL_NAMES
+
+
+def test_batch3_evaluation_uses_raw_predictors(
+    mod15, batch3_trials
+):
+    models = _batch3_fake_models()
+
+    mod15.evaluate_final_condition_models(
+        models=models,
+        data=batch3_trials,
+        condition="Visual",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    expected_train = mod15.prepare_condition_rows(
+        batch3_trials,
+        condition="Visual",
+        participant_ids=_development_ids(),
+    )[VISUAL_PREDICTORS].to_numpy(dtype=float)
+
+    expected_test = mod15.prepare_condition_rows(
+        batch3_trials,
+        condition="Visual",
+        participant_ids=_test_ids(),
+    )[VISUAL_PREDICTORS].to_numpy(dtype=float)
+
+    for model in models.values():
+        # Once for training, once for test.
+        assert len(model.calls) == 2
+
+        np.testing.assert_allclose(
+            model.calls[0],
+            expected_train,
+        )
+
+        np.testing.assert_allclose(
+            model.calls[1],
+            expected_test,
+        )
+
+
+def test_batch3_predictions_are_not_rounded_or_clipped(
+    mod15, batch3_trials
+):
+    models = _batch3_fake_models(
+        mode="sequence"
+    )
+
+    result = mod15.evaluate_final_condition_models(
+        models=models,
+        data=batch3_trials,
+        condition="Auditory",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    predictions = result["test_predictions"]
+
+    one_model = predictions.loc[
+        predictions["model"]
+        == "multiple_linear_regression"
+    ]
+
+    actual = one_model[
+        "predicted_difficulty_stage"
+    ].to_numpy(dtype=float)
+
+    expected = np.linspace(
+        -1.25,
+        4.25,
+        num=24,
+    )
+
+    np.testing.assert_allclose(
+        actual, expected
+    )
+
+    assert actual.min() < 0
+    assert actual.max() > 3
+
+    assert np.any(
+        np.abs(actual - np.round(actual)) > 1e-8
+    )
+
+    observed = one_model[
+        "observed_difficulty_stage"
+    ].to_numpy(dtype=float)
+
+    np.testing.assert_allclose(
+        one_model["error"].to_numpy(dtype=float),
+        observed - actual,
+    )
+
+    np.testing.assert_allclose(
+        one_model["absolute_error"].to_numpy(
+            dtype=float
+        ),
+        np.abs(observed - actual),
+    )
+
+
+def test_batch3_mae_r2_and_differences(
+    mod15, batch3_trials
+):
+    data = batch3_trials.copy()
+
+    # Remove three eligible test observations from
+    # P27 while keeping that participant represented.
+    #
+    # This checks participant-balanced MAE when
+    # participants contribute unequal row counts.
+    missing_mask = (
+        (data["participant_id"] == "P27")
+        & (data["condition"] == "Auditory")
+        & (data["difficulty_stage"].isin([1, 2, 3]))
+    )
+
+    data.loc[
+        missing_mask,
+        "median_time_to_target_seconds",
+    ] = np.nan
+
+    models = _batch3_fake_models(
+        mode="large_error"
+    )
+
+    result = mod15.evaluate_final_condition_models(
+        models=models,
+        data=data,
+        condition="Auditory",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    performance = result["performance"]
+
+    for _, summary in performance.iterrows():
+        name = summary["model"]
+
+        train = result["training_predictions"].loc[
+            lambda frame: frame["model"] == name
+        ]
+
+        test = result["test_predictions"].loc[
+            lambda frame: frame["model"] == name
+        ]
+
+        expected_train_mae = (
+            train.groupby("participant_id")[
+                "absolute_error"
+            ].mean().mean()
+        )
+
+        expected_test_mae = (
+            test.groupby("participant_id")[
+                "absolute_error"
+            ].mean().mean()
+        )
+
+        expected_train_r2 = r2_score(
+            train["observed_difficulty_stage"],
+            train["predicted_difficulty_stage"],
+        )
+
+        expected_test_r2 = r2_score(
+            test["observed_difficulty_stage"],
+            test["predicted_difficulty_stage"],
+        )
+
+        assert summary["development_row_count"] == 104
+        assert summary["test_row_count"] == 21
+        assert summary["test_participant_count"] == 6
+
+        assert summary["training_mae"] == pytest.approx(
+            expected_train_mae
+        )
+
+        assert summary["test_mae"] == pytest.approx(
+            expected_test_mae
+        )
+
+        assert summary["training_r2"] == pytest.approx(
+            expected_train_r2
+        )
+
+        assert summary["test_r2"] == pytest.approx(
+            expected_test_r2
+        )
+
+        assert summary[
+            "test_minus_training_mae"
+        ] == pytest.approx(
+            expected_test_mae - expected_train_mae
+        )
+
+        assert summary[
+            "training_minus_test_r2"
+        ] == pytest.approx(
+            expected_train_r2 - expected_test_r2
+        )
+
+        # Negative R² must not be replaced with zero.
+        assert summary["test_r2"] < 0
+        assert summary["training_r2"] < 0
+
+
+def test_batch3_evaluation_never_refits(
+    mod15, batch3_trials, monkeypatch
+):
+    models = mod15.fit_final_condition_models(
+        batch3_trials,
+        condition="Auditory",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    def forbidden_fit(*args, **kwargs):
+        raise AssertionError(
+            "Evaluation must not refit any model."
+        )
+
+    monkeypatch.setattr(
+        mod15.DirectOLSRegressor,
+        "fit",
+        forbidden_fit,
+    )
+
+    monkeypatch.setattr(
+        DecisionTreeRegressor,
+        "fit",
+        forbidden_fit,
+    )
+
+    monkeypatch.setattr(
+        RandomForestRegressor,
+        "fit",
+        forbidden_fit,
+    )
+
+    result = mod15.evaluate_final_condition_models(
+        models=models,
+        data=batch3_trials,
+        condition="Auditory",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    assert len(result["performance"]) == 3
+
+
+def test_batch3_same_eligible_rows_across_models(
+    mod15, batch3_trials
+):
+    data = batch3_trials.copy()
+
+    data.loc[
+        (
+            (data["participant_id"] == "P01")
+            & (data["condition"] == "Visual")
+            & (data["difficulty_stage"] == 2)
+        ),
+        "median_reach_duration_seconds",
+    ] = np.nan
+
+    data.loc[
+        (
+            (data["participant_id"] == "P27")
+            & (data["condition"] == "Visual")
+            & (data["difficulty_stage"] == 1)
+        ),
+        "median_reach_duration_seconds",
+    ] = np.nan
+
+    models = mod15.fit_final_condition_models(
+        data,
+        condition="Visual",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    result = mod15.evaluate_final_condition_models(
+        models=models,
+        data=data,
+        condition="Visual",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    performance = result["performance"]
+
+    assert (
+        performance["development_row_count"] == 103
+    ).all()
+
+    assert (
+        performance["test_row_count"] == 23
+    ).all()
+
+    for name in MODEL_NAMES:
+        train = result["training_predictions"]
+        test = result["test_predictions"]
+
+        assert len(
+            train.loc[train["model"] == name]
+        ) == 103
+
+        assert len(
+            test.loc[test["model"] == name]
+        ) == 23
+
+
+def test_batch3_rejects_overlapping_splits(
+    mod15, batch3_trials
+):
+    models = _batch3_fake_models()
+
+    invalid_test_ids = set(_test_ids())
+    invalid_test_ids.remove("P27")
+    invalid_test_ids.add("P26")
+
+    with pytest.raises(ValueError):
+        mod15.evaluate_final_condition_models(
+            models=models,
+            data=batch3_trials,
+            condition="Visual",
+            development_ids=_development_ids(),
+            test_ids=invalid_test_ids,
+        )
+
+
+def test_batch3_preserves_input_dataframe(
+    mod15, batch3_trials
+):
+    data = batch3_trials.copy(deep=True)
+    original = data.copy(deep=True)
+
+    models = mod15.fit_final_condition_models(
+        data,
+        condition="Visual",
+        development_ids=_development_ids(),
+        selected_hyperparameters=_batch3_selected_params(),
+        random_state=42,
+    )
+
+    mod15.evaluate_final_condition_models(
+        models=models,
+        data=data,
+        condition="Visual",
+        development_ids=_development_ids(),
+        test_ids=_test_ids(),
+    )
+
+    pd.testing.assert_frame_equal(
+        data,
+        original,
+    )
+
+
+def test_batch3_direct_ols_rejects_rank_deficiency(
+    mod15
+):
+    # Second predictor duplicates the first.
+    X = np.array([
+        [1.0, 2.0],
+        [2.0, 4.0],
+        [3.0, 6.0],
+        [4.0, 8.0],
+    ])
+
+    y = np.array([
+        0.0, 1.0, 2.0, 3.0
+    ])
+
+    model = mod15.DirectOLSRegressor()
+
+    with pytest.raises(ValueError):
+        model.fit(X, y)
