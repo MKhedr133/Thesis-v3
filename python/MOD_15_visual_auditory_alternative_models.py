@@ -22,6 +22,11 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import GroupKFold, ParameterGrid
 from sklearn.metrics import r2_score
 
+import argparse
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 TARGET_COLUMN = "difficulty_stage"
 
 VALID_DIFFICULTY_STAGES = {0, 1, 2, 3}
@@ -1682,3 +1687,847 @@ def evaluate_final_condition_models(
                 PREDICTION_COLUMNS
             ],
     }
+
+
+
+# ============================================================
+# MOD-15 — Batch 4
+# CSV outputs, figures, and standalone CLI
+# ============================================================
+
+DEFAULT_OUTPUT_DIRECTORY = (
+    "outputs/MOD_15_visual_auditory_alternative_models"
+)
+
+MOD15_CSV_FILES = {
+    "performance": "model_comparison_performance.csv",
+    "selected_hyperparameters": "selected_hyperparameters.csv",
+    "development_cv_results": "development_cv_results.csv",
+    "training_predictions": "training_predictions.csv",
+    "test_predictions": "test_predictions.csv",
+}
+
+MOD15_CONDITIONS = ("Visual", "Auditory")
+
+MOD15_MODEL_LABELS = {
+    "multiple_linear_regression": (
+        "Multiple Linear Regression"
+    ),
+    "decision_tree_regression": (
+        "Decision Tree Regression"
+    ),
+    "random_forest_regression": (
+        "Random Forest Regression"
+    ),
+}
+
+MOD15_MODEL_FILE_LABELS = {
+    "multiple_linear_regression": "linear_regression",
+    "decision_tree_regression": "decision_tree",
+    "random_forest_regression": "random_forest",
+}
+
+MOD15_METRICS = {
+    "mae": {
+        "training": "training_mae",
+        "test": "test_mae",
+        "ylabel": "Participant-balanced MAE",
+    },
+    "r2": {
+        "training": "training_r2",
+        "test": "test_r2",
+        "ylabel": "Pooled R²",
+    },
+}
+
+
+def _mod15_figure_filenames():
+    """Return the exact 16 required figure filenames."""
+
+    filenames = []
+
+    for condition in MOD15_CONDITIONS:
+        prefix = condition.lower()
+
+        for model_name in FINAL_MODEL_NAMES:
+            model_prefix = MOD15_MODEL_FILE_LABELS[
+                model_name
+            ]
+
+            for metric in MOD15_METRICS:
+                filenames.append(
+                    f"{prefix}_{model_prefix}_{metric}.png"
+                )
+
+    for condition in MOD15_CONDITIONS:
+        prefix = condition.lower()
+
+        for metric in MOD15_METRICS:
+            filenames.append(
+                f"{prefix}_model_comparison_{metric}.png"
+            )
+
+    return filenames
+
+
+def _check_output_conflicts(
+    output_directory,
+    filenames,
+    overwrite=False,
+):
+    """
+    Check every planned file before writing anything.
+
+    Existing files are never overwritten unless
+    overwrite=True is explicitly supplied.
+    """
+
+    output_directory = Path(output_directory)
+
+    if (
+        output_directory.exists()
+        and not output_directory.is_dir()
+    ):
+        raise NotADirectoryError(
+            f"Output location is not a directory: "
+            f"{output_directory}"
+        )
+
+    if not overwrite:
+        existing = [
+            name
+            for name in filenames
+            if (output_directory / name).exists()
+        ]
+
+        if existing:
+            raise FileExistsError(
+                "Existing MOD-15 outputs would be "
+                "overwritten: "
+                + ", ".join(existing)
+            )
+
+    return output_directory
+
+
+def write_mod15_outputs(
+    performance,
+    selected_hyperparameters,
+    development_cv_results,
+    training_predictions,
+    test_predictions,
+    output_directory,
+    overwrite=False,
+):
+    """
+    Write the five required CSV files.
+
+    All output paths are checked before any file
+    is created.
+    """
+
+    tables = {
+        "performance": performance,
+        "selected_hyperparameters":
+            selected_hyperparameters,
+        "development_cv_results":
+            development_cv_results,
+        "training_predictions":
+            training_predictions,
+        "test_predictions":
+            test_predictions,
+    }
+
+    output_directory = _check_output_conflicts(
+        output_directory=output_directory,
+        filenames=list(MOD15_CSV_FILES.values()),
+        overwrite=overwrite,
+    )
+
+    for key, table in tables.items():
+        if not isinstance(table, pd.DataFrame):
+            raise TypeError(
+                f"{key} must be a pandas DataFrame."
+            )
+
+    output_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    written_paths = {}
+
+    for key, filename in MOD15_CSV_FILES.items():
+        path = output_directory / filename
+
+        tables[key].to_csv(
+            path,
+            index=False,
+        )
+
+        written_paths[key] = path
+
+    return written_paths
+
+
+def _validate_figure_performance(performance):
+    """
+    Require one performance row for each condition
+    and regression model.
+    """
+
+    required_columns = {
+        "condition",
+        "model",
+        "training_mae",
+        "test_mae",
+        "training_r2",
+        "test_r2",
+    }
+
+    missing = (
+        required_columns - set(performance.columns)
+    )
+
+    if missing:
+        raise ValueError(
+            f"Missing figure data columns: "
+            f"{sorted(missing)}"
+        )
+
+    expected_pairs = {
+        (condition, model_name)
+        for condition in MOD15_CONDITIONS
+        for model_name in FINAL_MODEL_NAMES
+    }
+
+    actual_pairs = list(
+        zip(
+            performance["condition"],
+            performance["model"],
+        )
+    )
+
+    if (
+        len(actual_pairs) != len(expected_pairs)
+        or set(actual_pairs) != expected_pairs
+    ):
+        raise ValueError(
+            "Performance table must contain exactly "
+            "one row for every condition and model."
+        )
+
+    metric_columns = [
+        "training_mae",
+        "test_mae",
+        "training_r2",
+        "test_r2",
+    ]
+
+    values = performance[
+        metric_columns
+    ].to_numpy(dtype=float)
+
+    if not np.isfinite(values).all():
+        raise ValueError(
+            "Performance metrics must be finite."
+        )
+
+    if (
+        performance[
+            ["training_mae", "test_mae"]
+        ].to_numpy(dtype=float) < 0
+    ).any():
+        raise ValueError(
+            "MAE cannot be negative."
+        )
+
+
+def _format_mod15_bar_labels(axis, bars):
+    """Show three-decimal numerical labels."""
+
+    axis.bar_label(
+        bars,
+        fmt="%.3f",
+        padding=3,
+        fontsize=9,
+    )
+
+
+def _create_individual_model_chart(
+    condition,
+    model_name,
+    metric,
+    training_value,
+    test_value,
+    output_path,
+):
+    """
+    Create one figure comparing training and test
+    performance for a single regression model.
+    """
+
+    metric_info = MOD15_METRICS[metric]
+
+    figure, axis = plt.subplots(
+        figsize=(6.5, 4.5)
+    )
+
+    try:
+        training_bars = axis.bar(
+            [0],
+            [training_value],
+            width=0.55,
+            label="Training",
+        )
+
+        test_bars = axis.bar(
+            [1],
+            [test_value],
+            width=0.55,
+            label="Test",
+        )
+
+        _format_mod15_bar_labels(
+            axis, training_bars
+        )
+
+        _format_mod15_bar_labels(
+            axis, test_bars
+        )
+
+        axis.set_xticks(
+            [0, 1],
+            ["Training", "Test"],
+        )
+
+        axis.set_ylabel(
+            metric_info["ylabel"]
+        )
+
+        axis.set_title(
+            f"{condition} — "
+            f"{MOD15_MODEL_LABELS[model_name]} — "
+            f"{metric.upper()}"
+        )
+
+        if metric == "r2":
+            axis.axhline(
+                y=0,
+                linestyle="--",
+                linewidth=1,
+            )
+
+        axis.margins(y=0.20)
+
+        figure.tight_layout()
+
+        figure.savefig(
+            output_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+    finally:
+        plt.close(figure)
+
+
+def _create_model_comparison_chart(
+    condition,
+    metric,
+    condition_performance,
+    output_path,
+):
+    """
+    Create a grouped bar chart comparing all three
+    algorithms using training and test results.
+    """
+
+    metric_info = MOD15_METRICS[metric]
+
+    ordered = (
+        condition_performance
+        .set_index("model")
+        .loc[list(FINAL_MODEL_NAMES)]
+    )
+
+    training_values = ordered[
+        metric_info["training"]
+    ].to_numpy(dtype=float)
+
+    test_values = ordered[
+        metric_info["test"]
+    ].to_numpy(dtype=float)
+
+    model_labels = [
+        MOD15_MODEL_LABELS[name]
+        for name in FINAL_MODEL_NAMES
+    ]
+
+    x_positions = np.arange(
+        len(FINAL_MODEL_NAMES)
+    )
+
+    width = 0.36
+
+    figure, axis = plt.subplots(
+        figsize=(10, 5.5)
+    )
+
+    try:
+        training_bars = axis.bar(
+            x_positions - width / 2,
+            training_values,
+            width=width,
+            label="Training",
+        )
+
+        test_bars = axis.bar(
+            x_positions + width / 2,
+            test_values,
+            width=width,
+            label="Test",
+        )
+
+        _format_mod15_bar_labels(
+            axis, training_bars
+        )
+
+        _format_mod15_bar_labels(
+            axis, test_bars
+        )
+
+        axis.set_xticks(
+            x_positions,
+            model_labels,
+            rotation=12,
+            ha="right",
+        )
+
+        axis.set_ylabel(
+            metric_info["ylabel"]
+        )
+
+        axis.set_title(
+            f"{condition} — Regression Model "
+            f"Comparison — {metric.upper()}"
+        )
+
+        axis.legend()
+
+        if metric == "r2":
+            axis.axhline(
+                y=0,
+                linestyle="--",
+                linewidth=1,
+            )
+
+        axis.margins(y=0.20)
+
+        figure.tight_layout()
+
+        figure.savefig(
+            output_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+
+    finally:
+        plt.close(figure)
+
+
+def create_mod15_figures(
+    performance,
+    output_directory,
+    overwrite=False,
+):
+    """
+    Generate all 16 performance bar charts.
+
+    Individual:
+        2 conditions × 3 models × 2 metrics = 12.
+
+    Comparison:
+        2 conditions × 2 metrics = 4.
+
+    No manual bar colors are assigned.
+    """
+
+    _validate_figure_performance(
+        performance
+    )
+
+    filenames = _mod15_figure_filenames()
+
+    output_directory = _check_output_conflicts(
+        output_directory=output_directory,
+        filenames=filenames,
+        overwrite=overwrite,
+    )
+
+    output_directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    written_paths = []
+
+    for condition in MOD15_CONDITIONS:
+
+        condition_performance = (
+            performance.loc[
+                performance["condition"] == condition
+            ].copy()
+        )
+
+        for model_name in FINAL_MODEL_NAMES:
+
+            row = condition_performance.loc[
+                condition_performance["model"]
+                == model_name
+            ].iloc[0]
+
+            model_file_label = (
+                MOD15_MODEL_FILE_LABELS[model_name]
+            )
+
+            for metric, metric_info in (
+                MOD15_METRICS.items()
+            ):
+
+                filename = (
+                    f"{condition.lower()}_"
+                    f"{model_file_label}_"
+                    f"{metric}.png"
+                )
+
+                path = output_directory / filename
+
+                _create_individual_model_chart(
+                    condition=condition,
+                    model_name=model_name,
+                    metric=metric,
+                    training_value=float(
+                        row[metric_info["training"]]
+                    ),
+                    test_value=float(
+                        row[metric_info["test"]]
+                    ),
+                    output_path=path,
+                )
+
+                written_paths.append(path)
+
+        for metric in MOD15_METRICS:
+
+            filename = (
+                f"{condition.lower()}_"
+                f"model_comparison_{metric}.png"
+            )
+
+            path = output_directory / filename
+
+            _create_model_comparison_chart(
+                condition=condition,
+                metric=metric,
+                condition_performance=(
+                    condition_performance
+                ),
+                output_path=path,
+            )
+
+            written_paths.append(path)
+
+    return written_paths
+
+
+def run_mod15_analysis(
+    data_path,
+    split_path,
+    output_directory=DEFAULT_OUTPUT_DIRECTORY,
+    overwrite=False,
+    random_state=42,
+):
+    """
+    Execute the complete MOD-15 analysis.
+
+    1. Load the existing frozen participant split.
+    2. Load trial data.
+    3. Select nonlinear hyperparameters using
+       development participants only.
+    4. Fit final models using development data.
+    5. Evaluate training and test performance.
+    6. Save all CSV files.
+    7. Create all 16 figures.
+
+    The six test participants never enter
+    hyperparameter selection or model fitting.
+    """
+
+    data_path = Path(data_path)
+    split_path = Path(split_path)
+    output_directory = Path(
+        output_directory
+    )
+
+    if not data_path.is_file():
+        raise FileNotFoundError(
+            f"Trial data not found: {data_path}"
+        )
+
+    if not split_path.is_file():
+        raise FileNotFoundError(
+            f"Frozen split not found: {split_path}"
+        )
+
+    # Protect every planned artifact before training.
+    all_output_files = (
+        list(MOD15_CSV_FILES.values())
+        + _mod15_figure_filenames()
+    )
+
+    _check_output_conflicts(
+        output_directory,
+        all_output_files,
+        overwrite=overwrite,
+    )
+
+    development_ids, test_ids = (
+        load_frozen_split(split_path)
+    )
+
+    data = pd.read_csv(
+        data_path,
+        dtype={"participant_id": str},
+    )
+
+    performance_tables = []
+    selected_rows = []
+    cv_result_tables = []
+    training_tables = []
+    test_tables = []
+
+    for condition in MOD15_CONDITIONS:
+
+        selected_hyperparameters = {}
+
+        # --------------------------------------------
+        # Development-only hyperparameter selection
+        # --------------------------------------------
+
+        for model_name in (
+            "decision_tree_regression",
+            "random_forest_regression",
+        ):
+
+            selection = (
+                select_nonlinear_hyperparameters(
+                    data=data,
+                    condition=condition,
+                    model_name=model_name,
+                    development_ids=development_ids,
+                    random_state=random_state,
+                )
+            )
+
+            params = dict(
+                selection["best_params"]
+            )
+
+            selected_hyperparameters[
+                model_name
+            ] = params
+
+            selected_rows.append({
+                "condition": condition,
+                "model": model_name,
+                "max_depth": params.get(
+                    "max_depth"
+                ),
+                "min_samples_leaf": params.get(
+                    "min_samples_leaf"
+                ),
+                "n_estimators": params.get(
+                    "n_estimators"
+                ),
+                "max_features": params.get(
+                    "max_features"
+                ),
+                "cv_mae": selection[
+                    "best_cv_mae"
+                ],
+            })
+
+            cv_result_tables.append(
+                selection["cv_results"]
+            )
+
+        # --------------------------------------------
+        # Final fitting: 26 development participants
+        # --------------------------------------------
+
+        fitted_models = (
+            fit_final_condition_models(
+                data=data,
+                condition=condition,
+                development_ids=development_ids,
+                selected_hyperparameters=(
+                    selected_hyperparameters
+                ),
+                random_state=random_state,
+            )
+        )
+
+        # --------------------------------------------
+        # Evaluation: development and unseen test
+        # --------------------------------------------
+
+        evaluation = (
+            evaluate_final_condition_models(
+                models=fitted_models,
+                data=data,
+                condition=condition,
+                development_ids=development_ids,
+                test_ids=test_ids,
+            )
+        )
+
+        performance_tables.append(
+            evaluation["performance"]
+        )
+
+        training_tables.append(
+            evaluation["training_predictions"]
+        )
+
+        test_tables.append(
+            evaluation["test_predictions"]
+        )
+
+    # ------------------------------------------------
+    # Combine both conditions
+    # ------------------------------------------------
+
+    performance = pd.concat(
+        performance_tables,
+        ignore_index=True,
+    )
+
+    selected_hyperparameters_table = pd.DataFrame(
+        selected_rows
+    )
+
+    development_cv_results = pd.concat(
+        cv_result_tables,
+        ignore_index=True,
+    )
+
+    training_predictions = pd.concat(
+        training_tables,
+        ignore_index=True,
+    )
+
+    test_predictions = pd.concat(
+        test_tables,
+        ignore_index=True,
+    )
+
+    # ------------------------------------------------
+    # Save results
+    # ------------------------------------------------
+
+    csv_paths = write_mod15_outputs(
+        performance=performance,
+        selected_hyperparameters=(
+            selected_hyperparameters_table
+        ),
+        development_cv_results=(
+            development_cv_results
+        ),
+        training_predictions=(
+            training_predictions
+        ),
+        test_predictions=test_predictions,
+        output_directory=output_directory,
+        overwrite=overwrite,
+    )
+
+    figure_paths = create_mod15_figures(
+        performance=performance,
+        output_directory=output_directory,
+        overwrite=overwrite,
+    )
+
+    return {
+        "performance": performance,
+        "selected_hyperparameters":
+            selected_hyperparameters_table,
+        "development_cv_results":
+            development_cv_results,
+        "training_predictions":
+            training_predictions,
+        "test_predictions":
+            test_predictions,
+        "csv_paths": csv_paths,
+        "figure_paths": figure_paths,
+    }
+
+
+def main(argv=None):
+    """
+    Command-line entry point for MOD-15.
+
+    Official data must be supplied explicitly.
+    """
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "MOD-15: Compare linear and nonlinear "
+            "regression models for Visual and Auditory."
+        )
+    )
+
+    parser.add_argument(
+        "--data",
+        required=True,
+        help="CSV containing trial data.",
+    )
+
+    parser.add_argument(
+        "--split",
+        required=True,
+        help="Frozen participant_holdout_split.csv.",
+    )
+
+    parser.add_argument(
+        "--output-dir",
+        default=DEFAULT_OUTPUT_DIRECTORY,
+        help="Directory for CSV and PNG outputs.",
+    )
+
+    parser.add_argument(
+        "--random-state",
+        type=int,
+        default=42,
+        help="Random state for reproducibility.",
+    )
+
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Explicitly allow replacing MOD-15 outputs.",
+    )
+
+    args = parser.parse_args(argv)
+
+    return run_mod15_analysis(
+        data_path=args.data,
+        split_path=args.split,
+        output_directory=args.output_dir,
+        overwrite=args.overwrite,
+        random_state=args.random_state,
+    )
+
+
+if __name__ == "__main__":
+    main()
