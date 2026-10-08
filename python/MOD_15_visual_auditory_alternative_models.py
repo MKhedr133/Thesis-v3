@@ -20,7 +20,7 @@ import statsmodels.api as sm
 from sklearn.tree import DecisionTreeRegressor
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import GroupKFold, ParameterGrid
-
+from sklearn.metrics import r2_score
 
 TARGET_COLUMN = "difficulty_stage"
 
@@ -1106,4 +1106,579 @@ def select_nonlinear_hyperparameters(
         "best_params": best_params,
         "best_cv_mae": best_cv_mae,
         "cv_results": cv_results,
+    }
+
+
+
+# ============================================================
+# MOD-15 — Batch 3
+# Final model fitting and evaluation
+# ============================================================
+
+FINAL_MODEL_NAMES = (
+    "multiple_linear_regression",
+    "decision_tree_regression",
+    "random_forest_regression",
+)
+
+PERFORMANCE_COLUMNS = [
+    "condition",
+    "model",
+    "development_participant_count",
+    "development_row_count",
+    "test_participant_count",
+    "test_row_count",
+    "training_mae",
+    "test_mae",
+    "test_minus_training_mae",
+    "training_r2",
+    "test_r2",
+    "training_minus_test_r2",
+]
+
+PREDICTION_COLUMNS = [
+    "participant_id",
+    "condition",
+    "model",
+    "observed_difficulty_stage",
+    "predicted_difficulty_stage",
+    "error",
+    "absolute_error",
+]
+
+
+def _validate_final_participant_ids(
+    development_ids,
+    test_ids=None,
+):
+    """
+    Validate participant identifiers for final fitting
+    and evaluation.
+
+    The frozen split itself is validated separately by
+    load_frozen_split() from Batch 1.
+    """
+
+    development_ids = {
+        str(pid).strip()
+        for pid in development_ids
+    }
+
+    if len(development_ids) != 26:
+        raise ValueError(
+            "Final fitting requires exactly "
+            "26 development participant IDs."
+        )
+
+    if not development_ids or "" in development_ids:
+        raise ValueError(
+            "Invalid development participant IDs."
+        )
+
+    if test_ids is None:
+        return development_ids, None
+
+    test_ids = {
+        str(pid).strip()
+        for pid in test_ids
+    }
+
+    if len(test_ids) != 6:
+        raise ValueError(
+            "Final evaluation requires exactly "
+            "6 test participant IDs."
+        )
+
+    if "" in test_ids:
+        raise ValueError(
+            "Invalid test participant IDs."
+        )
+
+    if not development_ids.isdisjoint(test_ids):
+        raise ValueError(
+            "Development and test participant IDs overlap."
+        )
+
+    return development_ids, test_ids
+
+
+def fit_final_condition_models(
+    data,
+    condition,
+    development_ids,
+    selected_hyperparameters,
+    random_state=42,
+):
+    """
+    Fit all three final regression models.
+
+    Only eligible observations belonging to the
+    26 development participants are used.
+
+    Multiple Linear Regression:
+        Direct OLS with intercept and rank validation.
+
+    Decision Tree:
+        Uses hyperparameters selected in Batch 2.
+
+    Random Forest:
+        Uses hyperparameters selected in Batch 2.
+
+    No test data is used for fitting.
+
+    Returns:
+        Dictionary containing the three fitted models.
+    """
+
+    if condition not in PREDICTORS_BY_CONDITION:
+        raise ValueError(
+            f"Unknown condition: {condition}"
+        )
+
+    development_ids, _ = (
+        _validate_final_participant_ids(
+            development_ids
+        )
+    )
+
+    required_nonlinear_models = {
+        "decision_tree_regression",
+        "random_forest_regression",
+    }
+
+    if not isinstance(
+        selected_hyperparameters, dict
+    ):
+        raise ValueError(
+            "Selected hyperparameters must be a dictionary."
+        )
+
+    missing_models = (
+        required_nonlinear_models
+        - set(selected_hyperparameters)
+    )
+
+    if missing_models:
+        raise ValueError(
+            "Missing selected hyperparameters for: "
+            f"{sorted(missing_models)}"
+        )
+
+    # Select development participants before fitting.
+    development_rows = prepare_condition_rows(
+        data,
+        condition=condition,
+        participant_ids=development_ids,
+    )
+
+    if development_rows.empty:
+        raise ValueError(
+            "No eligible development observations."
+        )
+
+    observed_participants = set(
+        development_rows["participant_id"]
+    )
+
+    if not observed_participants.issubset(
+        development_ids
+    ):
+        raise RuntimeError(
+            "Non-development participant entered fitting."
+        )
+
+    predictors = PREDICTORS_BY_CONDITION[
+        condition
+    ]
+
+    X_development = development_rows[
+        predictors
+    ].to_numpy(dtype=float)
+
+    y_development = development_rows[
+        TARGET_COLUMN
+    ].to_numpy(dtype=float)
+
+    fitted_models = {}
+
+    # ----------------------------------------------------
+    # 1. Multiple Linear Regression
+    # ----------------------------------------------------
+
+    linear_model = DirectOLSRegressor()
+
+    linear_model.fit(
+        X_development,
+        y_development,
+    )
+
+    fitted_models[
+        "multiple_linear_regression"
+    ] = linear_model
+
+    # ----------------------------------------------------
+    # 2. Decision Tree Regression
+    # 3. Random Forest Regression
+    # ----------------------------------------------------
+
+    for model_name in (
+        "decision_tree_regression",
+        "random_forest_regression",
+    ):
+        params = dict(
+            selected_hyperparameters[model_name]
+        )
+
+        model = _create_nonlinear_regressor(
+            model_name=model_name,
+            params=params,
+            random_state=random_state,
+        )
+
+        # Exactly one final fit using every eligible
+        # development observation.
+        model.fit(
+            X_development,
+            y_development,
+        )
+
+        fitted_models[model_name] = model
+
+    return fitted_models
+
+
+def _build_final_prediction_table(
+    model,
+    rows,
+    condition,
+    model_name,
+):
+    """
+    Generate raw continuous predictions using
+    an already fitted model.
+
+    Never calls fit().
+
+    Predictions are not scaled, rounded, or clipped.
+    """
+
+    predictors = PREDICTORS_BY_CONDITION[
+        condition
+    ]
+
+    X = rows[
+        predictors
+    ].to_numpy(dtype=float)
+
+    observed = rows[
+        TARGET_COLUMN
+    ].to_numpy(dtype=float)
+
+    predicted = np.asarray(
+        model.predict(X),
+        dtype=float,
+    ).reshape(-1)
+
+    if len(predicted) != len(observed):
+        raise RuntimeError(
+            "Prediction count does not match "
+            "the number of eligible observations."
+        )
+
+    if not np.isfinite(predicted).all():
+        raise ValueError(
+            "Model generated non-finite predictions."
+        )
+
+    # Signed prediction error:
+    # Positive: model predicted a stage too low.
+    # Negative: model predicted a stage too high.
+    error = observed - predicted
+
+    absolute_error = np.abs(error)
+
+    predictions = pd.DataFrame({
+        "participant_id": rows[
+            "participant_id"
+        ].to_numpy(),
+        "condition": condition,
+        "model": model_name,
+        "observed_difficulty_stage": observed,
+        "predicted_difficulty_stage": predicted,
+        "error": error,
+        "absolute_error": absolute_error,
+    })
+
+    return predictions[PREDICTION_COLUMNS]
+
+
+def _calculate_final_performance(
+    predictions,
+):
+    """
+    Calculate two metrics:
+
+    MAE:
+        Participant-balanced mean absolute error.
+
+    R2:
+        Ordinary pooled coefficient of determination
+        across all eligible observations.
+
+    Negative R2 values are preserved.
+    """
+
+    if len(predictions) < 2:
+        raise ValueError(
+            "At least two eligible observations "
+            "are required to calculate R2."
+        )
+
+    observed = predictions[
+        "observed_difficulty_stage"
+    ].to_numpy(dtype=float)
+
+    predicted = predictions[
+        "predicted_difficulty_stage"
+    ].to_numpy(dtype=float)
+
+    participant_ids = predictions[
+        "participant_id"
+    ].to_numpy()
+
+    mae = participant_balanced_mae(
+        observed=observed,
+        predicted=predicted,
+        participant_ids=participant_ids,
+    )
+
+    r2 = float(
+        r2_score(
+            observed,
+            predicted,
+        )
+    )
+
+    if not np.isfinite(r2):
+        raise ValueError(
+            "R2 is undefined for this evaluation split."
+        )
+
+    return {
+        "mae": float(mae),
+        "r2": r2,
+    }
+
+
+def evaluate_final_condition_models(
+    models,
+    data,
+    condition,
+    development_ids,
+    test_ids,
+):
+    """
+    Evaluate fitted models on development and test data.
+
+    Training:
+        The same development participants used for
+        final fitting.
+
+    Test:
+        The six previously unseen participants.
+
+    No model is refitted.
+    No hyperparameters are modified.
+    No predictions are rounded or clipped.
+
+    Returns:
+        {
+            "performance": DataFrame,
+            "training_predictions": DataFrame,
+            "test_predictions": DataFrame,
+        }
+    """
+
+    if condition not in PREDICTORS_BY_CONDITION:
+        raise ValueError(
+            f"Unknown condition: {condition}"
+        )
+
+    development_ids, test_ids = (
+        _validate_final_participant_ids(
+            development_ids,
+            test_ids,
+        )
+    )
+
+    missing_models = (
+        set(FINAL_MODEL_NAMES)
+        - set(models)
+    )
+
+    if missing_models:
+        raise ValueError(
+            "Missing fitted models: "
+            f"{sorted(missing_models)}"
+        )
+
+    # ----------------------------------------------------
+    # Prepare the two datasets independently.
+    # ----------------------------------------------------
+
+    development_rows = prepare_condition_rows(
+        data,
+        condition=condition,
+        participant_ids=development_ids,
+    )
+
+    test_rows = prepare_condition_rows(
+        data,
+        condition=condition,
+        participant_ids=test_ids,
+    )
+
+    if development_rows.empty:
+        raise ValueError(
+            "No eligible development observations."
+        )
+
+    if test_rows.empty:
+        raise ValueError(
+            "No eligible test observations."
+        )
+
+    development_participants = set(
+        development_rows["participant_id"]
+    )
+
+    test_participants = set(
+        test_rows["participant_id"]
+    )
+
+    if not development_participants.isdisjoint(
+        test_participants
+    ):
+        raise RuntimeError(
+            "Participant overlap in evaluation data."
+        )
+
+    # ----------------------------------------------------
+    # Evaluate each previously fitted model.
+    # ----------------------------------------------------
+
+    performance_records = []
+    training_prediction_tables = []
+    test_prediction_tables = []
+
+    for model_name in FINAL_MODEL_NAMES:
+
+        model = models[model_name]
+
+        # Training predictions
+        training_predictions = (
+            _build_final_prediction_table(
+                model=model,
+                rows=development_rows,
+                condition=condition,
+                model_name=model_name,
+            )
+        )
+
+        # Test predictions from the same fitted model
+        test_predictions = (
+            _build_final_prediction_table(
+                model=model,
+                rows=test_rows,
+                condition=condition,
+                model_name=model_name,
+            )
+        )
+
+        training_metrics = (
+            _calculate_final_performance(
+                training_predictions
+            )
+        )
+
+        test_metrics = (
+            _calculate_final_performance(
+                test_predictions
+            )
+        )
+
+        training_mae = training_metrics["mae"]
+        test_mae = test_metrics["mae"]
+
+        training_r2 = training_metrics["r2"]
+        test_r2 = test_metrics["r2"]
+
+        performance_records.append({
+            "condition": condition,
+            "model": model_name,
+
+            "development_participant_count":
+                len(development_participants),
+
+            "development_row_count":
+                len(development_rows),
+
+            "test_participant_count":
+                len(test_participants),
+
+            "test_row_count":
+                len(test_rows),
+
+            "training_mae": training_mae,
+            "test_mae": test_mae,
+
+            "test_minus_training_mae":
+                test_mae - training_mae,
+
+            "training_r2": training_r2,
+            "test_r2": test_r2,
+
+            "training_minus_test_r2":
+                training_r2 - test_r2,
+        })
+
+        training_prediction_tables.append(
+            training_predictions
+        )
+
+        test_prediction_tables.append(
+            test_predictions
+        )
+
+    # ----------------------------------------------------
+    # Combine model results.
+    # ----------------------------------------------------
+
+    performance = pd.DataFrame(
+        performance_records,
+        columns=PERFORMANCE_COLUMNS,
+    )
+
+    all_training_predictions = pd.concat(
+        training_prediction_tables,
+        ignore_index=True,
+    )
+
+    all_test_predictions = pd.concat(
+        test_prediction_tables,
+        ignore_index=True,
+    )
+
+    return {
+        "performance": performance,
+
+        "training_predictions":
+            all_training_predictions[
+                PREDICTION_COLUMNS
+            ],
+
+        "test_predictions":
+            all_test_predictions[
+                PREDICTION_COLUMNS
+            ],
     }
