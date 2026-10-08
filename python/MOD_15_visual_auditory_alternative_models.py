@@ -107,6 +107,7 @@ def load_frozen_split(split_path):
         split_frame["split"]
         .str.strip()
         .str.lower()
+        .replace({"train": "development"})
     )
 
     if (
@@ -2300,6 +2301,31 @@ def run_mod15_analysis(
         data_path,
         dtype={"participant_id": str},
     )
+
+    # Support the existing modeling_data.csv schema.
+    if "condition" not in data.columns:
+        if "condition_name" not in data.columns:
+            raise ValueError(
+                "Trial data must contain either "
+                "'condition' or 'condition_name'."
+            )
+
+        data = data.rename(
+            columns={"condition_name": "condition"}
+        )
+
+    # Standardize Visual and Auditory labels.
+    data["condition"] = (
+        data["condition"].astype("string").str.strip()
+    )
+
+    for condition_label in ("Visual", "Auditory"):
+        mask = (
+            data["condition"].str.casefold()
+            == condition_label.casefold()
+        )
+
+        data.loc[mask, "condition"] = condition_label
 
     performance_tables = []
     selected_rows = []
