@@ -4,3 +4,4 @@ matplotlib
 openpyxl
 statsmodels==0.15.0
 shap==0.51.0
+pytest
