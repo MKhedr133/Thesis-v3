@@ -210,6 +210,91 @@ def _save_distribution_plot(
     plt.close(fig)
 
 
+def compute_development_correlations(
+    frame: pd.DataFrame, predictors: tuple[str, ...]
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Compute unadjusted trial-level Pearson correlations, development only.
+
+    The frame must be the already-validated eligible development attribution
+    table, containing the original feature values (not their SHAP values).
+    Repeated trials from each participant are not statistically independent.
+    """
+    if frame.empty or frame["split"].ne("development").any():
+        raise Mod16Error("Correlations require development observations only")
+    if frame["participant_id"].isna().any():
+        raise Mod16Error("Correlations require participant identifiers")
+    columns = [f"value__{name}" for name in predictors]
+    missing = sorted(set(columns) - set(frame.columns))
+    if missing:
+        raise Mod16Error(f"Correlation inputs missing: {missing}")
+    values = frame.loc[:, columns].astype(float)
+    if not np.isfinite(values.to_numpy()).all():
+        raise Mod16Error("Correlation inputs contain non-finite values")
+    if len(frame) < 2:
+        raise Mod16Error("Correlations require at least two development trials")
+    if len(set(predictors)) != len(predictors):
+        raise Mod16Error("Correlations require unique predictors")
+
+    correlations = values.corr(method="pearson")
+    correlations.index = pd.Index(predictors, name="predictor")
+    correlations.columns = pd.Index(predictors, name="predictor")
+    # Undefined correlations for constant columns are deliberately retained as
+    # NaN and shown as n/a, rather than incorrectly interpreted as zero.
+    pairs: list[dict[str, object]] = []
+    for i, first in enumerate(predictors):
+        for second in predictors[i + 1 :]:
+            r = float(correlations.loc[first, second])
+            pairs.append({
+                "feature_1": first,
+                "feature_2": second,
+                "pearson_r": r,
+                "absolute_pearson_r": abs(r),
+                "development_trials": len(frame),
+                "development_participants": int(frame["participant_id"].nunique()),
+            })
+    pair_table = pd.DataFrame(pairs, columns=[
+        "feature_1", "feature_2", "pearson_r", "absolute_pearson_r",
+        "development_trials", "development_participants",
+    ]).sort_values(
+        ["absolute_pearson_r", "feature_1", "feature_2"],
+        ascending=[False, True, True], kind="mergesort", na_position="last",
+    ).reset_index(drop=True)
+    return correlations, pair_table
+
+
+def _save_correlation_plot(
+    model_id: str,
+    correlations: pd.DataFrame,
+    output_path: Path,
+) -> None:
+    """Render a Pearson heatmap using the original report's feature names."""
+    predictors = list(correlations.index)
+    values = correlations.loc[predictors, predictors].to_numpy(dtype=float)
+    n_features = len(predictors)
+    fig, ax = plt.subplots(
+        figsize=(max(9, 1.08 * n_features + 3.5), max(7, 0.85 * n_features + 3.0)),
+    )
+    cmap = plt.colormaps["RdBu_r"].copy()
+    cmap.set_bad("#e5e7eb")
+    image = ax.imshow(np.ma.masked_invalid(values), cmap=cmap, vmin=-1, vmax=1)
+    ticks = np.arange(n_features)
+    labels = [DISPLAY_NAMES[name] for name in predictors]
+    ax.set_xticks(ticks, labels, rotation=48, ha="right", rotation_mode="anchor", fontsize=9)
+    ax.set_yticks(ticks, labels, fontsize=9)
+    for i in range(n_features):
+        for j in range(n_features):
+            value = values[i, j]
+            label = f"{value:+.2f}" if np.isfinite(value) else "n/a"
+            color = "white" if np.isfinite(value) and abs(value) >= 0.65 else "#111827"
+            ax.text(j, i, label, ha="center", va="center", color=color, fontsize=8)
+    ax.set_title(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — predictor correlations", fontsize=13)
+    fig.colorbar(image, ax=ax, label="Pearson r", fraction=0.035, pad=0.02)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def _participant_plot_name(participant_id: str) -> str:
     """Prevent participant labels being interpreted as filesystem paths."""
     import re
@@ -410,6 +495,21 @@ def run_analysis(
         predictors = tuple(registry[model_id].predictors)
         _save_distribution_plot(model_id, result, directory / "contribution_distributions.png", predictors)
         _save_all_test_waterfalls(model_id, result, directory / "waterfalls_test", predictors)
+        correlations, correlation_pairs = compute_development_correlations(
+            result.development, predictors,
+        )
+        correlations.to_csv(
+            directory / "correlations_pearson_development.csv",
+            float_format="%.17g",
+        )
+        correlation_pairs.to_csv(
+            directory / "correlation_pairs_development.csv",
+            index=False,
+            float_format="%.17g",
+        )
+        _save_correlation_plot(
+            model_id, correlations, directory / "correlations_pearson_development.png",
+        )
     pd.DataFrame(references).to_csv(output_dir / "development_references.csv", index=False, float_format="%.17g")
     checks = pd.DataFrame(verification)
     checks.to_csv(output_dir / "verification.csv", index=False, float_format="%.17g")
@@ -422,6 +522,7 @@ def run_analysis(
             "visualizations": {
                 "distribution": "side-by-side development/test, ordered by development mean absolute SHAP",
                 "local": "one multi-trial cumulative waterfall figure per held-out participant and model",
+                "correlation": "trial-level Pearson r across eligible development rows only; no test observations",
             },
             "reference_definition": "per-model fitted prediction at eligible development predictor means",
             "test_data_in_background": False,
