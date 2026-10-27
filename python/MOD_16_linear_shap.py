@@ -194,11 +194,11 @@ def _save_distribution_plot(
             )
         ax.axvline(0, color="#475569", linewidth=1, alpha=0.7)
         ax.set_yticks(range(len(order)), labels, fontsize=9)
-        ax.invert_yaxis()
         ax.grid(axis="x", alpha=0.16)
         ax.set_axisbelow(True)
         ax.set_title(f"{group_name}\n{len(frame)} eligible trials")
         ax.set_xlabel("Signed SHAP contribution (predicted-stage points)")
+    axes[0].invert_yaxis()  # Shared y-axis must be inverted exactly once.
     fig.suptitle(
         f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — SHAP contribution distributions",
         fontsize=14,
