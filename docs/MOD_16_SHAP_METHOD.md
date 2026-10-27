@@ -32,6 +32,30 @@ All six held-out participants are explained for every applicable model. With the
 
 The shared output files `development_references.csv`, `verification.csv` and `manifest.json` record the model-specific reference means, participant counts, stage eligibility, SHAP version and numerical checks. The output writer refuses to overwrite an existing nonempty directory.
 
+## Correlation diagnostics (development data only)
+
+For each model, MOD-16 also computes **Pearson correlation coefficients** among the predictors, using the original measured values from *that model's eligible development observations*. Pearson's `r` ranges from −1 (perfect negative linear association) through 0 (no linear association) to +1 (perfect positive linear association). This descriptive calculation does not fit or modify a regression model.
+
+Three new outputs appear inside each model directory:
+
+- `correlations_pearson_development.csv`: the complete predictor-by-predictor correlation matrix, with original variable identifiers.
+- `correlation_pairs_development.csv`: every unique predictor pair, ranked by absolute correlation, with trial and unique-participant counts.
+- `correlations_pearson_development.png`: a symmetric heatmap with numeric coefficients and the exact feature names from Section 4 of `difficulty_modelling_procedure(4).docx`; the colour scale stays fixed at −1 to +1. If a feature is constant, the undefined correlation is marked `n/a`, not zero.
+
+Test observations are excluded from these diagnostics. Each participant can contribute multiple development trials. Accordingly, the resulting trial-level correlations cannot be interpreted as correlations estimated from 103–104 independent people, and the heatmap is *not* evidence of statistical significance or causation. It is a descriptive check for possible feature dependence, which may affect how independent and conditional SHAP distribute credit. Conditional SHAP is **not** introduced here. In particular, high correlation does not alone establish that a Gaussian conditional attribution model is appropriate.
+
+## Choice and limitations of the SHAP reference
+
+The current reference is the model's **mean fitted prediction over complete, eligible development trials**: `intercept + sum(coefficient_j × mean_development_feature_j)`. The arithmetic mean weights eligible *trials* equally, not participants equally; Visual includes 103 observations because one development trial is missing, whereas other full-stage models include 104. The same fixed background explains development and unseen test observations.
+
+The development mean was chosen because it is reproducible, matches the observation-level regression workflow, avoids additional assumptions about a clinically normal participant, and works for all four models. This is a defensible choice, **not a universal SHAP requirement**.
+
+Another reference distribution, such as eligible D0 development trials or a carefully justified clinical reference population, would answer a different question and produce different contributions. For a specified reference feature vector `x_ref`, independent linear SHAP gives `reference=f(x_ref)` and `SHAP_j=coefficient_j × (x_j−x_ref_j)`. The original model prediction remains unchanged. The Cognitive later equation excludes D0, making a D0-based reference an out-of-domain choice for that model.
+
+Crucially, **an actual trial labelled D0 (encoded stage 0), a model prediction of zero, and a SHAP reference of zero are not equivalent**. One cannot simply replace the current SHAP reference with 0 while retaining the existing contributions; this would violate additivity. A zero-reference attribution would need a defensible feature reference for which the fitted prediction is zero, or an explicitly described display-only re-centering transformation that is not falsely presented as newly computed independent SHAP.
+
+SHAP documentation: https://shap.readthedocs.io/en/stable/generated/shap.LinearExplainer.html and https://shap.readthedocs.io/en/stable/example_notebooks/api_examples/plots/decision_plot.html. See also Aas, Jullum & Løland (2021), DOI 10.1016/j.artint.2021.103502.
+
 ## Verification
 
 MOD-16 reads `regression_coefficients.csv`, `training_predictions.csv` and `test_predictions.csv` exported by MOD-14. MOD-13 reconstructs frozen models from the coefficient table; there is **no call to a regression-fitting function** in MOD-16.
