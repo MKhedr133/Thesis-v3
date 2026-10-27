@@ -160,88 +160,185 @@ def _importance(frame: pd.DataFrame, predictors: tuple[str, ...]) -> np.ndarray:
     ])
 
 
-def _save_global_plot(model_id: str, result: ModelExplanation, path: Path, predictors: tuple[str, ...]) -> None:
-    dev, test = _importance(result.development, predictors), _importance(result.test, predictors)
-    order = np.argsort(-dev)
+def _save_distribution_plot(
+    model_id: str,
+    result: ModelExplanation,
+    path: Path,
+    predictors: tuple[str, ...],
+) -> None:
+    """Compare signed SHAP distributions without pooling development and test.
+
+    Both panels share the development-based feature order and horizontal
+    scale. Test values are displayed descriptively; they are never used to
+    rank features or establish the explainer's background.
+    """
+    order = np.argsort(-_importance(result.development, predictors), kind="stable")
     labels = [DISPLAY_NAMES.get(predictors[i], predictors[i]) for i in order]
-    y = np.arange(len(order))
-    fig, ax = plt.subplots(figsize=(10, max(4.5, len(order) * 0.58 + 1.6)))
-    ax.barh(y - 0.18, dev[order], height=0.35, label="Development (26 participants)", color="#0f766e")
-    ax.barh(y + 0.18, test[order], height=0.35, label="Independent test (6 participants)", color="#b45309")
-    ax.set_yticks(y, labels)
-    ax.invert_yaxis()
-    ax.set_xlabel("Mean absolute SHAP contribution (predicted-stage points)")
-    ax.set_title(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — global SHAP contributions")
-    ax.legend(loc="best", fontsize=9)
-    ax.grid(axis="x", alpha=0.18)
-    ax.set_axisbelow(True)
-    fig.text(0.02, 0.012, "Model-specific development reference; test summary is descriptive (six independent participants).", fontsize=8)
-    fig.tight_layout(rect=(0, 0.045, 1, 1))
-    fig.savefig(path, dpi=180)
-    plt.close(fig)
-
-
-def _save_distribution_plot(model_id: str, result: ModelExplanation, path: Path, predictors: tuple[str, ...]) -> None:
-    """Development-only signed contribution distributions; repeated participant trials are not independent."""
-    frame = result.development
-    order = np.argsort(-_importance(frame, predictors))
-    fig, ax = plt.subplots(figsize=(10, max(4.5, len(order) * 0.59 + 1.6)))
-    rng = np.random.default_rng(1600)
-    for row, idx in enumerate(order):
-        vals = frame[f"shap__{predictors[idx]}"].to_numpy(dtype=float)
-        y = row + rng.uniform(-0.20, 0.20, len(vals))
-        ax.scatter(vals, y, color="#0f766e", alpha=0.5, s=18, edgecolors="none")
-    ax.axvline(0, color="black", linewidth=0.9, alpha=0.5)
-    ax.set_yticks(range(len(order)), [DISPLAY_NAMES.get(predictors[i], predictors[i]) for i in order])
-    ax.invert_yaxis()
-    ax.set_xlabel("Signed SHAP contribution (predicted-stage points)")
-    ax.set_title(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — development contribution distribution")
-    ax.grid(axis="x", alpha=0.15)
-    fig.text(0.02, 0.012, "Each dot is one eligible development trial; participants may contribute multiple trials.", fontsize=8)
-    fig.tight_layout(rect=(0, 0.045, 1, 1))
-    fig.savefig(path, dpi=180)
-    plt.close(fig)
-
-
-def _median_prediction_row(frame: pd.DataFrame) -> pd.Series:
-    """Predefined exemplar rule: median predicted value, ties by identifiers."""
-    chosen = frame.sort_values(
-        ["predicted_difficulty_stage", "participant_id", "difficulty_stage", "model_row_index"],
-        kind="mergesort",
+    fig, axes = plt.subplots(
+        1, 2, figsize=(15, max(5.2, len(order) * 0.64 + 1.7)),
+        sharex=True, sharey=True,
     )
-    return chosen.iloc[(len(chosen) - 1) // 2]
-
-
-def _save_local_plot(model_id: str, result: ModelExplanation, path: Path, predictors: tuple[str, ...]) -> None:
-    examples = (_median_prediction_row(result.development), _median_prediction_row(result.test))
-    data = np.array([[float(row[f"shap__{p}"]) for p in predictors] for row in examples])
-    common_max = max(0.05, float(np.max(np.abs(data))) * 1.20)
-    fig, axs = plt.subplots(1, 2, figsize=(15, max(5.2, len(predictors) * 0.60 + 2.3)), sharex=True)
-    for ax, row, split_label, contributions in zip(
-        axs, examples, ("Development example", "Unseen test example"), data
+    rng = np.random.default_rng(1600)
+    for ax, frame, group_name, color in zip(
+        axes,
+        (result.development, result.test),
+        ("Development (26 participants)", "Independent test (6 participants)"),
+        ("#0f766e", "#b45309"),
     ):
-        order = np.argsort(-np.abs(contributions))
-        labels = [DISPLAY_NAMES.get(predictors[i], predictors[i]) for i in order]
-        values = contributions[order]
-        ax.barh(range(len(order)), values, color=np.where(values >= 0, "#0f766e", "#b45309"))
+        for row_position, feature_index in enumerate(order):
+            values = frame[f"shap__{predictors[feature_index]}"].to_numpy(dtype=float)
+            jitter = rng.uniform(-0.19, 0.19, size=len(values))
+            ax.scatter(
+                values, row_position + jitter,
+                color=color, alpha=0.62, s=22, linewidths=0,
+            )
+        ax.axvline(0, color="#475569", linewidth=1, alpha=0.7)
         ax.set_yticks(range(len(order)), labels, fontsize=9)
         ax.invert_yaxis()
-        ax.set_xlim(-common_max, common_max)
-        ax.axvline(0, color="black", alpha=0.55, linewidth=0.8)
-        ax.grid(axis="x", alpha=0.15)
+        ax.grid(axis="x", alpha=0.16)
         ax.set_axisbelow(True)
-        ax.set_title(
-            f"{split_label}: participant {row['participant_id']}, D{int(row['difficulty_level'])}\n"
-            f"Reference {float(row['reference_prediction']):.3f} + contributions "
-            f"{np.sum(contributions):+.3f} = prediction {float(row['predicted_difficulty_stage']):.3f}",
-            fontsize=10,
-        )
-        ax.set_xlabel("Signed contribution (predicted-stage points)")
-    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — individual SHAP explanations", fontsize=14)
-    fig.text(0.02, 0.012, "Both cases use the same development reference. Positive contributions raise, negative contributions lower the fitted prediction.", fontsize=8)
+        ax.set_title(f"{group_name}\n{len(frame)} eligible trials")
+        ax.set_xlabel("Signed SHAP contribution (predicted-stage points)")
+    fig.suptitle(
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — SHAP contribution distributions",
+        fontsize=14,
+    )
+    fig.text(
+        0.02, 0.015,
+        "Each dot is a trial; repeated trials from one participant are dependent. "
+        "Feature order follows development mean |SHAP|. Both panels use the same "
+        "development-only SHAP reference.",
+        fontsize=8,
+    )
     fig.tight_layout(rect=(0, 0.045, 1, 0.96))
     fig.savefig(path, dpi=180)
     plt.close(fig)
+
+
+def _participant_plot_name(participant_id: str) -> str:
+    """Prevent participant labels being interpreted as filesystem paths."""
+    import re
+
+    safe = re.sub(r"[^A-Za-z0-9_-]", "_", participant_id)
+    if not safe or safe in {".", ".."}:
+        raise Mod16Error(f"Unsafe participant identifier: {participant_id!r}")
+    return f"participant_{safe}.png"
+
+
+def _save_test_participant_waterfall(
+    model_id: str,
+    frame: pd.DataFrame,
+    path: Path,
+    predictors: tuple[str, ...],
+) -> None:
+    """Draw genuine cumulative SHAP waterfalls for all eligible test trials.
+
+    Each subplot starts at the fixed development reference and follows the
+    signed feature contributions to the frozen model's prediction. All
+    eligible trials from one test participant are grouped into one PNG.
+    """
+    if frame.empty or frame["participant_id"].nunique() != 1:
+        raise Mod16Error(f"{model_id}: each waterfall must show one test participant")
+    frame = frame.sort_values(["difficulty_stage", "model_row_index"], kind="stable")
+    participant = str(frame["participant_id"].iloc[0])
+    series = []
+    for _, row in frame.iterrows():
+        values = np.array([float(row[f"shap__{name}"]) for name in predictors])
+        order = np.argsort(-np.abs(values), kind="stable")
+        base = float(row["reference_prediction"])
+        prediction = float(row["predicted_difficulty_stage"])
+        cumulative = np.r_[base, base + np.cumsum(values[order])]
+        if not np.isclose(cumulative[-1], prediction, atol=RECONSTRUCTION_ATOL, rtol=0):
+            raise Mod16Error(f"{model_id}: waterfall cannot reconstruct prediction")
+        series.append((row, values, order, cumulative))
+
+    # Consistent x-axis limits across all trials from the same participant.
+    endpoints = np.concatenate([points for _, _, _, points in series])
+    bounds = float(np.ptp(endpoints))
+    margin = max(0.12, 0.07 * bounds)
+    xlimits = (float(endpoints.min() - margin), float(endpoints.max() + margin))
+    subplot_height = max(4.0, len(predictors) * 0.37 + 1.3)
+    fig, axes = plt.subplots(
+        len(series), 1, figsize=(13, subplot_height * len(series) + 0.5),
+        squeeze=False,
+    )
+    for ax, (row, values, order, cumulative) in zip(axes[:, 0], series):
+        for position, feature_index in enumerate(order):
+            contribution = float(values[feature_index])
+            before, after = cumulative[position : position + 2]
+            ax.barh(
+                position, abs(contribution), left=min(before, after),
+                height=0.68,
+                color="#0f766e" if contribution >= 0 else "#b45309",
+                zorder=3,
+            )
+            if position < len(order) - 1:
+                ax.plot(
+                    [after, after], [position + 0.35, position + 0.65],
+                    color="#64748b", linestyle=":", linewidth=0.9,
+                )
+        labels = [
+            f"{DISPLAY_NAMES.get(predictors[i], predictors[i])}  ({values[i]:+.3f})"
+            for i in order
+        ]
+        ax.set_yticks(range(len(order)), labels, fontsize=9)
+        ax.invert_yaxis()
+        reference = float(row["reference_prediction"])
+        prediction = float(row["predicted_difficulty_stage"])
+        actual = int(row["difficulty_stage"])
+        stage = int(row["difficulty_level"])
+        ax.axvline(reference, color="#64748b", linestyle="--", linewidth=1.3)
+        ax.axvline(prediction, color="#2563eb", linestyle="-", linewidth=1.3)
+        ax.set_xlim(*xlimits)
+        ax.grid(axis="x", alpha=0.14)
+        ax.set_axisbelow(True)
+        ax.set_title(
+            f"D{stage} (encoded stage {actual})  |  reference {reference:.3f} "
+            f"→ predicted {prediction:.3f}  |  error {prediction - actual:+.3f}",
+            fontsize=10,
+        )
+        ax.set_xlabel("Cumulative continuous prediction (encoded stage points)")
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    fig.legend(
+        handles=[
+            Patch(facecolor="#0f766e", label="Raises prediction"),
+            Patch(facecolor="#b45309", label="Lowers prediction"),
+            Line2D([], [], color="#64748b", linestyle="--", label="Development reference"),
+            Line2D([], [], color="#2563eb", label="Frozen model prediction"),
+        ],
+        loc="lower center", ncol=4, frameon=False, fontsize=9,
+    )
+    fig.suptitle(
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — unseen participant {participant}\n"
+        f"{len(series)} eligible trial waterfalls; fixed development reference",
+        fontsize=14,
+    )
+    fig.tight_layout(rect=(0, 0.028, 1, 0.965), h_pad=2.2)
+    fig.savefig(path, dpi=155)
+    plt.close(fig)
+
+
+def _save_all_test_waterfalls(
+    model_id: str,
+    result: ModelExplanation,
+    directory: Path,
+    predictors: tuple[str, ...],
+) -> int:
+    directory.mkdir()
+    used_filenames: set[str] = set()
+    for participant_id, participant_rows in result.test.groupby(
+        "participant_id", sort=True
+    ):
+        filename = _participant_plot_name(str(participant_id))
+        if filename in used_filenames:
+            raise Mod16Error(f"{model_id}: participant filenames collide")
+        used_filenames.add(filename)
+        _save_test_participant_waterfall(
+            model_id, participant_rows, directory / filename, predictors,
+        )
+    return len(used_filenames)
 
 
 def run_analysis(
@@ -324,9 +421,8 @@ def run_analysis(
         result.development.to_csv(directory / "attributions_development.csv", index=False, float_format="%.17g")
         result.test.to_csv(directory / "attributions_test.csv", index=False, float_format="%.17g")
         predictors = tuple(registry[model_id].predictors)
-        _save_global_plot(model_id, result, directory / "global_importance.png", predictors)
-        _save_distribution_plot(model_id, result, directory / "development_distribution.png", predictors)
-        _save_local_plot(model_id, result, directory / "local_examples.png", predictors)
+        _save_distribution_plot(model_id, result, directory / "contribution_distributions.png", predictors)
+        _save_all_test_waterfalls(model_id, result, directory / "waterfalls_test", predictors)
     pd.DataFrame(references).to_csv(output_dir / "development_references.csv", index=False, float_format="%.17g")
     checks = pd.DataFrame(verification)
     checks.to_csv(output_dir / "verification.csv", index=False, float_format="%.17g")
@@ -336,7 +432,10 @@ def run_analysis(
             "masker": "shap.maskers.Independent with all model-eligible development rows",
             "shap_version": shap.__version__,
             "model_ids": list(results),
-            "exemplar_rule": "median continuous prediction per split; stable identifier tie-break",
+            "visualizations": {
+                "distribution": "side-by-side development/test, ordered by development mean absolute SHAP",
+                "local": "one multi-trial cumulative waterfall figure per held-out participant and model",
+            },
             "reference_definition": "per-model fitted prediction at eligible development predictor means",
             "test_data_in_background": False,
             "tolerance_absolute": RECONSTRUCTION_ATOL,
