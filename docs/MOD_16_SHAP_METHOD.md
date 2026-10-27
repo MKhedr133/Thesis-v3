@@ -18,9 +18,13 @@ These signed contributions exactly decompose the additive equation under the cho
 
 ## Output and interpretation
 
-Each model has two CSV files containing all development and test observations, respectively: participant and trial identifiers, encoded stage, feature values, signed contributions, reference prediction, original continuous prediction, reconstructed prediction and numerical difference. Each model also has a global bar chart comparing development and test mean absolute contributions; a development distribution plot of signed contributions; and paired local signed-contribution charts for one development and one unseen-test trial.
+Each model has two CSVs containing eligible development and test observations, respectively: participant and trial identifiers, encoded stage, raw feature values, signed contributions, reference prediction, original continuous prediction, reconstructed prediction and numerical difference.
 
-Local examples are selected by a rule fixed before inspecting SHAP results: the median continuous prediction in each split, with deterministic identifier tie-breaking. Mean absolute SHAP describes the *typical magnitude* of a contribution relative to the chosen reference. It does not measure unique explained variance, statistical significance, prediction accuracy or a causal effect. The test summary is descriptive because there are six independent-test participants, some contributing multiple trials.
+Each model produces:
+1. **\`contribution_distributions.png\`** — side-by-side signed contribution distributions: development on the left and independent test on the right. Both panels share the development-only SHAP reference, feature order and horizontal scale. Each dot is an eligible trial; negative values lower the model prediction and positive values raise it. Features are ordered by *development* mean absolute SHAP. The redundant global-importance bar chart has been removed.
+2. **\`waterfalls_test/participant_<ID>.png\`** — one true cumulative waterfall figure per held-out participant and model, with a separate panel for every eligible trial. Each starts at the model-specific development reference, cumulatively adds signed contributions in descending magnitude, and finishes at the original continuous prediction. Panel headings report the actual stage, reference, prediction and signed prediction error. Teal steps raise the fitted prediction; amber steps lower it.
+
+All six held-out participants are explained for every applicable model. With the present dataset this means **24 participant-level figures and 90 trial-level waterfall panels**: D0, D2, D6 and D10 for Visual, Auditory and Cognitive primary; D2, D6 and D10 for Cognitive later. Test results are descriptive, and trials from one participant are dependent. SHAP contributions do not establish causality, predictive accuracy or therapist usefulness. Mean absolute SHAP remains calculable from the numerical attribution CSVs.
 
 The shared output files `development_references.csv`, `verification.csv` and `manifest.json` record the model-specific reference means, participant counts, stage eligibility, SHAP version and numerical checks. The output writer refuses to overwrite an existing nonempty directory.
 
@@ -44,10 +48,10 @@ python python/MOD_16_linear_shap.py \
   --modeling-data data/modeling_data.csv \
   --holdout-split outputs/MOD_09_participant_holdout_split/participant_holdout_split.csv \
   --mod14-output-dir outputs/MOD_14_direct_linear_regression_evaluation \
-  --output-dir outputs/MOD_16_linear_shap
+  --output-dir outputs/MOD_16_linear_shap_v2
 ```
 
-Adjust file paths to the actual research data locations. Run tests using `python -m unittest discover -s tests -p 'test_*.py'`. Research data and generated numerical results are excluded from Git; without the underlying files, no actual research feature ranking or participant explanation can be claimed.
+Adjust input paths as necessary and choose a fresh output directory; previous results are never overwritten. Run tests using `python -m unittest discover -s tests -p 'test_*.py'`. Research data and generated numerical results are excluded from Git; without the underlying files, no actual research feature ranking or participant explanation can be claimed.
 
 ## Scientific limitations and references
 
