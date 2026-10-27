@@ -126,6 +126,26 @@ class ExactLinearShapTests(unittest.TestCase):
             MOD16._participant_plot_name("")
 
 
+    def test_plot_names_match_modelling_procedure_section_four(self):
+        # Verbatim 'Measurement' entries in difficulty_modelling_procedure(4).docx.
+        expected = {
+            "mental_demand_score_0_to_10": "Mental demand",
+            "median_time_between_qualifying_grabs_seconds": "Time between qualifying grabs",
+            "list_recheck_count": "List recheck count",
+            "total_list_recheck_duration_seconds": "Total list recheck duration",
+            "median_time_to_target_seconds": "Time to locate target",
+            "median_irrelevant_focus_duration_seconds": "Irrelevant focus duration",
+            "median_head_turning_degrees": "Head turning",
+            "median_reach_duration_seconds": "Reach duration",
+            "median_reach_path_ratio": "Reach path ratio",
+            "performance_change_from_d0_percentage_points": "Relative performance change",
+        }
+        self.assertEqual(MOD16.DISPLAY_NAMES, expected)
+        for spec in MOD14.build_model_registry().values():
+            self.assertTrue(set(spec.predictors).issubset(expected))
+
+
+
 class FourModelIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
