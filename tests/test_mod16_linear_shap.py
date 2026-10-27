@@ -1,0 +1,308 @@
+"""Synthetic and integration-contract tests for MOD-16 independent linear SHAP."""
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+import numpy as np
+import pandas as pd
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "python"))
+
+import MOD_13_difficulty_prediction as MOD13
+import MOD_14_direct_linear_regression_evaluation as MOD14
+import MOD_16_linear_shap as MOD16
+from test_mod14_direct_linear_regression_evaluation import (
+    regression_ready_split_data,
+    synthetic_holdout_split,
+)
+
+
+class ExactLinearShapTests(unittest.TestCase):
+    def setUp(self):
+        self.predictors = (
+            "mental_demand_score_0_to_10",
+            "median_time_to_target_seconds",
+        )
+        self.model = MOD13.LinearModelFit(
+            model_id="visual",
+            predictors=self.predictors,
+            coefficients=pd.Series({
+                "Intercept": 0.40,
+                self.predictors[0]: 0.20,
+                self.predictors[1]: 0.01,
+            }),
+        )
+        self.background = pd.DataFrame({
+            self.predictors[0]: [4.0, 6.0],
+            self.predictors[1]: [30.0, 20.0],
+        })
+        self.observations = pd.DataFrame({
+            self.predictors[0]: [7.0, 4.0],
+            self.predictors[1]: [20.0, 30.0],
+            "participant_id": ["P01", "P02"],
+            "condition_name": ["Visual", "Visual"],
+            "difficulty_level": [6, 2],
+            "difficulty_stage": [2, 1],
+        })
+
+    def test_exact_linear_shap_matches_coefficient_centering(self):
+        result, base, means = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model,
+            background=self.background, observations=self.observations,
+            split_name="test",
+        )
+        self.assertAlmostEqual(float(means[self.predictors[0]]), 5.0)
+        self.assertAlmostEqual(float(means[self.predictors[1]]), 25.0)
+        self.assertAlmostEqual(base, 0.4 + 0.2 * 5 + 0.01 * 25)
+        self.assertAlmostEqual(float(result.loc[0, f"shap__{self.predictors[0]}"]), 0.4)
+        self.assertAlmostEqual(float(result.loc[0, f"shap__{self.predictors[1]}"]), -0.05)
+        self.assertAlmostEqual(float(result.loc[0, "predicted_difficulty_stage"]), 2.0)
+        self.assertLess(float(result["reconstruction_error"].abs().max()), 1e-8)
+
+    def test_test_observations_do_not_modify_reference(self):
+        _, base1, means1 = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=self.observations, split_name="test",
+        )
+        changed = self.observations.copy()
+        changed.loc[:, self.predictors[0]] += 100.0
+        _, base2, means2 = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=changed, split_name="test",
+        )
+        self.assertAlmostEqual(base1, base2)
+        pd.testing.assert_series_equal(means1, means2)
+
+    def test_prediction_integrity_is_mandatory(self):
+        result, _, _ = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=self.observations, split_name="test",
+        )
+        existing = result[["participant_id", "predicted_difficulty_stage"]].copy()
+        existing.insert(0, "model", "visual")
+        existing.loc[0, "predicted_difficulty_stage"] += 0.1
+        with self.assertRaises(MOD16.Mod16Error):
+            MOD16.verify_saved_predictions(
+                result, existing, model_id="visual", split_name="test"
+            )
+
+    def test_bad_background_is_rejected(self):
+        background = self.background.copy()
+        background.loc[0, self.predictors[0]] = np.nan
+        with self.assertRaises(MOD16.Mod16Error):
+            MOD16.explain_linear_frame(
+                model_id="visual", model=self.model, background=background,
+                observations=self.observations, split_name="development",
+            )
+
+
+    def test_waterfall_rejects_invalid_reconstruction(self):
+        result, _, _ = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=self.observations, split_name="test",
+        )
+        wrong = result.iloc[:1].copy()
+        wrong.loc[:, f"shap__{self.predictors[0]}"] += 0.5
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(MOD16.Mod16Error, "waterfall cannot reconstruct"):
+                MOD16._save_test_participant_waterfall(
+                    "visual", wrong, Path(temporary) / "invalid.png",
+                    self.predictors,
+                )
+
+    def test_safe_test_participant_plot_names(self):
+        self.assertEqual(
+            MOD16._participant_plot_name("P06"), "participant_P06.png"
+        )
+        self.assertEqual(
+            MOD16._participant_plot_name("participant/6"),
+            "participant_participant_6.png",
+        )
+        with self.assertRaises(MOD16.Mod16Error):
+            MOD16._participant_plot_name("")
+
+
+    def test_development_pearson_matrix_and_ranked_pairs(self):
+        frame = pd.DataFrame({
+            "split": ["development"] * 4,
+            "participant_id": ["P01", "P01", "P02", "P02"],
+            "value__a": [1.0, 2.0, 3.0, 4.0],
+            "value__b": [2.0, 4.0, 6.0, 8.0],
+            "value__c": [8.0, 6.0, 4.0, 2.0],
+        })
+        matrix, pairs = MOD16.compute_development_correlations(
+            frame, ("a", "b", "c"),
+        )
+        self.assertEqual(matrix.shape, (3, 3))
+        self.assertAlmostEqual(matrix.loc["a", "b"], 1.0)
+        self.assertAlmostEqual(matrix.loc["b", "c"], -1.0)
+        self.assertTrue(np.allclose(matrix.to_numpy(), matrix.to_numpy().T))
+        self.assertEqual(len(pairs), 3)
+        self.assertTrue(pairs["absolute_pearson_r"].eq(1.0).all())
+        self.assertEqual(int(pairs["development_participants"].max()), 2)
+        self.assertEqual(int(pairs["development_trials"].max()), 4)
+
+    def test_correlation_rejects_test_rows_and_marks_constant_feature(self):
+        frame = pd.DataFrame({
+            "split": ["development"] * 3,
+            "participant_id": ["P01", "P02", "P03"],
+            "value__a": [1.0, 2.0, 3.0],
+            "value__constant": [7.0, 7.0, 7.0],
+        })
+        matrix, _ = MOD16.compute_development_correlations(
+            frame, ("a", "constant"),
+        )
+        self.assertTrue(np.isnan(matrix.loc["a", "constant"]))
+        test_tainted = frame.copy()
+        test_tainted.loc[0, "split"] = "test"
+        with self.assertRaisesRegex(MOD16.Mod16Error, "development"):
+            MOD16.compute_development_correlations(
+                test_tainted, ("a", "constant"),
+            )
+
+    def test_plot_names_match_modelling_procedure_section_four(self):
+        # Verbatim 'Measurement' entries in difficulty_modelling_procedure(4).docx.
+        expected = {
+            "mental_demand_score_0_to_10": "Mental demand",
+            "median_time_between_qualifying_grabs_seconds": "Time between qualifying grabs",
+            "list_recheck_count": "List recheck count",
+            "total_list_recheck_duration_seconds": "Total list recheck duration",
+            "median_time_to_target_seconds": "Time to locate target",
+            "median_irrelevant_focus_duration_seconds": "Irrelevant focus duration",
+            "median_head_turning_degrees": "Head turning",
+            "median_reach_duration_seconds": "Reach duration",
+            "median_reach_path_ratio": "Reach path ratio",
+            "performance_change_from_d0_percentage_points": "Relative performance change",
+        }
+        self.assertEqual(MOD16.DISPLAY_NAMES, expected)
+        for spec in MOD14.build_model_registry().values():
+            self.assertTrue(set(spec.predictors).issubset(expected))
+
+
+
+class FourModelIntegrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        (cls.development, cls.test, cls.dev_ids, cls.test_ids) = (
+            regression_ready_split_data()
+        )
+        cls.modeling_data = pd.concat(
+            [cls.development, cls.test], ignore_index=True
+        )
+        cls.holdout = synthetic_holdout_split()
+        cls.synthetic_fits = MOD14.evaluate_all_models(
+            development_data=cls.development, test_data=cls.test,
+        )
+        cls.coefficients = MOD14.build_coefficients_table(cls.synthetic_fits)
+        cls.training_predictions = MOD14.combine_prediction_tables(
+            cls.synthetic_fits, split="training"
+        )
+        cls.test_predictions = MOD14.combine_prediction_tables(
+            cls.synthetic_fits, split="test"
+        )
+
+    def _run(self, directory: Path, *, training_predictions=None):
+        return MOD16.run_analysis(
+            modeling_data=self.modeling_data,
+            holdout_split=self.holdout,
+            coefficient_table=self.coefficients,
+            development_predictions=(
+                self.training_predictions
+                if training_predictions is None else training_predictions
+            ),
+            test_predictions=self.test_predictions,
+            output_dir=directory,
+        )
+
+    def test_four_models_two_splits_outputs_and_cognitive_later_excludes_d0(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "mod16"
+            checks = self._run(directory)
+            self.assertEqual(len(checks), 8)
+            self.assertEqual(
+                set(checks["model"]), set(MOD14.build_model_registry())
+            )
+            self.assertEqual(set(checks["split"]), {"development", "test"})
+            self.assertTrue(checks["passes"].all())
+            self.assertLess(
+                float(checks["max_absolute_reconstruction_error"].max()), 1e-8
+            )
+            self.assertLess(
+                float(checks["max_absolute_mod14_prediction_mismatch"].max()), 1e-8
+            )
+            references = pd.read_csv(directory / "development_references.csv")
+            later = references.loc[references["model"].eq("cognitive_later")]
+            self.assertTrue(later["eligible_stages"].eq("1,2,3").all())
+            for model_id, spec in MOD14.build_model_registry().items():
+                directory_model = directory / model_id
+                dev = pd.read_csv(directory_model / "attributions_development.csv")
+                test = pd.read_csv(directory_model / "attributions_test.csv")
+                self.assertTrue(set(dev["participant_id"]).issubset(set(self.dev_ids)))
+                self.assertTrue(set(test["participant_id"]).issubset(set(self.test_ids)))
+                self.assertTrue(set(dev["difficulty_stage"]).issubset(set(spec.allowed_stages)))
+                self.assertEqual(int(dev["participant_id"].nunique()), 26)
+                self.assertEqual(int(test["participant_id"].nunique()), 6)
+                self.assertAlmostEqual(
+                    float(dev["reference_prediction"].iloc[0]),
+                    float(test["reference_prediction"].iloc[0]),
+                )
+                self.assertGreater(
+                    (directory_model / "contribution_distributions.png").stat().st_size, 500
+                )
+                correlations = pd.read_csv(
+                    directory_model / "correlations_pearson_development.csv", index_col=0,
+                )
+                pairs = pd.read_csv(directory_model / "correlation_pairs_development.csv")
+                self.assertEqual(correlations.shape, (len(spec.predictors), len(spec.predictors)))
+                self.assertEqual(len(pairs), len(spec.predictors) * (len(spec.predictors) - 1) // 2)
+                self.assertTrue(
+                    pairs["development_participants"].eq(26).all()
+                )
+                self.assertGreater(
+                    (directory_model / "correlations_pearson_development.png").stat().st_size, 500
+                )
+                waterfalls = directory_model / "waterfalls_test"
+                paths = sorted(waterfalls.glob("participant_*.png"))
+                self.assertEqual(len(paths), 6)
+                self.assertEqual(
+                    {p.name for p in paths},
+                    {f"participant_{participant}.png" for participant in self.test_ids},
+                )
+                for path in paths:
+                    self.assertGreater(path.stat().st_size, 500)
+                self.assertFalse((directory_model / "global_importance.png").exists())
+                self.assertFalse((directory_model / "local_examples.png").exists())
+                self.assertFalse((directory_model / "development_distribution.png").exists())
+            later_frame = pd.read_csv(
+                directory / "cognitive_later" / "attributions_development.csv"
+            )
+            self.assertNotIn(0, later_frame["difficulty_stage"].tolist())
+            self.assertTrue((directory / "manifest.json").is_file())
+
+    def test_wrong_saved_predictions_fail_before_writing(self):
+        erroneous = self.training_predictions.copy()
+        first = erroneous["model"].eq("visual").idxmax()
+        erroneous.loc[first, "predicted_difficulty_stage"] += 1.0
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "mod16"
+            with self.assertRaises(MOD16.Mod16Error):
+                self._run(directory, training_predictions=erroneous)
+            self.assertFalse(directory.exists())
+
+    def test_existing_outputs_are_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary) / "mod16"
+            directory.mkdir()
+            sentinel = directory / "important.txt"
+            sentinel.write_text("do not overwrite", encoding="utf-8")
+            with self.assertRaises(MOD16.Mod16Error):
+                self._run(directory)
+            self.assertEqual(sentinel.read_text(encoding="utf-8"), "do not overwrite")
+
+
+if __name__ == "__main__":
+    unittest.main()
