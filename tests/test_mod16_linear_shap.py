@@ -100,6 +100,32 @@ class ExactLinearShapTests(unittest.TestCase):
             )
 
 
+    def test_waterfall_rejects_invalid_reconstruction(self):
+        result, _, _ = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=self.observations, split_name="test",
+        )
+        wrong = result.iloc[:1].copy()
+        wrong.loc[:, f"shap__{self.predictors[0]}"] += 0.5
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaisesRegex(MOD16.Mod16Error, "waterfall cannot reconstruct"):
+                MOD16._save_test_participant_waterfall(
+                    "visual", wrong, Path(temporary) / "invalid.png",
+                    self.predictors,
+                )
+
+    def test_safe_test_participant_plot_names(self):
+        self.assertEqual(
+            MOD16._participant_plot_name("P06"), "participant_P06.png"
+        )
+        self.assertEqual(
+            MOD16._participant_plot_name("participant/6"),
+            "participant_participant_6.png",
+        )
+        with self.assertRaises(MOD16.Mod16Error):
+            MOD16._participant_plot_name("")
+
+
 class FourModelIntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -166,12 +192,21 @@ class FourModelIntegrationTests(unittest.TestCase):
                     float(dev["reference_prediction"].iloc[0]),
                     float(test["reference_prediction"].iloc[0]),
                 )
-                for name in (
-                    "global_importance.png",
-                    "development_distribution.png",
-                    "local_examples.png",
-                ):
-                    self.assertGreater((directory_model / name).stat().st_size, 500)
+                self.assertGreater(
+                    (directory_model / "contribution_distributions.png").stat().st_size, 500
+                )
+                waterfalls = directory_model / "waterfalls_test"
+                paths = sorted(waterfalls.glob("participant_*.png"))
+                self.assertEqual(len(paths), 6)
+                self.assertEqual(
+                    {p.name for p in paths},
+                    {f"participant_{participant}.png" for participant in self.test_ids},
+                )
+                for path in paths:
+                    self.assertGreater(path.stat().st_size, 500)
+                self.assertFalse((directory_model / "global_importance.png").exists())
+                self.assertFalse((directory_model / "local_examples.png").exists())
+                self.assertFalse((directory_model / "development_distribution.png").exists())
             later_frame = pd.read_csv(
                 directory / "cognitive_later" / "attributions_development.csv"
             )
