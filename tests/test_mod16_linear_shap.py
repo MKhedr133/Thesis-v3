@@ -126,6 +126,44 @@ class ExactLinearShapTests(unittest.TestCase):
             MOD16._participant_plot_name("")
 
 
+    def test_development_pearson_matrix_and_ranked_pairs(self):
+        frame = pd.DataFrame({
+            "split": ["development"] * 4,
+            "participant_id": ["P01", "P01", "P02", "P02"],
+            "value__a": [1.0, 2.0, 3.0, 4.0],
+            "value__b": [2.0, 4.0, 6.0, 8.0],
+            "value__c": [8.0, 6.0, 4.0, 2.0],
+        })
+        matrix, pairs = MOD16.compute_development_correlations(
+            frame, ("a", "b", "c"),
+        )
+        self.assertEqual(matrix.shape, (3, 3))
+        self.assertAlmostEqual(matrix.loc["a", "b"], 1.0)
+        self.assertAlmostEqual(matrix.loc["b", "c"], -1.0)
+        self.assertTrue(np.allclose(matrix.to_numpy(), matrix.to_numpy().T))
+        self.assertEqual(len(pairs), 3)
+        self.assertTrue(pairs["absolute_pearson_r"].eq(1.0).all())
+        self.assertEqual(int(pairs["development_participants"].max()), 2)
+        self.assertEqual(int(pairs["development_trials"].max()), 4)
+
+    def test_correlation_rejects_test_rows_and_marks_constant_feature(self):
+        frame = pd.DataFrame({
+            "split": ["development"] * 3,
+            "participant_id": ["P01", "P02", "P03"],
+            "value__a": [1.0, 2.0, 3.0],
+            "value__constant": [7.0, 7.0, 7.0],
+        })
+        matrix, _ = MOD16.compute_development_correlations(
+            frame, ("a", "constant"),
+        )
+        self.assertTrue(np.isnan(matrix.loc["a", "constant"]))
+        test_tainted = frame.copy()
+        test_tainted.loc[0, "split"] = "test"
+        with self.assertRaisesRegex(MOD16.Mod16Error, "development"):
+            MOD16.compute_development_correlations(
+                test_tainted, ("a", "constant"),
+            )
+
     def test_plot_names_match_modelling_procedure_section_four(self):
         # Verbatim 'Measurement' entries in difficulty_modelling_procedure(4).docx.
         expected = {
@@ -214,6 +252,18 @@ class FourModelIntegrationTests(unittest.TestCase):
                 )
                 self.assertGreater(
                     (directory_model / "contribution_distributions.png").stat().st_size, 500
+                )
+                correlations = pd.read_csv(
+                    directory_model / "correlations_pearson_development.csv", index_col=0,
+                )
+                pairs = pd.read_csv(directory_model / "correlation_pairs_development.csv")
+                self.assertEqual(correlations.shape, (len(spec.predictors), len(spec.predictors)))
+                self.assertEqual(len(pairs), len(spec.predictors) * (len(spec.predictors) - 1) // 2)
+                self.assertTrue(
+                    pairs["development_participants"].eq(26).all()
+                )
+                self.assertGreater(
+                    (directory_model / "correlations_pearson_development.png").stat().st_size, 500
                 )
                 waterfalls = directory_model / "waterfalls_test"
                 paths = sorted(waterfalls.glob("participant_*.png"))
