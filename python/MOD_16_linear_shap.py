@@ -25,16 +25,18 @@ import MOD_14_direct_linear_regression_evaluation as MOD14
 RECONSTRUCTION_ATOL = 1e-8
 METHOD = "linear_shap_independent_interventional"
 DISPLAY_NAMES = {
-    "mental_demand_score_0_to_10": "Mental demand (0–10)",
-    "median_time_between_qualifying_grabs_seconds": "Time between grabs (s)",
-    "total_list_recheck_duration_seconds": "List recheck duration (s)",
-    "median_time_to_target_seconds": "Time to target (s)",
-    "median_irrelevant_focus_duration_seconds": "Irrelevant focus duration (s)",
-    "median_head_turning_degrees": "Head turning (degrees)",
-    "median_reach_duration_seconds": "Reach duration (s)",
+    # Verbatim names from difficulty_modelling_procedure(4).docx,
+    # section 4, Statistical feature selection (Measurement column).
+    "mental_demand_score_0_to_10": "Mental demand",
+    "median_time_between_qualifying_grabs_seconds": "Time between qualifying grabs",
     "list_recheck_count": "List recheck count",
+    "total_list_recheck_duration_seconds": "Total list recheck duration",
+    "median_time_to_target_seconds": "Time to locate target",
+    "median_irrelevant_focus_duration_seconds": "Irrelevant focus duration",
+    "median_head_turning_degrees": "Head turning",
+    "median_reach_duration_seconds": "Reach duration",
     "median_reach_path_ratio": "Reach path ratio",
-    "performance_change_from_d0_percentage_points": "Performance change from D0 (pp)",
+    "performance_change_from_d0_percentage_points": "Relative performance change",
 }
 
 
@@ -173,7 +175,7 @@ def _save_distribution_plot(
     rank features or establish the explainer's background.
     """
     order = np.argsort(-_importance(result.development, predictors), kind="stable")
-    labels = [DISPLAY_NAMES.get(predictors[i], predictors[i]) for i in order]
+    labels = [DISPLAY_NAMES[predictors[i]] for i in order]
     fig, axes = plt.subplots(
         1, 2, figsize=(15, max(5.2, len(order) * 0.64 + 1.7)),
         sharex=True, sharey=True,
@@ -182,7 +184,7 @@ def _save_distribution_plot(
     for ax, frame, group_name, color in zip(
         axes,
         (result.development, result.test),
-        ("Development (26 participants)", "Independent test (6 participants)"),
+        ("Development", "Test"),
         ("#0f766e", "#b45309"),
     ):
         for row_position, feature_index in enumerate(order):
@@ -196,21 +198,14 @@ def _save_distribution_plot(
         ax.set_yticks(range(len(order)), labels, fontsize=9)
         ax.grid(axis="x", alpha=0.16)
         ax.set_axisbelow(True)
-        ax.set_title(f"{group_name}\n{len(frame)} eligible trials")
-        ax.set_xlabel("Signed SHAP contribution (predicted-stage points)")
+        ax.set_title(f"{group_name} (n={len(frame)})")
     axes[0].invert_yaxis()  # Shared y-axis must be inverted exactly once.
     fig.suptitle(
-        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — SHAP contribution distributions",
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — SHAP distribution",
         fontsize=14,
     )
-    fig.text(
-        0.02, 0.015,
-        "Each dot is a trial; repeated trials from one participant are dependent. "
-        "Feature order follows development mean |SHAP|. Both panels use the same "
-        "development-only SHAP reference.",
-        fontsize=8,
-    )
-    fig.tight_layout(rect=(0, 0.045, 1, 0.96))
+    fig.supxlabel("SHAP value (stage points)", fontsize=11)
+    fig.tight_layout(rect=(0, 0.055, 1, 0.96))
     fig.savefig(path, dpi=180)
     plt.close(fig)
 
@@ -278,7 +273,7 @@ def _save_test_participant_waterfall(
                     color="#64748b", linestyle=":", linewidth=0.9,
                 )
         labels = [
-            f"{DISPLAY_NAMES.get(predictors[i], predictors[i])}  ({values[i]:+.3f})"
+            f"{DISPLAY_NAMES[predictors[i]]}  ({values[i]:+.3f})"
             for i in order
         ]
         ax.set_yticks(range(len(order)), labels, fontsize=9)
@@ -292,30 +287,22 @@ def _save_test_participant_waterfall(
         ax.set_xlim(*xlimits)
         ax.grid(axis="x", alpha=0.14)
         ax.set_axisbelow(True)
-        ax.set_title(
-            f"D{stage} (encoded stage {actual})  |  reference {reference:.3f} "
-            f"→ predicted {prediction:.3f}  |  error {prediction - actual:+.3f}",
-            fontsize=10,
-        )
-        ax.set_xlabel("Cumulative continuous prediction (encoded stage points)")
+        ax.set_title(f"D{stage}  |  Predicted {prediction:.3f}", fontsize=10)
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
     fig.legend(
         handles=[
-            Patch(facecolor="#0f766e", label="Raises prediction"),
-            Patch(facecolor="#b45309", label="Lowers prediction"),
-            Line2D([], [], color="#64748b", linestyle="--", label="Development reference"),
-            Line2D([], [], color="#2563eb", label="Frozen model prediction"),
+            Patch(facecolor="#0f766e", label="Positive SHAP"),
+            Patch(facecolor="#b45309", label="Negative SHAP"),
+            Line2D([], [], color="#64748b", linestyle="--", label=f"Reference {float(frame['reference_prediction'].iloc[0]):.3f}"),
+            Line2D([], [], color="#2563eb", label="Prediction"),
         ],
         loc="lower center", ncol=4, frameon=False, fontsize=9,
     )
-    fig.suptitle(
-        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — unseen participant {participant}\n"
-        f"{len(series)} eligible trial waterfalls; fixed development reference",
-        fontsize=14,
-    )
-    fig.tight_layout(rect=(0, 0.028, 1, 0.965), h_pad=2.2)
+    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {participant}", fontsize=14)
+    fig.supxlabel("Predicted difficulty stage", y=0.060, fontsize=11)
+    fig.tight_layout(rect=(0, 0.10, 1, 0.96), h_pad=1.5)
     fig.savefig(path, dpi=155)
     plt.close(fig)
 
