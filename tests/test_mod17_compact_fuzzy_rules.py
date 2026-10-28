@@ -74,8 +74,8 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
             "participant_id": "P23", "model_row_index": 0,
             "difficulty_level": 10, "difficulty_stage": 3,
             "reference_prediction": 1.5,
-            "fuzzy_reconstruction": 2.279,
-            "predicted_difficulty_stage": 2.279,
+            "fuzzy_reconstruction": 2.329,
+            "predicted_difficulty_stage": 2.329,
         })
         records = [
             {"participant_id": "P23", "model_row_index": 0,
@@ -115,8 +115,8 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
         activations.loc[1, "out_of_anchor_range"] = True
         activations.loc[1, "linear_continuation"] = -.025
         activations.loc[1, "fuzzy_adjustment"] = .075
-        trial["fuzzy_reconstruction"] = 2.254
-        trial["predicted_difficulty_stage"] = 2.254
+        trial["fuzzy_reconstruction"] = 2.304
+        trial["predicted_difficulty_stage"] = 2.304
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary) / "participant_P23_D10.png"
             MOD17.plot_trial_explanation("auditory", trial, activations, features, output)
