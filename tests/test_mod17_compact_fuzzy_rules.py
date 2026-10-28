@@ -64,6 +64,35 @@ class MembershipTests(unittest.TestCase):
 
 
 class ExplanationPlotRegressionTests(unittest.TestCase):
+    def test_inference_selects_largest_stage_adjustment(self):
+        """Highest membership is NOT necessarily highest numeric influence."""
+        frame = pd.DataFrame([
+            {"feature": "mental_demand_score_0_to_10",
+             "value": 3., "low_membership": 0., "medium_membership": 1.,
+             "high_membership": 0., "low_consequent": -.4,
+             "medium_consequent": .05, "high_consequent": .5,
+             "fuzzy_adjustment": .05, "linear_continuation": 0.},
+            {"feature": "median_time_to_target_seconds",
+             "value": 1.7, "low_membership": 0., "medium_membership": .4,
+             "high_membership": .6, "low_consequent": -.2,
+             "medium_consequent": .1, "high_consequent": .6,
+             "fuzzy_adjustment": .4, "linear_continuation": 0.},
+        ]).set_index("feature")
+        feature, rec, active = MOD17._dominant_rule_detail(frame)
+        self.assertEqual(feature, "median_time_to_target_seconds")
+        self.assertEqual([cat for cat, _, _ in active], ["Medium", "High"])
+        self.assertAlmostEqual(
+            sum(degree * consequent for _, degree, consequent in active),
+            rec["fuzzy_adjustment"])
+
+    def test_explanation_trials_are_ordered_by_stage(self):
+        unsorted = pd.DataFrame({
+            "difficulty_stage": [3, 0, 2, 1],
+            "model_row_index": [0, 1, 2, 3],
+        })
+        ordered = MOD17._ordered_trials(unsorted)
+        self.assertEqual(list(ordered["difficulty_stage"]), [0, 1, 2, 3])
+
     def test_plot_reads_feature_name_from_index(self):
         """Regression: set_index('feature') must not cause KeyError('feature')."""
         feature = "mental_demand_score_0_to_10"
@@ -87,6 +116,10 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
             "medium_membership": 0.4,
             "high_membership": 0.6,
             "fuzzy_adjustment": 0.729,
+            "low_consequent": -0.625,
+            "medium_consequent": 0.0525,
+            "high_consequent": 1.18,
+            "linear_continuation": 0.,
             "out_of_anchor_range": False,
         }])
         with tempfile.TemporaryDirectory() as temporary:
@@ -156,7 +189,7 @@ class IntegrationTests(unittest.TestCase):
                 directory = output / model
                 self.assertEqual(len(rules[rules["model"] == model]), 3 * num)
                 self.assertTrue((directory / "membership_functions.png").is_file())
-                self.assertTrue((directory / "rule_usage_development_vs_test.png").is_file())
+                self.assertFalse((directory / "rule_usage_development_vs_test.png").exists())
                 for folder in ("rule_activations_test", "fuzzy_explanations_test"):
                     self.assertEqual(len(list((directory / folder).glob("participant_*.png"))), 6)
                 summary = pd.read_csv(directory / "explanations_test.csv")
