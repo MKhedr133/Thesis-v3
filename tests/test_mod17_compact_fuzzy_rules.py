@@ -63,6 +63,41 @@ class MembershipTests(unittest.TestCase):
             MOD17.memberships(np.inf, var)
 
 
+class ExplanationPlotRegressionTests(unittest.TestCase):
+    def test_plot_reads_feature_name_from_index(self):
+        """Regression: set_index('feature') must not cause KeyError('feature')."""
+        feature = "mental_demand_score_0_to_10"
+        trials = pd.DataFrame([{
+            "participant_id": "P23",
+            "model_row_index": 0,
+            "difficulty_level": 10,
+            "difficulty_stage": 3,
+            "reference_prediction": 1.500,
+            "fuzzy_reconstruction": 2.391,
+            "predicted_difficulty_stage": 2.391,
+            "explanation": "Illustrative regression test explanation.",
+            "out_of_anchor_range_count": 0,
+        }])
+        activations = pd.DataFrame([{
+            "participant_id": "P23",
+            "model_row_index": 0,
+            "feature": feature,
+            "value": 6.0,
+            "low_membership": 0.0,
+            "medium_membership": 0.4,
+            "high_membership": 0.6,
+            "fuzzy_adjustment": 0.729,
+            "out_of_anchor_range": False,
+        }])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "participant_P23.png"
+            MOD17.plot_participant_explanations(
+                "auditory", trials, activations, (feature,), output
+            )
+            self.assertTrue(output.is_file())
+            self.assertGreater(output.stat().st_size, 0)
+
+
 class IntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
