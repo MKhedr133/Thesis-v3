@@ -209,31 +209,110 @@ def _safe_participant_name(value: str) -> str:
     return f"participant_{value}.png"
 
 
-def plot_memberships(model_id: str, variables: dict[str, FuzzyVariable], output: Path) -> None:
+UNITS = {
+    "mental_demand_score_0_to_10": "Score (0–10)",
+    "median_time_between_qualifying_grabs_seconds": "Seconds",
+    "list_recheck_count": "Count",
+    "total_list_recheck_duration_seconds": "Seconds",
+    "median_time_to_target_seconds": "Seconds",
+    "median_irrelevant_focus_duration_seconds": "Seconds",
+    "median_head_turning_degrees": "Degrees",
+    "median_reach_duration_seconds": "Seconds",
+    "median_reach_path_ratio": "Ratio",
+    "performance_change_from_d0_percentage_points": "Percentage points",
+}
+
+
+def _ordered_trials(trial: pd.DataFrame) -> pd.DataFrame:
+    """Present stages in experimental order, not source-file row order."""
+    return trial.sort_values(["difficulty_stage", "model_row_index"], kind="stable")
+
+
+def _trial_activations(activations: pd.DataFrame, row: pd.Series,
+                       predictors: tuple[str, ...]) -> pd.DataFrame:
+    part = activations.loc[
+        activations["participant_id"].astype(str).eq(str(row["participant_id"]))
+        & activations["model_row_index"].eq(row["model_row_index"])
+    ]
+    if len(part) != len(predictors) or part["feature"].duplicated().any():
+        raise Mod17Error("Trial's feature activations are incomplete or duplicated")
+    return part.set_index("feature").loc[list(predictors)]
+
+
+def _dominant_rule_detail(part: pd.DataFrame) -> tuple[str, pd.Series, list[tuple[str, float, float]]]:
+    """Select by magnitude of numeric stage adjustment, never by membership."""
+    feature = max(part.index, key=lambda f: abs(float(part.loc[f, "fuzzy_adjustment"])))
+    rec = part.loc[feature]
+    active = [
+        (cat, float(rec[f"{cat.lower()}_membership"]),
+         float(rec[f"{cat.lower()}_consequent"]))
+        for cat in CATEGORIES if float(rec[f"{cat.lower()}_membership"]) > 1e-12
+    ]
+    if not active:
+        raise Mod17Error("No active category for dominant explanatory feature")
+    predicted = sum(weight * consequent for _, weight, consequent in active)
+    predicted += float(rec["linear_continuation"])
+    if not math.isclose(predicted, float(rec["fuzzy_adjustment"]),
+                        abs_tol=TOLERANCE, rel_tol=0):
+        raise Mod17Error("Displayed IF-THEN calculations do not reconstruct the feature adjustment")
+    return feature, rec, active
+
+
+def plot_memberships(model_id: str, variables: dict[str, FuzzyVariable],
+                     output: Path, example: pd.Series | None = None) -> None:
+    """Annotated model-specific calibration atlas; test marker is display-only."""
     n = len(variables)
-    fig, axes = plt.subplots(math.ceil(n / 2), 2, figsize=(15, 3.25 * math.ceil(n / 2)),
-                             squeeze=False)
+    fig, axes = plt.subplots(math.ceil(n / 2), 2,
+                             figsize=(15, 3.45 * math.ceil(n / 2)), squeeze=False)
     for ax, var in zip(axes.ravel(), variables.values()):
-        lo, _, hi = var.anchors()
-        span = max(hi - lo, 1.)
-        values = np.linspace(lo - .10 * span, hi + .10 * span, 160)
-        degrees = np.array([memberships(float(x), var)[0] for x in values])
-        for k, cat in enumerate(CATEGORIES):
-            ax.plot(values, degrees[:, k], label=cat, color=PALETTE[k], lw=2)
-        for val in sorted(set(var.anchors())):
-            ax.axvline(val, color="#94a3b8", ls=":", lw=0.8)
-        ax.set_title(_short_name(var.feature), fontsize=11)
-        ax.set_ylabel("Membership")
-        ax.set_xlabel("Original measured value")
-        ax.set_ylim(-0.03, 1.06)
-        ax.grid(alpha=.12)
+        low, middle, high = var.anchors()
+        span = max(high - low, 0.5)
+        xs = np.linspace(low - .07 * span, high + .07 * span, 160)
+        degrees = np.array([memberships(float(x), var)[0] for x in xs])
+        for k, category in enumerate(CATEGORIES):
+            ax.plot(xs, degrees[:, k], color=PALETTE[k], lw=2.3, label=category)
+        # Labels explicitly describe category anchors, not training observations.
+        anchors: dict[float, list[str]] = {}
+        for category, anchor in zip(CATEGORIES, var.anchors()):
+            anchors.setdefault(anchor, []).append(category)
+        for anchor in anchors:
+            ax.axvline(anchor, color="#94a3b8", ls=":", lw=1.0, zorder=0)
+        ax.set_xticks(list(anchors), [
+            "/".join(anchors[value]) + "\n" + f"{value:.3g}" for value in anchors
+        ])
+        if example is not None and var.feature in example:
+            observed = float(example[var.feature])
+            ax.axvline(observed, color="#0f172a", lw=1.5, ls="--",
+                       label="Example test observation")
+            strengths, _, outside = memberships(observed, var)
+            if not outside:
+                ax.scatter([observed] * 3, strengths, c=PALETTE, s=24,
+                           zorder=5, edgecolors="white", linewidths=.6)
+            ax.text(.98, .96, f"Example: {observed:.3g}" + (" *" if outside else ""),
+                    transform=ax.transAxes, ha="right", va="top", fontsize=8,
+                    bbox={"facecolor":"white", "alpha":.85, "edgecolor":"none"})
+        ax.set_title(_short_name(var.feature), fontsize=11, pad=9)
+        ax.set_ylabel("Membership (0–1)", fontsize=9)
+        ax.set_xlabel(UNITS.get(var.feature, "Original measurement"), fontsize=9)
+        ax.set_ylim(-.05, 1.12)
+        ax.grid(axis="y", alpha=.13)
+        ax.tick_params(axis="x", labelsize=8)
     for ax in axes.ravel()[n:]:
         ax.axis("off")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, frameon=False)
-    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — development-calibrated categories",
-                 y=1.005, fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, .97))
+    from matplotlib.lines import Line2D
+    handles = [Line2D([], [], color=color, lw=2.3, label=cat)
+               for cat, color in zip(CATEGORIES, PALETTE)]
+    if example is not None:
+        handles.append(Line2D([], [], color="#0f172a", lw=1.5, ls="--",
+                              label="Example test measurement (display only)"))
+    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — Low / Medium / High membership functions",
+                 y=.987, fontsize=15)
+    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, .953),
+               ncol=len(handles), frameon=False, fontsize=9)
+    fig.text(.5, .922, "Anchors: development minimum / median / maximum; "
+             "membership is not feature importance. * = outside development range.",
+             ha="center", va="top", fontsize=9, color="#475569")
+    fig.tight_layout(rect=(0, 0, 1, .89), h_pad=2.0, w_pad=2.0)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -241,28 +320,31 @@ def plot_memberships(model_id: str, variables: dict[str, FuzzyVariable], output:
 def plot_participant_activations(model_id: str, trial: pd.DataFrame,
                                  activations: pd.DataFrame, predictors: tuple[str, ...],
                                  output: Path) -> None:
-    fig, axes = plt.subplots(len(trial), 1,
-                             figsize=(9.5, max(3.2 * len(trial), 6)),
+    """Chronological, compact multi-trial membership heatmap."""
+    ordered = _ordered_trials(trial)
+    n = len(predictors)
+    fig, axes = plt.subplots(len(ordered), 1,
+                             figsize=(10.5, len(ordered) * (1.05 + .42 * n)),
                              squeeze=False)
-    for ax, (_, row) in zip(axes[:, 0], trial.iterrows()):
-        part = activations.loc[
-            (activations["participant_id"] == row["participant_id"])
-            & (activations["model_row_index"] == row["model_row_index"])
-        ].set_index("feature").loc[list(predictors)]
-        matrix = part[["low_membership", "medium_membership",
-                       "high_membership"]].to_numpy(dtype=float)
+    for ax, (_, row) in zip(axes[:, 0], ordered.iterrows()):
+        part = _trial_activations(activations, row, predictors)
+        matrix = part[[f"{c.lower()}_membership" for c in CATEGORIES]].to_numpy(dtype=float)
         ax.imshow(matrix, vmin=0, vmax=1, aspect="auto", cmap="Blues")
-        ax.set_yticks(range(len(predictors)), [_short_name(p) for p in predictors], fontsize=9)
-        ax.set_xticks(range(3), CATEGORIES)
-        for i in range(len(predictors)):
+        ax.set_yticks(range(n), [_short_name(p) for p in predictors], fontsize=9)
+        ax.set_xticks(range(3), CATEGORIES, fontsize=9)
+        for i in range(n):
             for k in range(3):
-                ax.text(k, i, f"{matrix[i, k]:.2f}", ha="center", va="center",
-                        fontsize=8, color="white" if matrix[i, k] > .55 else "#0f172a")
-        ax.set_title(f"D{int(row['difficulty_level'])} | MLR {row['predicted_difficulty_stage']:.3f}",
-                     fontsize=11)
-    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {trial['participant_id'].iloc[0]} | rule activation",
-                 fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, .97), h_pad=2.2)
+                ax.text(k, i, f"{matrix[i,k]:.2f}", ha="center", va="center",
+                        fontsize=8, color="white" if matrix[i,k] > .55 else "#0f172a")
+        ax.set_title(
+            f"D{int(row['difficulty_level'])}   |   Predicted stage {row['predicted_difficulty_stage']:.3f}",
+            fontsize=10, loc="left", pad=6)
+    fig.suptitle(
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {ordered['participant_id'].iloc[0]} | rule activation",
+        fontsize=14, y=.99)
+    fig.text(.5, .015, "Cells show category membership, not influence on the model prediction.",
+             ha="center", fontsize=9, color="#475569")
+    fig.tight_layout(rect=(0, .025, 1, .97), h_pad=.85)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -270,84 +352,119 @@ def plot_participant_activations(model_id: str, trial: pd.DataFrame,
 def plot_participant_explanations(model_id: str, trial: pd.DataFrame,
                                   activations: pd.DataFrame, predictors: tuple[str, ...],
                                   output: Path) -> None:
-    fig, axes = plt.subplots(len(trial), 1,
-                             figsize=(14, len(trial) * (2.7 + .34 * len(predictors))),
-                             squeeze=False)
-    for ax, (_, row) in zip(axes[:, 0], trial.iterrows()):
+    """Show IF-THEN arithmetic for the strongest feature, then *all* adjustments.
+
+    This is intentionally not a duplicate of the activation heatmap or SHAP
+    waterfall. Full rule details for every feature remain in activation CSVs.
+    """
+    from matplotlib.patches import FancyBboxPatch
+
+    ordered = _ordered_trials(trial)
+    fig, axes = plt.subplots(len(ordered), 1,
+                             figsize=(14.3, len(ordered) * 5.1), squeeze=False)
+    def card(ax, x, y, width, height, *, fill="#f1f5f9", border="#cbd5e1"):
+        ax.add_patch(FancyBboxPatch(
+            (x, y), width, height, boxstyle="round,pad=0.008,rounding_size=.014",
+            transform=ax.transAxes, linewidth=.9,
+            facecolor=fill, edgecolor=border, zorder=0))
+
+    for ax, (_, row) in zip(axes[:, 0], ordered.iterrows()):
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
         ax.axis("off")
-        subset = activations.loc[
-            (activations["participant_id"] == row["participant_id"])
-            & (activations["model_row_index"] == row["model_row_index"])
-        ].set_index("feature").loc[list(predictors)]
-        body = []
-        for feature, rec in subset.iterrows():
-            active = ", ".join(
-                f"{c} {rec[c.lower() + '_membership']:.2f}"
-                for c in CATEGORIES if rec[c.lower() + "_membership"] > 1e-12
-            )
-            label = _short_name(feature) + (" *" if rec["out_of_anchor_range"] else "")
-            body.append([label, f"{rec['value']:.3f}", active,
-                         f"{rec['fuzzy_adjustment']:+.3f}"])
-        table = ax.table(cellText=body,
-                         colLabels=["Measurement", "Value", "Active rules", "Stage adjustment"],
-                         colWidths=[.36, .12, .33, .17],
-                         loc="center", cellLoc="left", bbox=[.01, .16, .98, .73])
-        table.auto_set_font_size(False)
-        table.set_fontsize(9)
-        for (r, c), cell in table.get_celld().items():
-            cell.set_linewidth(.4)
-            cell.set_edgecolor("#cbd5e1")
-            if r == 0:
-                cell.set_facecolor("#e2e8f0")
-                cell.set_text_props(weight="bold")
-        ax.set_title(
-            f"D{int(row['difficulty_level'])}  |  Reference {row['reference_prediction']:.3f}"
-            f" + rules = {row['fuzzy_reconstruction']:.3f}"
-            f"  |  Frozen MLR {row['predicted_difficulty_stage']:.3f}"
-            f"  |  Assigned {int(row['difficulty_stage'])}",
-            loc="left", fontsize=11,
-        )
-        ax.text(.01, .08, row["explanation"], transform=ax.transAxes, fontsize=8,
-                va="center", wrap=True)
-        if row["out_of_anchor_range_count"]:
-            ax.text(.01, .015,
-                    "* Outside development anchor bounds: explicit linear continuation applied",
-                    transform=ax.transAxes, fontsize=8, color="#9a3412")
-    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {trial['participant_id'].iloc[0]} | fuzzy rule explanation",
-                 fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, .98), h_pad=2)
-    fig.savefig(output, dpi=150, bbox_inches="tight")
-    plt.close(fig)
+        part = _trial_activations(activations, row, predictors)
+        feature, rec, active = _dominant_rule_detail(part)
+        stage = int(row["difficulty_level"])
+        ax.text(.025, .965,
+                f"D{stage}   |   MLR prediction {row['predicted_difficulty_stage']:.3f}"
+                f"   |   Assigned stage {int(row['difficulty_stage'])}",
+                fontsize=12, weight="bold", va="top", transform=ax.transAxes)
+        ax.text(.025, .887, "DETAILED INFERENCE — largest absolute feature adjustment",
+                fontsize=8.7, color="#475569", weight="bold", transform=ax.transAxes)
+        # Measurement is on the left; up to two simultaneously active rules
+        # are in the middle; combined adjustment is on the right.
+        card(ax, .025, .595, .24, .255, fill="#eaf2f9")
+        ax.text(.042, .807, "RECORDED INPUT", fontsize=8, weight="bold",
+                color="#475569", transform=ax.transAxes)
+        ax.text(.042, .744, _short_name(feature), fontsize=10.3, weight="bold",
+                transform=ax.transAxes)
+        ax.text(.042, .654,
+                f"{float(rec['value']):.3f}  {UNITS.get(feature, '')}",
+                fontsize=11, transform=ax.transAxes)
+        ax.annotate("", xy=(.322, .724), xytext=(.268, .724),
+                    xycoords="axes fraction", textcoords="axes fraction",
+                    arrowprops={"arrowstyle":"->", "color":"#64748b", "lw":1.5})
+        # Consequents are the numerical THEN stage adjustments at the anchors.
+        n_active = len(active)
+        for idx, (category, weight, consequent) in enumerate(active):
+            x, width = (.337, .221) if n_active == 1 else (.317 + .135 * idx, .13)
+            if n_active == 1:
+                x, width = .35, .20
+            else:
+                x, width = (.316 if idx == 0 else .466), .139
+            card(ax, x, .595, width, .255, fill="#f7f5ff",
+                 border="#ddd6fe")
+            ax.text(x + .013, .806, f"IF {category}", fontsize=9.5,
+                    weight="bold", color="#5b21b6", transform=ax.transAxes)
+            ax.text(x + .013, .737, f"Weight {weight:.3f}", fontsize=9,
+                    transform=ax.transAxes)
+            ax.text(x + .013, .667, f"THEN {consequent:+.3f}", fontsize=9,
+                    weight="bold", transform=ax.transAxes)
+            ax.text(x + .013, .620, f"×  = {weight * consequent:+.3f}",
+                    fontsize=8, color="#475569", transform=ax.transAxes)
+        ax.annotate("", xy=(.686, .724), xytext=(.616, .724),
+                    xycoords="axes fraction", textcoords="axes fraction",
+                    arrowprops={"arrowstyle":"->", "color":"#64748b", "lw":1.5})
+        card(ax, .689, .595, .289, .255, fill="#e9f5ef", border="#a7d7b6")
+        ax.text(.707, .806, "RULE-WEIGHTED ADJUSTMENT", fontsize=8.2,
+                weight="bold", color="#166534", transform=ax.transAxes)
+        ax.text(.707, .730, f"{float(rec['fuzzy_adjustment']):+.3f} stage points",
+                fontsize=13.5, weight="bold", transform=ax.transAxes)
+        continuation = float(rec["linear_continuation"])
+        if abs(continuation) > 1e-12:
+            ax.text(.707, .662, f"Incl. continuation {continuation:+.3f} *",
+                    fontsize=8.5, color="#9a3412", transform=ax.transAxes)
+        else:
+            ax.text(.707, .662, "Σ (membership × THEN)", fontsize=9,
+                    color="#475569", transform=ax.transAxes)
 
+        # Show every feature adjustment, but do not repeat membership tables.
+        ax.text(.025, .522, "ALL FEATURE ADJUSTMENTS TO DEVELOPMENT REFERENCE",
+                fontsize=8.8, weight="bold", color="#475569",
+                transform=ax.transAxes)
+        nrows = math.ceil(len(predictors) / 2)
+        for i, feature_name in enumerate(predictors):
+            col = i // nrows
+            line = i % nrows
+            x = .028 if col == 0 else .525
+            y = .472 - .050 * line
+            val = float(part.loc[feature_name, "fuzzy_adjustment"])
+            suffix = " *" if bool(part.loc[feature_name, "out_of_anchor_range"]) else ""
+            ax.text(x, y, _short_name(feature_name) + suffix,
+                    fontsize=9.0, color="#334155", transform=ax.transAxes)
+            ax.text(x + .44, y, f"{val:+.3f}", fontsize=9.5,
+                    ha="right", weight="bold", transform=ax.transAxes)
 
-def participant_balanced_usage(activations: pd.DataFrame,
-                               predictors: tuple[str, ...]) -> np.ndarray:
-    """Mean per participant first; repeated trials are not independent people."""
-    means = (activations.groupby(["participant_id", "feature"], sort=False)
-             [["low_membership", "medium_membership", "high_membership"]]
-             .mean().groupby(level="feature").mean())
-    return means.loc[list(predictors)].to_numpy(dtype=float)
+        card(ax, .025, .085, .951, .092, fill="#e2e8f0")
+        ax.text(.045, .116,
+                f"Reference {row['reference_prediction']:.3f}  +  all adjustments"
+                f"  =  fuzzy {row['fuzzy_reconstruction']:.3f}"
+                f"  =  frozen MLR {row['predicted_difficulty_stage']:.3f}",
+                fontsize=11, weight="bold", transform=ax.transAxes)
+        if int(row["out_of_anchor_range_count"]):
+            ax.text(.027, .038,
+                    "* Outside development anchors: explicit linear continuation included"
+                    " (see CSV for full calculations).",
+                    fontsize=8.3, color="#9a3412", transform=ax.transAxes)
+        else:
+            ax.text(.027, .038,
+                    "Detailed IF–THEN calculation shown for one feature; all rules are retained in CSV.",
+                    fontsize=8.3, color="#64748b", transform=ax.transAxes)
 
-
-def plot_usage(model_id: str, development: pd.DataFrame, test: pd.DataFrame,
-               predictors: tuple[str, ...], output: Path) -> None:
-    matrices = [participant_balanced_usage(development, predictors),
-                participant_balanced_usage(test, predictors)]
-    fig, axes = plt.subplots(1, 2, figsize=(13, max(4.5, .53 * len(predictors) + 1.5)),
-                             sharey=True)
-    for ax, matrix, label in zip(axes, matrices,
-                                 ("Development (26 participants)", "Independent test (6 participants)")):
-        ax.imshow(matrix, vmin=0, vmax=1, aspect="auto", cmap="Blues")
-        ax.set_title(label)
-        ax.set_xticks(range(3), CATEGORIES)
-        ax.set_yticks(range(len(predictors)), [_short_name(p) for p in predictors], fontsize=9)
-        for i in range(len(predictors)):
-            for j in range(3):
-                ax.text(j, i, f"{matrix[i,j]:.2f}", ha="center", va="center",
-                        color="white" if matrix[i,j] > .55 else "#0f172a", fontsize=9)
-    fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — participant-balanced rule usage",
-                 fontsize=14)
-    fig.tight_layout(rect=(0, 0, 1, .96))
+    fig.suptitle(
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {ordered['participant_id'].iloc[0]} | fuzzy rule inference",
+        fontsize=14, y=.996)
+    fig.tight_layout(rect=(0, 0, 1, .98), h_pad=1.25)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -433,8 +550,9 @@ def run_analysis(*, modeling_data: pd.DataFrame, holdout_split: pd.DataFrame,
             ("activations_development.csv", da), ("activations_test.csv", ta)
         ):
             table.to_csv(directory / filename, index=False, float_format="%.17g")
-        plot_memberships(model_id, variables, directory / "membership_functions.png")
-        plot_usage(model_id, da, ta, spec.predictors, directory / "rule_usage_development_vs_test.png")
+        # Example marker is display-only: no held-out measurement sets rule boundaries.
+        example = test.sort_values(["participant_id", "difficulty_stage"]).groupby("participant_id").tail(1).iloc[0]
+        plot_memberships(model_id, variables, directory / "membership_functions.png", example=example)
         (directory / "rule_activations_test").mkdir()
         (directory / "fuzzy_explanations_test").mkdir()
         for participant, trials in ts.groupby("participant_id", sort=True):
