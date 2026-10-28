@@ -146,7 +146,7 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
         )
         self.assertEqual(
             equation,
-            "1.500 - 0.667 - 0.247 + 0.000 - 0.219 - 0.055"
+            "1.500 (reference) - 0.667 - 0.247 + 0.000 - 0.219 - 0.055"
             " - 0.015 + 0.120 + 0.112 + 0.024 ≈ 0.553"
         )
         self.assertNotIn("\\n", equation)
