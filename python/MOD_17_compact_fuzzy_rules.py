@@ -376,6 +376,16 @@ def _active_rule_calculation(rec: pd.Series) -> tuple[list[tuple[str, float, flo
     return active, continuation
 
 
+def _format_stage_calculation(reference: float, adjustments: list[float],
+                              reconstructed: float) -> str:
+    """Display the complete full-precision-verified sum on one rounded line."""
+    terms = "".join(
+        f" {'+' if value >= 0 else '-'} {abs(value):.3f}"
+        for value in adjustments
+    )
+    return f"{reference:.3f}{terms} ≈ {reconstructed:.3f}"
+
+
 def plot_trial_explanation(model_id: str, trial_row: pd.Series,
                            activations: pd.DataFrame, predictors: tuple[str, ...],
                            output: Path) -> None:
@@ -452,13 +462,13 @@ def plot_trial_explanation(model_id: str, trial_row: pd.Series,
             ax.text(x + .85, center_y - .133, f"THEN = {signed(consequent)}",
                     fontsize=8.5, weight="bold", va="center", color="#334155")
             ax.text(x + .85, center_y - .310,
-                    f"{weight:.3f} × ({signed(consequent)}) ≈ {signed(weighted)}",
+                    f"Contribution = {signed(weighted)}",
                     fontsize=8.0, va="center", color="#475569")
         arrow(62.5, 65.0, center_y)
 
         # The final box shows both the rule-weighted operation and its total.
         box(65.7, bottom, 32.7, height, "#e9f5ef", "#a7d7b6")
-        ax.text(66.7, center_y + .258, "COMBINED FEATURE ADJUSTMENT",
+        ax.text(66.7, center_y + .258, "FEATURE CONTRIBUTION",
                 fontsize=8.2, color="#166534", weight="bold", va="center")
         weighted_terms = " + ".join(
             f"{weight:.3f}×({signed(consequent)})"
@@ -470,29 +480,27 @@ def plot_trial_explanation(model_id: str, trial_row: pd.Series,
             ax.text(66.7, center_y - .145,
                     f"+ linear continuation ({signed(continuation)}) [outside anchors]",
                     fontsize=7.7, color="#9a3412", va="center")
-        else:
-            ax.text(66.7, center_y - .145, "= sum of active IF–THEN terms",
-                    fontsize=8.2, color="#64748b", va="center")
         ax.text(66.7, center_y - .322, f"= {signed(float(rec['fuzzy_adjustment']))} stage points",
                 fontsize=9.8, color="#166534", weight="bold", va="center")
 
-    # One complete numerical equation, in precisely the row order above.
-    box(1.5, .19, 96.9, 1.05, "#e2e8f0", "#cbd5e1")
-    ax.text(3.1, 1.08, "COMPLETE FUZZY RECONSTRUCTION (STAGE POINTS)",
-            fontsize=9.2, color="#334155", weight="bold", va="center")
-    # Break at five terms so the ten-predictor Cognitive model fits cleanly.
-    terms = [f"({signed(value)})" for value in adjustments]
-    chunks = [terms[i:i+5] for i in range(0, len(terms), 5)]
-    for index, chunk in enumerate(chunks):
-        prefix = f"{reference:.3f}" if index == 0 else ""
-        expr = prefix + " + " + " + ".join(chunk) if prefix else "+ " + " + ".join(chunk)
-        ax.text(3.1, .865 - .215 * index, expr,
-                fontsize=10.5, color="#0f172a", va="center")
-    ax.text(3.1, .325, f"≈ Fuzzy {reconstructed:.3f}   =   Frozen MLR {predicted:.3f}",
-            fontsize=11.5, weight="bold", color="#0f172a", va="center")
+    # Keep the complete rounded calculation on one line without changing
+    # the full-precision validation above.
+    box(1.5, .19, 96.9, .84, "#e2e8f0", "#cbd5e1")
+    equation = _format_stage_calculation(reference, adjustments, reconstructed)
+    equation_text = ax.text(
+        3.1, .61, equation, fontsize=11.0, weight="bold",
+        color="#0f172a", va="center",
+    )
+    # Fit even the ten-predictor Cognitive Later equation within its box.
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    available = ax.transData.transform((96.7, .61))[0] - ax.transData.transform((3.1, .61))[0]
+    rendered = equation_text.get_window_extent(renderer=renderer).width
+    if rendered > available:
+        equation_text.set_fontsize(max(7.5, 11.0 * available / rendered))
 
     fig.suptitle(
-        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {trial_row['participant_id']} | fuzzy rule inference",
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {trial_row['participant_id']}",
         fontsize=15, y=.997)
     fig.tight_layout(rect=(0, 0, 1, .975))
     fig.savefig(output, dpi=150, bbox_inches="tight")
