@@ -345,122 +345,156 @@ def plot_participant_activations(model_id: str, trial: pd.DataFrame,
     plt.close(fig)
 
 
-def plot_participant_explanations(model_id: str, trial: pd.DataFrame,
-                                  activations: pd.DataFrame, predictors: tuple[str, ...],
-                                  output: Path) -> None:
-    """Show IF-THEN arithmetic for the strongest feature, then *all* adjustments.
+def _safe_trial_plot_name(participant_id: str, difficulty_level: int) -> str:
+    """Avoid collisions and unsafe path components for stage-specific figures."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", participant_id):
+        raise Mod17Error("Unsafe participant ID for plot filename")
+    if difficulty_level not in (0, 2, 6, 10):
+        raise Mod17Error("Invalid assigned difficulty level for figure filename")
+    return f"participant_{participant_id}_D{difficulty_level}.png"
 
-    This is intentionally not a duplicate of the activation heatmap or SHAP
-    waterfall. Full rule details for every feature remain in activation CSVs.
+
+def _active_rule_calculation(rec: pd.Series) -> tuple[list[tuple[str, float, float, float]], float]:
+    """Return IF-category, membership, THEN-consequent, and weighted term.
+
+    Verify the rule sum plus any documented out-of-anchor continuation against
+    the existing frozen-model stage adjustment before drawing anything.
+    """
+    active: list[tuple[str, float, float, float]] = []
+    for category in CATEGORIES:
+        weight = float(rec[f"{category.lower()}_membership"])
+        if weight > 1e-12:
+            consequent = float(rec[f"{category.lower()}_consequent"])
+            active.append((category, weight, consequent, weight * consequent))
+    if not active or len(active) > 2:
+        raise Mod17Error("Invalid number of active linguistic rules")
+    continuation = float(rec["linear_continuation"])
+    combined = math.fsum([*(term[3] for term in active), continuation])
+    if not math.isclose(combined, float(rec["fuzzy_adjustment"]),
+                        rel_tol=0, abs_tol=TOLERANCE):
+        raise Mod17Error("Rule-weighted adjustment disagrees with the frozen contribution")
+    return active, continuation
+
+
+def plot_trial_explanation(model_id: str, trial_row: pd.Series,
+                           activations: pd.DataFrame, predictors: tuple[str, ...],
+                           output: Path) -> None:
+    """One independent stage figure; explain the actual IF-THEN arithmetic of ALL features.
+
+    Input -> active rule cards -> their weighted contribution -> final complete
+    reference + all adjustments equation. No membership-only summary is repeated.
     """
     from matplotlib.patches import FancyBboxPatch
 
-    ordered = _ordered_trials(trial)
-    fig, axes = plt.subplots(len(ordered), 1,
-                             figsize=(14.3, len(ordered) * 5.1), squeeze=False)
-    def card(ax, x, y, width, height, *, fill="#f1f5f9", border="#cbd5e1"):
+    part = _trial_activations(activations, trial_row, predictors)
+    n = len(predictors)
+    reference = float(trial_row["reference_prediction"])
+    predicted = float(trial_row["predicted_difficulty_stage"])
+    reconstructed = float(trial_row["fuzzy_reconstruction"])
+    adjustments = [float(part.loc[feature, "fuzzy_adjustment"]) for feature in predictors]
+    if not math.isclose(reference + math.fsum(adjustments), reconstructed,
+                        abs_tol=TOLERANCE, rel_tol=0):
+        raise Mod17Error("Displayed complete fuzzy inference does not reconstruct prediction")
+    if not math.isclose(predicted, reconstructed, abs_tol=TOLERANCE, rel_tol=0):
+        raise Mod17Error("Frozen MLR prediction and fuzzy reconstruction differ")
+
+    fig, ax = plt.subplots(figsize=(17, 3.35 + 1.43 * n))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, n + 2)
+    ax.axis("off")
+
+    def box(x: float, y: float, width: float, height: float,
+            fill: str, stroke: str = "#cbd5e1") -> None:
         ax.add_patch(FancyBboxPatch(
-            (x, y), width, height, boxstyle="round,pad=0.008,rounding_size=.014",
-            transform=ax.transAxes, linewidth=.9,
-            facecolor=fill, edgecolor=border, zorder=0))
+            (x, y), width, height,
+            boxstyle="round,pad=0.013,rounding_size=0.09",
+            linewidth=0.95, facecolor=fill, edgecolor=stroke))
 
-    for ax, (_, row) in zip(axes[:, 0], ordered.iterrows()):
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.axis("off")
-        part = _trial_activations(activations, row, predictors)
-        feature, rec, active = _dominant_rule_detail(part)
-        stage = int(row["difficulty_level"])
-        ax.text(.025, .965,
-                f"D{stage}   |   MLR prediction {row['predicted_difficulty_stage']:.3f}"
-                f"   |   Assigned stage {int(row['difficulty_stage'])}",
-                fontsize=12, weight="bold", va="top", transform=ax.transAxes)
-        ax.text(.025, .887, "DETAILED INFERENCE — largest absolute feature adjustment",
-                fontsize=8.7, color="#475569", weight="bold", transform=ax.transAxes)
-        # Measurement is on the left; up to two simultaneously active rules
-        # are in the middle; combined adjustment is on the right.
-        card(ax, .025, .595, .24, .255, fill="#eaf2f9")
-        ax.text(.042, .807, "RECORDED INPUT", fontsize=8, weight="bold",
-                color="#475569", transform=ax.transAxes)
-        ax.text(.042, .744, _short_name(feature), fontsize=10.3, weight="bold",
-                transform=ax.transAxes)
-        ax.text(.042, .654,
+    def arrow(x1: float, x2: float, y: float) -> None:
+        ax.annotate("", xy=(x2, y), xytext=(x1, y),
+                    arrowprops={"arrowstyle": "->", "lw": 1.5, "color": "#64748b"})
+
+    def signed(value: float) -> str:
+        return f"{value:+.3f}"
+
+    ax.text(2.0, n + 1.62,
+            f"D{int(trial_row['difficulty_level'])} (assigned stage "
+            f"{int(trial_row['difficulty_stage'])})  |  MLR prediction {predicted:.3f}",
+            fontsize=15, weight="bold", va="center", color="#0f172a")
+
+    for i, feature in enumerate(predictors):
+        rec = part.loc[feature]
+        active, continuation = _active_rule_calculation(rec)
+        center_y = n + 0.87 - i
+        bottom = center_y - .405
+        height = .81
+
+        # One input box per predictor.
+        box(1.5, bottom, 19.0, height, "#eaf2f9")
+        ax.text(2.4, center_y + .258, "RECORDED INPUT",
+                fontsize=8.0, color="#475569", weight="bold", va="center")
+        ax.text(2.4, center_y + .044, _short_name(feature),
+                fontsize=9.2, color="#0f172a", weight="bold", va="center")
+        ax.text(2.4, center_y - .222,
                 f"{float(rec['value']):.3f}  {UNITS.get(feature, '')}",
-                fontsize=11, transform=ax.transAxes)
-        ax.annotate("", xy=(.322, .724), xytext=(.268, .724),
-                    xycoords="axes fraction", textcoords="axes fraction",
-                    arrowprops={"arrowstyle":"->", "color":"#64748b", "lw":1.5})
-        # Consequents are the numerical THEN stage adjustments at the anchors.
-        n_active = len(active)
-        for idx, (category, weight, consequent) in enumerate(active):
-            x, width = (.337, .221) if n_active == 1 else (.317 + .135 * idx, .13)
-            if n_active == 1:
-                x, width = .35, .20
-            else:
-                x, width = (.316 if idx == 0 else .466), .139
-            card(ax, x, .595, width, .255, fill="#f7f5ff",
-                 border="#ddd6fe")
-            ax.text(x + .013, .806, f"IF {category}", fontsize=9.5,
-                    weight="bold", color="#5b21b6", transform=ax.transAxes)
-            ax.text(x + .013, .737, f"Weight {weight:.3f}", fontsize=9,
-                    transform=ax.transAxes)
-            ax.text(x + .013, .667, f"THEN {consequent:+.3f}", fontsize=9,
-                    weight="bold", transform=ax.transAxes)
-            ax.text(x + .013, .620, f"×  = {weight * consequent:+.3f}",
-                    fontsize=8, color="#475569", transform=ax.transAxes)
-        ax.annotate("", xy=(.686, .724), xytext=(.616, .724),
-                    xycoords="axes fraction", textcoords="axes fraction",
-                    arrowprops={"arrowstyle":"->", "color":"#64748b", "lw":1.5})
-        card(ax, .689, .595, .289, .255, fill="#e9f5ef", border="#a7d7b6")
-        ax.text(.707, .806, "RULE-WEIGHTED ADJUSTMENT", fontsize=8.2,
-                weight="bold", color="#166534", transform=ax.transAxes)
-        ax.text(.707, .730, f"{float(rec['fuzzy_adjustment']):+.3f} stage points",
-                fontsize=13.5, weight="bold", transform=ax.transAxes)
-        continuation = float(rec["linear_continuation"])
-        if abs(continuation) > 1e-12:
-            ax.text(.707, .662, f"Incl. continuation {continuation:+.3f} *",
-                    fontsize=8.5, color="#9a3412", transform=ax.transAxes)
-        else:
-            ax.text(.707, .662, "Σ (membership × THEN)", fontsize=9,
-                    color="#475569", transform=ax.transAxes)
+                fontsize=9.0, color="#334155", va="center")
+        arrow(20.9, 23.5, center_y)
 
-        # Show every feature adjustment, but do not repeat membership tables.
-        ax.text(.025, .522, "ALL FEATURE ADJUSTMENTS TO DEVELOPMENT REFERENCE",
-                fontsize=8.8, weight="bold", color="#475569",
-                transform=ax.transAxes)
-        nrows = math.ceil(len(predictors) / 2)
-        for i, feature_name in enumerate(predictors):
-            col = i // nrows
-            line = i % nrows
-            x = .028 if col == 0 else .525
-            y = .472 - .050 * line
-            val = float(part.loc[feature_name, "fuzzy_adjustment"])
-            suffix = " *" if bool(part.loc[feature_name, "out_of_anchor_range"]) else ""
-            ax.text(x, y, _short_name(feature_name) + suffix,
-                    fontsize=9.0, color="#334155", transform=ax.transAxes)
-            ax.text(x + .44, y, f"{val:+.3f}", fontsize=9.5,
-                    ha="right", weight="bold", transform=ax.transAxes)
+        # Maximum two active categories from the ordered, 3-set partition.
+        left_positions = [24.2, 43.0] if len(active) == 2 else [33.6]
+        for j, (category, weight, consequent, weighted) in enumerate(active):
+            x = left_positions[j]
+            box(x, bottom, 18.2, height, "#f7f5ff", "#ddd6fe")
+            ax.text(x + .85, center_y + .263, f"IF {category}",
+                    color="#5b21b6", fontsize=9.3, weight="bold", va="center")
+            ax.text(x + .85, center_y + .055, f"Membership = {weight:.3f}",
+                    fontsize=8.4, va="center", color="#334155")
+            ax.text(x + .85, center_y - .133, f"THEN = {signed(consequent)}",
+                    fontsize=8.5, weight="bold", va="center", color="#334155")
+            ax.text(x + .85, center_y - .310,
+                    f"{weight:.3f} × ({signed(consequent)}) ≈ {signed(weighted)}",
+                    fontsize=8.0, va="center", color="#475569")
+        arrow(62.5, 65.0, center_y)
 
-        card(ax, .025, .085, .951, .092, fill="#e2e8f0")
-        ax.text(.045, .116,
-                f"Reference {row['reference_prediction']:.3f}  +  all adjustments"
-                f"  =  fuzzy {row['fuzzy_reconstruction']:.3f}"
-                f"  =  frozen MLR {row['predicted_difficulty_stage']:.3f}",
-                fontsize=11, weight="bold", transform=ax.transAxes)
-        if int(row["out_of_anchor_range_count"]):
-            ax.text(.027, .038,
-                    "* Outside development anchors: explicit linear continuation included"
-                    " (see CSV for full calculations).",
-                    fontsize=8.3, color="#9a3412", transform=ax.transAxes)
+        # The final box shows both the rule-weighted operation and its total.
+        box(65.7, bottom, 32.7, height, "#e9f5ef", "#a7d7b6")
+        ax.text(66.7, center_y + .258, "COMBINED FEATURE ADJUSTMENT",
+                fontsize=8.2, color="#166534", weight="bold", va="center")
+        weighted_terms = " + ".join(
+            f"{weight:.3f}×({signed(consequent)})"
+            for _, weight, consequent, _ in active
+        )
+        ax.text(66.7, center_y + .035, weighted_terms,
+                fontsize=8.2, color="#334155", va="center")
+        if bool(rec["out_of_anchor_range"]):
+            ax.text(66.7, center_y - .145,
+                    f"+ linear continuation ({signed(continuation)}) [outside anchors]",
+                    fontsize=7.7, color="#9a3412", va="center")
         else:
-            ax.text(.027, .038,
-                    "Detailed IF–THEN calculation shown for one feature; all rules are retained in CSV.",
-                    fontsize=8.3, color="#64748b", transform=ax.transAxes)
+            ax.text(66.7, center_y - .145, "= sum of active IF–THEN terms",
+                    fontsize=8.2, color="#64748b", va="center")
+        ax.text(66.7, center_y - .322, f"= {signed(float(rec['fuzzy_adjustment']))} stage points",
+                fontsize=9.8, color="#166534", weight="bold", va="center")
+
+    # One complete numerical equation, in precisely the row order above.
+    box(1.5, .19, 96.9, 1.05, "#e2e8f0", "#cbd5e1")
+    ax.text(3.1, 1.08, "COMPLETE FUZZY RECONSTRUCTION (STAGE POINTS)",
+            fontsize=9.2, color="#334155", weight="bold", va="center")
+    # Break at five terms so the ten-predictor Cognitive model fits cleanly.
+    terms = [f"({signed(value)})" for value in adjustments]
+    chunks = [terms[i:i+5] for i in range(0, len(terms), 5)]
+    for index, chunk in enumerate(chunks):
+        prefix = f"{reference:.3f}" if index == 0 else ""
+        expr = prefix + " + " + " + ".join(chunk) if prefix else "+ " + " + ".join(chunk)
+        ax.text(3.1, .865 - .215 * index, expr,
+                fontsize=10.5, color="#0f172a", va="center")
+    ax.text(3.1, .325, f"≈ Fuzzy {reconstructed:.3f}   =   Frozen MLR {predicted:.3f}",
+            fontsize=11.5, weight="bold", color="#0f172a", va="center")
 
     fig.suptitle(
-        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {ordered['participant_id'].iloc[0]} | fuzzy rule inference",
-        fontsize=14, y=.996)
-    fig.tight_layout(rect=(0, 0, 1, .98), h_pad=1.25)
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {trial_row['participant_id']} | fuzzy rule inference",
+        fontsize=15, y=.997)
+    fig.tight_layout(rect=(0, 0, 1, .975))
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -559,9 +593,17 @@ def run_analysis(*, modeling_data: pd.DataFrame, holdout_split: pd.DataFrame,
             plot_participant_activations(
                 model_id, trials, ta, spec.predictors,
                 directory / "rule_activations_test" / filename)
-            plot_participant_explanations(
-                model_id, trials, ta, spec.predictors,
-                directory / "fuzzy_explanations_test" / filename)
+            # Explanations are separate per participant and assigned stage.
+            if trials["difficulty_level"].duplicated().any():
+                raise Mod17Error(f"{model_id}/{participant}: repeated assigned stage")
+            for _, trial_row in _ordered_trials(trials).iterrows():
+                trial_name = _safe_trial_plot_name(
+                    str(participant), int(trial_row["difficulty_level"])
+                )
+                plot_trial_explanation(
+                    model_id, trial_row, ta, spec.predictors,
+                    directory / "fuzzy_explanations_test" / trial_name
+                )
     pd.DataFrame(calibration).to_csv(output_dir / "fuzzy_calibration.csv", index=False,
                                       float_format="%.17g")
     pd.DataFrame(rules).to_csv(output_dir / "fuzzy_rules.csv", index=False,
