@@ -383,7 +383,7 @@ def _format_stage_calculation(reference: float, adjustments: list[float],
         f" {'+' if value >= 0 else '-'} {abs(value):.3f}"
         for value in adjustments
     )
-    return f"{reference:.3f}{terms} ≈ {reconstructed:.3f}"
+    return f"{reference:.3f} (reference){terms} ≈ {reconstructed:.3f}"
 
 
 def plot_trial_explanation(model_id: str, trial_row: pd.Series,
@@ -457,13 +457,12 @@ def plot_trial_explanation(model_id: str, trial_row: pd.Series,
             box(x, bottom, 18.2, height, "#f7f5ff", "#ddd6fe")
             ax.text(x + .85, center_y + .263, f"IF {category}",
                     color="#5b21b6", fontsize=9.3, weight="bold", va="center")
-            ax.text(x + .85, center_y + .055, f"Membership = {weight:.3f}",
-                    fontsize=8.4, va="center", color="#334155")
-            ax.text(x + .85, center_y - .133, f"THEN = {signed(consequent)}",
+            ax.text(x + .85, center_y + .040,
+                    f"THEN Contribution = {signed(consequent)}",
                     fontsize=8.5, weight="bold", va="center", color="#334155")
-            ax.text(x + .85, center_y - .310,
-                    f"Contribution = {signed(weighted)}",
-                    fontsize=8.0, va="center", color="#475569")
+            ax.text(x + .85, center_y - .265,
+                    f"Membership = {weight:.3f}",
+                    fontsize=8.4, va="center", color="#475569")
         arrow(62.5, 65.0, center_y)
 
         # The final box shows both the rule-weighted operation and its total.
