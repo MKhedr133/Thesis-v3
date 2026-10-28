@@ -280,12 +280,12 @@ def plot_participant_explanations(model_id: str, trial: pd.DataFrame,
             & (activations["model_row_index"] == row["model_row_index"])
         ].set_index("feature").loc[list(predictors)]
         body = []
-        for _, rec in subset.iterrows():
+        for feature, rec in subset.iterrows():
             active = ", ".join(
                 f"{c} {rec[c.lower() + '_membership']:.2f}"
                 for c in CATEGORIES if rec[c.lower() + "_membership"] > 1e-12
             )
-            label = _short_name(rec["feature"]) + (" *" if rec["out_of_anchor_range"] else "")
+            label = _short_name(feature) + (" *" if rec["out_of_anchor_range"] else "")
             body.append([label, f"{rec['value']:.3f}", active,
                          f"{rec['fuzzy_adjustment']:+.3f}"])
         table = ax.table(cellText=body,
