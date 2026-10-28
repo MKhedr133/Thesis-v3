@@ -34,23 +34,24 @@ The frozen models contain 7, 4, 9 and 10 predictors: **21, 12, 27 and 30 one-fea
 
 Numerical adjustments equal coefficient-centred linear attribution under the same reference, including the independent linear SHAP contribution values used in MOD-16. Thus MOD-17 adds a *linguistic and rule-traceable representation*, not independent causal or predictive evidence. Whether it improves therapist understanding requires separate evaluation.
 
-## Files and agreed four plots
+## Files and revised three-figure design
 
 Shared outputs:
-- fuzzy_calibration.csv: original feature names, minimum/median/maximum, development means, frozen coefficients and tied-anchor flags.
-- fuzzy_rules.csv: every model's rule IDs, categories, anchors and frozen numerical consequents.
-- verification.csv: participant/trial counts, prediction mismatch, fuzzy reconstruction error and out-of-anchor trial counts. **No verification plot.**
-- manifest.json: method, source boundaries, extrapolation and limitations.
+- fuzzy_calibration.csv: original predictor names, development minimum/median/maximum, development means, frozen coefficients, tied-anchor flags.
+- fuzzy_rules.csv: all 90 rule IDs, their category anchors and numerical consequents.
+- verification.csv: participant/trial counts, absolute fuzzy reconstruction errors, unchanged MOD-14 prediction comparison and outside-anchor trial counts. **No verification plot.**
+- manifest.json: method, calibration and extrapolation contracts, scientific boundaries.
 
-In each model subdirectory:
-- activations_development.csv / activations_test.csv: one row per trial and predictor including measured values, all three memberships, three consequents, reconstructed feature adjustment and any continuation.
-- explanations_development.csv / explanations_test.csv: one row per trial, original MLR prediction, fuzzy reconstruction, reference, encoded assigned stage, errors, exceptions and short explanations.
-- membership_functions.png: Low/Medium/High curves and development anchors for **every predictor**.
-- rule_activations_test/participant_<ID>.png: **all six test participants**, each with all eligible trials and predictor-level memberships.
-- fuzzy_explanations_test/participant_<ID>.png: **all six test participants**, each with trial measurements, active rules, signed adjustments, reference and predicted stages.
-- rule_usage_development_vs_test.png: development/test heatmaps side by side, shared 0–1 colour scale, one mean membership per participant before aggregation, no pooling for threshold definition.
+In each model's output directory:
+- activations_development.csv and activations_test.csv: measured values, all Low/Medium/High weights and consequents, combined feature adjustments and any linear continuation, for every eligible trial and original predictor.
+- explanations_development.csv and explanations_test.csv: reference, assigned stage, frozen MLR output, reconstructed output, participant/stage identifiers, exceptional values and readable text.
+- **membership_functions.png**: a labelled atlas of three overlapping membership curves for every predictor, with per-feature measurement units, labelled development anchors and a dashed **illustrative test measurement**. That marker uses the first participant ID's highest eligible stage for display only; it has no effect on category calibration. Multiple categories can share an anchor if the development distribution contains ties. Test values outside the development range are marked.
+- **rule_activations_test/participant_<ID>.png**: compact multi-trial heatmap showing each original predictor's three memberships. Trials always appear in increasing stage order (D0, D2, D6, D10; Cognitive later D2, D6, D10). The numbers are *category compatibility*, not predictor importance or predictive probabilities.
+- **fuzzy_explanations_test/participant_<ID>.png**: a different kind of output: for each eligible trial, show the recorded measurement with the **largest absolute stage adjustment**, its active **IF category / membership / THEN consequent** rule cards, multiplication and weighted result, followed by the complete list of all predictors' signed stage adjustments and the reference-plus-adjustments reconstruction. If the strongest feature is outside development anchors, indicate the added linear continuation. Only the strongest feature's rules are expanded graphically to preserve readability with 9–10 Cognitive predictors; every feature's exact memberships and consequents remain available in the CSVs.
 
-The proposed outputs include 24 test-participant activation figures, 24 test-participant explanation figures, 4 membership atlases and 4 paired usage heatmaps. Cognitive later excludes D0. We do not duplicate SHAP waterfalls or feature-importance rankings.
+**Global development-vs-test usage heatmap removed:** Memberships for both groups remain available in the numerical exports, but the removed graph did not independently demonstrate interpretability or prediction influence. No SHAP waterfalls or SHAP-like importance bar plots are added.
+
+The resulting visualization set has **4 membership atlases, 24 independent-test participant activation figures, and 24 participant explanation figures = 52 plots** (assuming all six held-out participants provide an eligible trial for each model). Four separate model workflows and stage eligibility are preserved.
 
 ## Execution
 
