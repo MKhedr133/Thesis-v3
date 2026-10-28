@@ -139,6 +139,20 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
         with self.assertRaises(MOD17.Mod17Error):
             MOD17._safe_trial_plot_name("P23", 4)
 
+    def test_stage_equation_is_one_line_with_each_contribution(self):
+        equation = MOD17._format_stage_calculation(
+            1.5, [-0.667, -0.247, 0.0, -0.219, -0.055, -0.015,
+                  0.120, 0.112, 0.024], 0.553
+        )
+        self.assertEqual(
+            equation,
+            "1.500 - 0.667 - 0.247 + 0.000 - 0.219 - 0.055"
+            " - 0.015 + 0.120 + 0.112 + 0.024 ≈ 0.553"
+        )
+        self.assertNotIn("\\n", equation)
+        self.assertNotIn("Fuzzy", equation)
+        self.assertNotIn("Frozen MLR", equation)
+
     def test_explanation_trials_are_ordered_by_stage(self):
         unsorted = pd.DataFrame({
             "difficulty_stage": [3, 0, 2, 1],
