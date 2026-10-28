@@ -304,7 +304,8 @@ def plot_memberships(model_id: str, variables: dict[str, FuzzyVariable],
                for cat, color in zip(CATEGORIES, PALETTE)]
     if example is not None:
         handles.append(Line2D([], [], color="#0f172a", lw=1.5, ls="--",
-                              label="Example test measurement (display only)"))
+                              label=(f"Example: {example['participant_id']} "
+                                     f"D{int(example['difficulty_level'])} (display only)")))
     fig.suptitle(f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — Low / Medium / High membership functions",
                  y=.987, fontsize=15)
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, .925),
