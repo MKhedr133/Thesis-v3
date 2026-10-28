@@ -551,7 +551,10 @@ def run_analysis(*, modeling_data: pd.DataFrame, holdout_split: pd.DataFrame,
         ):
             table.to_csv(directory / filename, index=False, float_format="%.17g")
         # Example marker is display-only: no held-out measurement sets rule boundaries.
-        example = test.sort_values(["participant_id", "difficulty_stage"]).groupby("participant_id").tail(1).iloc[0]
+        eligible_test = MOD14.prepare_model_frame(test_data, model_id=model_id)
+        example = eligible_test.sort_values(
+            ["participant_id", "difficulty_stage"], ascending=[True, False]
+        ).iloc[0]
         plot_memberships(model_id, variables, directory / "membership_functions.png", example=example)
         (directory / "rule_activations_test").mkdir()
         (directory / "fuzzy_explanations_test").mkdir()
