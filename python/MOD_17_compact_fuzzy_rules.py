@@ -310,10 +310,7 @@ def plot_memberships(model_id: str, variables: dict[str, FuzzyVariable],
                  y=.987, fontsize=15)
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(.5, .925),
                ncol=len(handles), frameon=False, fontsize=9)
-    fig.text(.5, .865, "Anchors: development minimum / median / maximum; "
-             "membership is not feature importance. * = outside development range.",
-             ha="center", va="top", fontsize=9, color="#475569")
-    fig.tight_layout(rect=(0, 0, 1, .82), h_pad=2.0, w_pad=2.0)
+    fig.tight_layout(rect=(0, 0, 1, .87), h_pad=2.0, w_pad=2.0)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
@@ -343,9 +340,7 @@ def plot_participant_activations(model_id: str, trial: pd.DataFrame,
     fig.suptitle(
         f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — {ordered['participant_id'].iloc[0]} | rule activation",
         fontsize=14, y=.99)
-    fig.text(.5, .015, "Cells show category membership, not influence on the model prediction.",
-             ha="center", fontsize=9, color="#475569")
-    fig.tight_layout(rect=(0, .025, 1, .97), h_pad=.85)
+    fig.tight_layout(rect=(0, .005, 1, .97), h_pad=.85)
     fig.savefig(output, dpi=150, bbox_inches="tight")
     plt.close(fig)
 
