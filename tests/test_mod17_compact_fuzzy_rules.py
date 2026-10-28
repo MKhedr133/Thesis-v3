@@ -64,26 +64,80 @@ class MembershipTests(unittest.TestCase):
 
 
 class ExplanationPlotRegressionTests(unittest.TestCase):
-    def test_inference_selects_largest_stage_adjustment(self):
-        """Highest membership is NOT necessarily highest numeric influence."""
-        frame = pd.DataFrame([
-            {"feature": "mental_demand_score_0_to_10",
-             "value": 3., "low_membership": 0., "medium_membership": 1.,
-             "high_membership": 0., "low_consequent": -.4,
-             "medium_consequent": .05, "high_consequent": .5,
-             "fuzzy_adjustment": .05, "linear_continuation": 0.},
-            {"feature": "median_time_to_target_seconds",
-             "value": 1.7, "low_membership": 0., "medium_membership": .4,
-             "high_membership": .6, "low_consequent": -.2,
-             "medium_consequent": .1, "high_consequent": .6,
-             "fuzzy_adjustment": .4, "linear_continuation": 0.},
-        ]).set_index("feature")
-        feature, rec, active = MOD17._dominant_rule_detail(frame)
-        self.assertEqual(feature, "median_time_to_target_seconds")
-        self.assertEqual([cat for cat, _, _ in active], ["Medium", "High"])
-        self.assertAlmostEqual(
-            sum(degree * consequent for _, degree, consequent in active),
-            rec["fuzzy_adjustment"])
+    @staticmethod
+    def sample_frame():
+        features = (
+            "mental_demand_score_0_to_10",
+            "median_time_to_target_seconds",
+        )
+        trial = pd.Series({
+            "participant_id": "P23", "model_row_index": 0,
+            "difficulty_level": 10, "difficulty_stage": 3,
+            "reference_prediction": 1.5,
+            "fuzzy_reconstruction": 2.279,
+            "predicted_difficulty_stage": 2.279,
+        })
+        records = [
+            {"participant_id": "P23", "model_row_index": 0,
+             "feature": features[0], "value": 6.,
+             "low_membership": 0., "medium_membership": .4,
+             "high_membership": .6,
+             "low_consequent": -.625, "medium_consequent": .0525,
+             "high_consequent": 1.18,
+             "fuzzy_adjustment": .729,
+             "linear_continuation": 0., "out_of_anchor_range": False},
+            {"participant_id": "P23", "model_row_index": 0,
+             "feature": features[1], "value": 1.7,
+             "low_membership": 0., "medium_membership": .5,
+             "high_membership": .5,
+             "low_consequent": -.2, "medium_consequent": .05,
+             "high_consequent": .15,
+             "fuzzy_adjustment": .10,
+             "linear_continuation": 0., "out_of_anchor_range": False},
+        ]
+        return trial, pd.DataFrame(records), features
+
+    def test_all_predictors_have_rule_arithmetic_and_single_trial_figure(self):
+        trial, activations, features = self.sample_frame()
+        for _, record in activations.iterrows():
+            active, correction = MOD17._active_rule_calculation(record)
+            self.assertAlmostEqual(
+                sum(term[3] for term in active) + correction,
+                record["fuzzy_adjustment"])
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "participant_P23_D10.png"
+            MOD17.plot_trial_explanation("auditory", trial, activations, features, output)
+            self.assertTrue(output.is_file())
+            self.assertGreater(output.stat().st_size, 1000)
+
+    def test_outside_anchor_continuation_is_included(self):
+        trial, activations, features = self.sample_frame()
+        activations.loc[1, "out_of_anchor_range"] = True
+        activations.loc[1, "linear_continuation"] = -.025
+        activations.loc[1, "fuzzy_adjustment"] = .075
+        trial["fuzzy_reconstruction"] = 2.254
+        trial["predicted_difficulty_stage"] = 2.254
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "participant_P23_D10.png"
+            MOD17.plot_trial_explanation("auditory", trial, activations, features, output)
+            self.assertTrue(output.is_file())
+
+    def test_detects_inconsistent_rule_arithmetic(self):
+        trial, activations, features = self.sample_frame()
+        activations.loc[0, "fuzzy_adjustment"] += 0.1
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(MOD17.Mod17Error):
+                MOD17.plot_trial_explanation(
+                    "auditory", trial, activations, features,
+                    Path(temporary) / "inconsistent.png")
+
+    def test_safe_stage_specific_filenames(self):
+        self.assertEqual(
+            MOD17._safe_trial_plot_name("P23", 10), "participant_P23_D10.png")
+        with self.assertRaises(MOD17.Mod17Error):
+            MOD17._safe_trial_plot_name("../P23", 10)
+        with self.assertRaises(MOD17.Mod17Error):
+            MOD17._safe_trial_plot_name("P23", 4)
 
     def test_explanation_trials_are_ordered_by_stage(self):
         unsorted = pd.DataFrame({
@@ -92,43 +146,6 @@ class ExplanationPlotRegressionTests(unittest.TestCase):
         })
         ordered = MOD17._ordered_trials(unsorted)
         self.assertEqual(list(ordered["difficulty_stage"]), [0, 1, 2, 3])
-
-    def test_plot_reads_feature_name_from_index(self):
-        """Regression: set_index('feature') must not cause KeyError('feature')."""
-        feature = "mental_demand_score_0_to_10"
-        trials = pd.DataFrame([{
-            "participant_id": "P23",
-            "model_row_index": 0,
-            "difficulty_level": 10,
-            "difficulty_stage": 3,
-            "reference_prediction": 1.500,
-            "fuzzy_reconstruction": 2.391,
-            "predicted_difficulty_stage": 2.391,
-            "explanation": "Illustrative regression test explanation.",
-            "out_of_anchor_range_count": 0,
-        }])
-        activations = pd.DataFrame([{
-            "participant_id": "P23",
-            "model_row_index": 0,
-            "feature": feature,
-            "value": 6.0,
-            "low_membership": 0.0,
-            "medium_membership": 0.4,
-            "high_membership": 0.6,
-            "fuzzy_adjustment": 0.729,
-            "low_consequent": -0.625,
-            "medium_consequent": 0.0525,
-            "high_consequent": 1.18,
-            "linear_continuation": 0.,
-            "out_of_anchor_range": False,
-        }])
-        with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "participant_P23.png"
-            MOD17.plot_participant_explanations(
-                "auditory", trials, activations, (feature,), output
-            )
-            self.assertTrue(output.is_file())
-            self.assertGreater(output.stat().st_size, 0)
 
 
 class IntegrationTests(unittest.TestCase):
@@ -190,8 +207,16 @@ class IntegrationTests(unittest.TestCase):
                 self.assertEqual(len(rules[rules["model"] == model]), 3 * num)
                 self.assertTrue((directory / "membership_functions.png").is_file())
                 self.assertFalse((directory / "rule_usage_development_vs_test.png").exists())
-                for folder in ("rule_activations_test", "fuzzy_explanations_test"):
-                    self.assertEqual(len(list((directory / folder).glob("participant_*.png"))), 6)
+                activation_images = list(
+                    (directory / "rule_activations_test").glob("participant_*.png"))
+                explanation_images = list(
+                    (directory / "fuzzy_explanations_test").glob("participant_*_D*.png"))
+                self.assertEqual(len(activation_images), 6)
+                expected_per_person = 3 if model == "cognitive_later" else 4
+                self.assertEqual(len(explanation_images), 6 * expected_per_person)
+                # All stage-specific files are named uniquely.
+                self.assertEqual(len({p.name for p in explanation_images}),
+                                 len(explanation_images))
                 summary = pd.read_csv(directory / "explanations_test.csv")
                 self.assertTrue(np.allclose(summary["predicted_difficulty_stage"],
                                             summary["fuzzy_reconstruction"], atol=1e-8, rtol=0))
