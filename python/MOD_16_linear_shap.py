@@ -23,7 +23,7 @@ import MOD_14_direct_linear_regression_evaluation as MOD14
 
 
 RECONSTRUCTION_ATOL = 1e-8
-METHOD = "linear_shap_independent_interventional"
+METHOD = "linear_shap_independent_interventional_stage_reference"
 DISPLAY_NAMES = {
     # Verbatim names from difficulty_modelling_procedure(4).docx,
     # section 4, Statistical feature selection (Measurement column).
@@ -47,8 +47,6 @@ class Mod16Error(ValueError):
 @dataclass(frozen=True)
 class ModelExplanation:
     model_id: str
-    reference_prediction: float
-    background_means: pd.Series
     development: pd.DataFrame
     test: pd.DataFrame
 
@@ -61,10 +59,10 @@ def explain_linear_frame(
     observations: pd.DataFrame,
     split_name: str,
 ) -> tuple[pd.DataFrame, float, pd.Series]:
-    """Explain observations using all eligible development rows as background.
+    """Explain one known assigned stage against same-stage development rows.
 
-    SHAP Independent masker retains every background row (no 100-row
-    default subsampling). Assert equality to exact coefficient-centering.
+    The background never includes held-out observations. This retrospective
+    reference convention is independent/interventional, not conditional SHAP.
     """
     predictors = tuple(model.predictors)
     if not predictors or len(set(predictors)) != len(predictors):
@@ -77,6 +75,11 @@ def explain_linear_frame(
             raise Mod16Error(f"{model_id}: {name} missing predictors {sorted(missing)}")
         if not np.isfinite(frame.loc[:, predictors].to_numpy(dtype=float)).all():
             raise Mod16Error(f"{model_id}: {name} has non-finite predictors")
+    if "difficulty_stage" not in background or "difficulty_stage" not in observations:
+        raise Mod16Error(f"{model_id}: missing difficulty_stage")
+    stage_set = set(background["difficulty_stage"].tolist())
+    if len(stage_set) != 1 or set(observations["difficulty_stage"].tolist()) != stage_set:
+        raise Mod16Error(f"{model_id}: background and observations must have the same single stage")
     terms = ("Intercept", *predictors)
     if set(model.coefficients.index) != set(terms):
         raise Mod16Error(f"{model_id}: coefficient terms do not match registry")
@@ -119,11 +122,15 @@ def explain_linear_frame(
     rows = pd.DataFrame({
         "model": model_id,
         "split": split_name,
-        "model_row_index": np.arange(len(observations)),
+        "model_row_index": (
+            observations["model_row_index"].to_numpy()
+            if "model_row_index" in observations else np.arange(len(observations))
+        ),
         "participant_id": observations["participant_id"].astype(str).to_numpy(),
         "condition": observations["condition_name"].to_numpy(),
         "difficulty_level": observations["difficulty_level"].to_numpy(),
         "difficulty_stage": observations["difficulty_stage"].to_numpy(),
+        "reference_stage": next(iter(stage_set)),
         "reference_prediction": base_values,
         "predicted_difficulty_stage": predicted,
         "reconstructed_prediction": reconstructed,
@@ -201,10 +208,10 @@ def _save_distribution_plot(
         ax.set_title(f"{group_name} (n={len(frame)})")
     axes[0].invert_yaxis()  # Shared y-axis must be inverted exactly once.
     fig.suptitle(
-        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — SHAP distribution",
+        f"{MOD14.MODEL_DISPLAY_NAMES[model_id]} — within-stage SHAP distribution",
         fontsize=14,
     )
-    fig.supxlabel("SHAP value (stage points)", fontsize=11)
+    fig.supxlabel("SHAP relative to assigned-stage development reference (stage points)", fontsize=11)
     fig.tight_layout(rect=(0, 0.055, 1, 0.96))
     fig.savefig(path, dpi=180)
     plt.close(fig)
@@ -313,9 +320,9 @@ def _save_test_participant_waterfall(
 ) -> None:
     """Draw genuine cumulative SHAP waterfalls for all eligible test trials.
 
-    Each subplot starts at the fixed development reference and follows the
-    signed feature contributions to the frozen model's prediction. All
-    eligible trials from one test participant are grouped into one PNG.
+    Each subplot starts at its assigned-stage development reference and
+    follows the signed contributions to the frozen prediction. All eligible
+    trials from one held-out participant are grouped into one PNG.
     """
     if frame.empty or frame["participant_id"].nunique() != 1:
         raise Mod16Error(f"{model_id}: each waterfall must show one test participant")
@@ -372,7 +379,10 @@ def _save_test_participant_waterfall(
         ax.set_xlim(*xlimits)
         ax.grid(axis="x", alpha=0.14)
         ax.set_axisbelow(True)
-        ax.set_title(f"D{stage}  |  Predicted {prediction:.3f}", fontsize=10)
+        ax.set_title(
+            f"D{stage} (assigned {actual})  |  Stage reference {reference:.3f}"
+            f"  →  Predicted {prediction:.3f}", fontsize=10,
+        )
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
 
@@ -380,7 +390,7 @@ def _save_test_participant_waterfall(
         handles=[
             Patch(facecolor="#0f766e", label="Positive SHAP"),
             Patch(facecolor="#b45309", label="Negative SHAP"),
-            Line2D([], [], color="#64748b", linestyle="--", label=f"Reference {float(frame['reference_prediction'].iloc[0]):.3f}"),
+            Line2D([], [], color="#64748b", linestyle="--", label="Assigned-stage development reference"),
             Line2D([], [], color="#2563eb", label="Prediction"),
         ],
         loc="lower center", ncol=4, frameon=False, fontsize=9,
@@ -422,7 +432,7 @@ def run_analysis(
     test_predictions: pd.DataFrame,
     output_dir: Path,
 ) -> pd.DataFrame:
-    """Explain both splits without reading held-out rows into the background."""
+    """Explain both splits against development-only assigned-stage backgrounds."""
     output_dir = Path(output_dir)
     if output_dir.exists() and any(output_dir.iterdir()):
         raise Mod16Error(f"Refusing to overwrite existing output directory: {output_dir}")
@@ -449,18 +459,58 @@ def run_analysis(
             raise Mod16Error(f"{model_id}: non-test participant entered test explanations")
         if not set(background["difficulty_stage"]).issubset(spec.allowed_stages):
             raise Mod16Error(f"{model_id}: ineligible stage entered background")
-        dev_attr, base, means = explain_linear_frame(
-            model_id=model_id, model=model, background=background,
-            observations=background, split_name="development",
+        if not set(unseen["difficulty_stage"]).issubset(spec.allowed_stages):
+            raise Mod16Error(f"{model_id}: ineligible stage entered test explanations")
+        # Restore the original MOD-14 row order after explaining each stage.
+        background = background.reset_index(drop=True).assign(
+            model_row_index=np.arange(len(background)),
         )
-        test_attr, test_base, test_means = explain_linear_frame(
-            model_id=model_id, model=model, background=background,
-            observations=unseen, split_name="test",
+        unseen = unseen.reset_index(drop=True).assign(
+            model_row_index=np.arange(len(unseen)),
         )
-        if not np.isclose(base, test_base, atol=RECONSTRUCTION_ATOL, rtol=0.0):
-            raise Mod16Error(f"{model_id}: split-specific reference mismatch")
-        if not np.allclose(means, test_means, atol=RECONSTRUCTION_ATOL, rtol=0.0):
-            raise Mod16Error(f"{model_id}: background altered by test observations")
+        dev_groups, test_groups, stage_references = [], [], {}
+        for stage in spec.allowed_stages:
+            stage_background = background.loc[background["difficulty_stage"].eq(stage)]
+            stage_unseen = unseen.loc[unseen["difficulty_stage"].eq(stage)]
+            if stage_background.empty or stage_unseen.empty:
+                raise Mod16Error(f"{model_id}: missing eligible stage {stage}")
+            dev_stage, base, means = explain_linear_frame(
+                model_id=model_id, model=model, background=stage_background,
+                observations=stage_background, split_name="development",
+            )
+            test_stage, test_base, test_means = explain_linear_frame(
+                model_id=model_id, model=model, background=stage_background,
+                observations=stage_unseen, split_name="test",
+            )
+            if not np.isclose(base, test_base, atol=RECONSTRUCTION_ATOL, rtol=0):
+                raise Mod16Error(f"{model_id}/{stage}: split-specific reference mismatch")
+            if not np.allclose(means, test_means, atol=RECONSTRUCTION_ATOL, rtol=0):
+                raise Mod16Error(f"{model_id}/{stage}: test data affected reference")
+            stage_references[int(stage)] = float(base)
+            for predictor, mean in means.items():
+                references.append({
+                    "model": model_id,
+                    "reference_stage": int(stage),
+                    "difficulty_level": next(
+                        level for level, code in MOD14.DIFFICULTY_STAGE_BY_LEVEL.items()
+                        if code == stage
+                    ),
+                    "predictor": predictor,
+                    "development_mean": float(mean),
+                    "reference_prediction": float(base),
+                    "development_participants": int(stage_background["participant_id"].nunique()),
+                    "development_observations": len(stage_background),
+                    "eligible_stages": ",".join(map(str, spec.allowed_stages)),
+                    "method": METHOD,
+                })
+            dev_groups.append(dev_stage)
+            test_groups.append(test_stage)
+        dev_attr = pd.concat(dev_groups, ignore_index=True).sort_values(
+            "model_row_index", kind="stable",
+        ).reset_index(drop=True)
+        test_attr = pd.concat(test_groups, ignore_index=True).sort_values(
+            "model_row_index", kind="stable",
+        ).reset_index(drop=True)
         for split_name, attr, exported in (
             ("development", dev_attr, development_predictions),
             ("test", test_attr, test_predictions),
@@ -470,21 +520,13 @@ def run_analysis(
                 "model": model_id, "split": split_name, "method": METHOD,
                 "participant_count": int(attr["participant_id"].nunique()),
                 "observation_count": len(attr),
-                "reference_prediction": base,
+                "reference_scope": "assigned_stage",
+                "reference_predictions_by_stage": json.dumps(stage_references, sort_keys=True),
                 "max_absolute_reconstruction_error": float(attr["reconstruction_error"].abs().max()),
                 "max_absolute_mod14_prediction_mismatch": mismatch,
                 "passes": True,
             })
-        for predictor, mean in means.items():
-            references.append({
-                "model": model_id, "predictor": predictor, "development_mean": float(mean),
-                "reference_prediction": base,
-                "development_participants": int(background["participant_id"].nunique()),
-                "development_observations": len(background),
-                "eligible_stages": ",".join(map(str, spec.allowed_stages)),
-                "method": METHOD,
-            })
-        results[model_id] = ModelExplanation(model_id, base, means, dev_attr, test_attr)
+        results[model_id] = ModelExplanation(model_id, dev_attr, test_attr)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     for model_id, result in results.items():
@@ -516,15 +558,16 @@ def run_analysis(
     (output_dir / "manifest.json").write_text(
         json.dumps({
             "method": METHOD,
-            "masker": "shap.maskers.Independent with all model-eligible development rows",
+            "masker": "shap.maskers.Independent with same-stage eligible development rows",
             "shap_version": shap.__version__,
             "model_ids": list(results),
             "visualizations": {
-                "distribution": "side-by-side development/test, ordered by development mean absolute SHAP",
-                "local": "one multi-trial cumulative waterfall figure per held-out participant and model",
+                "distribution": "within-stage development/test, ordered by development mean absolute SHAP",
+                "local": "each trial starts at its assigned-stage development reference",
                 "correlation": "trial-level Pearson r across eligible development rows only; no test observations",
             },
-            "reference_definition": "per-model fitted prediction at eligible development predictor means",
+            "reference_definition": "per-model, per-assigned-stage fitted prediction at eligible development-stage means",
+            "explanation_scope": "retrospective known assigned stage, not unknown-stage inference",
             "test_data_in_background": False,
             "tolerance_absolute": RECONSTRUCTION_ATOL,
             "note": "Attributions describe fixed model predictions; they are not causal or prescribing recommendations.",

@@ -39,14 +39,15 @@ class ExactLinearShapTests(unittest.TestCase):
         self.background = pd.DataFrame({
             self.predictors[0]: [4.0, 6.0],
             self.predictors[1]: [30.0, 20.0],
+            "difficulty_stage": [2, 2],
         })
         self.observations = pd.DataFrame({
             self.predictors[0]: [7.0, 4.0],
             self.predictors[1]: [20.0, 30.0],
             "participant_id": ["P01", "P02"],
             "condition_name": ["Visual", "Visual"],
-            "difficulty_level": [6, 2],
-            "difficulty_stage": [2, 1],
+            "difficulty_level": [6, 6],
+            "difficulty_stage": [2, 2],
         })
 
     def test_exact_linear_shap_matches_coefficient_centering(self):
@@ -76,6 +77,32 @@ class ExactLinearShapTests(unittest.TestCase):
         )
         self.assertAlmostEqual(base1, base2)
         pd.testing.assert_series_equal(means1, means2)
+
+    def test_cross_stage_background_is_rejected(self):
+        wrong = self.observations.copy()
+        wrong.loc[1, "difficulty_stage"] = 1
+        with self.assertRaisesRegex(MOD16.Mod16Error, "same single stage"):
+            MOD16.explain_linear_frame(
+                model_id="visual", model=self.model, background=self.background,
+                observations=wrong, split_name="test",
+            )
+
+    def test_changed_reference_preserves_model_prediction(self):
+        earlier = self.background.copy()
+        earlier.loc[:, self.predictors[0]] -= 2
+        first, base_a, _ = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=self.background,
+            observations=self.observations, split_name="test",
+        )
+        second, base_b, _ = MOD16.explain_linear_frame(
+            model_id="visual", model=self.model, background=earlier,
+            observations=self.observations, split_name="test",
+        )
+        self.assertNotAlmostEqual(base_a, base_b)
+        np.testing.assert_allclose(
+            first["predicted_difficulty_stage"], second["predicted_difficulty_stage"],
+        )
+        self.assertLess(float(second["reconstruction_error"].abs().max()), 1e-8)
 
     def test_prediction_integrity_is_mandatory(self):
         result, _, _ = MOD16.explain_linear_frame(
@@ -237,6 +264,13 @@ class FourModelIntegrationTests(unittest.TestCase):
             references = pd.read_csv(directory / "development_references.csv")
             later = references.loc[references["model"].eq("cognitive_later")]
             self.assertTrue(later["eligible_stages"].eq("1,2,3").all())
+            self.assertEqual(set(later["reference_stage"]), {1, 2, 3})
+            self.assertFalse(
+                references.duplicated(["model", "reference_stage", "predictor"]).any()
+            )
+            self.assertEqual(
+                len(references[["model", "reference_stage"]].drop_duplicates()), 15,
+            )
             for model_id, spec in MOD14.build_model_registry().items():
                 directory_model = directory / model_id
                 dev = pd.read_csv(directory_model / "attributions_development.csv")
@@ -246,10 +280,32 @@ class FourModelIntegrationTests(unittest.TestCase):
                 self.assertTrue(set(dev["difficulty_stage"]).issubset(set(spec.allowed_stages)))
                 self.assertEqual(int(dev["participant_id"].nunique()), 26)
                 self.assertEqual(int(test["participant_id"].nunique()), 6)
-                self.assertAlmostEqual(
-                    float(dev["reference_prediction"].iloc[0]),
-                    float(test["reference_prediction"].iloc[0]),
-                )
+                self.assertTrue(dev["reference_stage"].eq(dev["difficulty_stage"]).all())
+                self.assertTrue(test["reference_stage"].eq(test["difficulty_stage"]).all())
+                self.assertEqual(set(dev["reference_stage"]), set(spec.allowed_stages))
+                self.assertEqual(set(test["reference_stage"]), set(spec.allowed_stages))
+                for stage in spec.allowed_stages:
+                    dev_group = dev.loc[dev["difficulty_stage"].eq(stage)]
+                    test_group = test.loc[test["difficulty_stage"].eq(stage)]
+                    ref_group = references.loc[
+                        references["model"].eq(model_id)
+                        & references["reference_stage"].eq(stage)
+                    ]
+                    baseline = float(ref_group["reference_prediction"].iloc[0])
+                    np.testing.assert_allclose(
+                        dev_group["reference_prediction"], baseline, atol=1e-8, rtol=0,
+                    )
+                    np.testing.assert_allclose(
+                        test_group["reference_prediction"], baseline, atol=1e-8, rtol=0,
+                    )
+                    self.assertAlmostEqual(
+                        float(dev_group["predicted_difficulty_stage"].mean()),
+                        baseline, places=8,
+                    )
+                    signed_means = dev_group[
+                        [f"shap__{name}" for name in spec.predictors]
+                    ].mean()
+                    self.assertLess(float(signed_means.abs().max()), 1e-8)
                 self.assertGreater(
                     (directory_model / "contribution_distributions.png").stat().st_size, 500
                 )
@@ -281,6 +337,10 @@ class FourModelIntegrationTests(unittest.TestCase):
                 directory / "cognitive_later" / "attributions_development.csv"
             )
             self.assertNotIn(0, later_frame["difficulty_stage"].tolist())
+            import json
+            manifest = json.loads((directory / "manifest.json").read_text())
+            self.assertEqual(manifest["method"], MOD16.METHOD)
+            self.assertIn("per-assigned-stage", manifest["reference_definition"])
             self.assertTrue((directory / "manifest.json").is_file())
 
     def test_wrong_saved_predictions_fail_before_writing(self):
