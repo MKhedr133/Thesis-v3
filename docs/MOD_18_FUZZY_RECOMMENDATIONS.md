@@ -18,24 +18,29 @@ The shared directory contains `fuzzy_calibration.csv`, `rule_registry.csv`, `cro
 
 Three output modes:
 
-- `--render-figure-set`: **one PNG-only folder with 98 plots**. The `summary/` directory contains four **recommendation distribution** figures (both cohorts) and four development-only **rule-activation heatmaps**. Each distribution PNG has two side-by-side panels: development (26 participants) and held-out test (six), with grouped—not stacked—bars for thresholds 0.10 and 0.20. The categories are Increase, Maintain and Decrease; Review is omitted. Each bar shows count and percentage, with the percentage denominator defined as non-Review participant-stage observations *at that threshold*. A participant may contribute more than one stage; counts are not numbers of distinct participants. Both panels are descriptive; **never choose or revise the threshold based on test results**.
+- `--render-figure-set`: **one output folder with 98 PNG plots and auditable CSV/JSON data**. The `summary/` directory contains four **recommendation distribution** figures (both cohorts) and four development-only **rule-activation heatmaps**. Each distribution PNG has two side-by-side panels: development (26 participants) and held-out test (six), with grouped—not stacked—bars for thresholds 0.10 and 0.20. The categories are Increase, Maintain and Decrease; Review is omitted. Each bar shows count and percentage, with the percentage denominator defined as non-Review participant-stage observations *at that threshold*. A participant may contribute more than one stage; counts are not numbers of distinct participants. Both panels are descriptive; **never choose or revise the threshold based on test results**.
 - The heatmaps show ten rule rows (D1–D5; I1–I5) against individual **development observations** ordered and separated by assigned stage, with activation strength 0–1. They do not aggregate to stage means.
 - The `test/<model>/` directories contain 90 compact individual PNGs: Visual 24; Auditory 24; Cognitive primary 24; Cognitive later 18. Each card shows (1) assigned stage, (2) safeguarded action and next stage when applicable, (3) strongest **written IF–THEN rule** with its strength and (4) activation strengths of the *other four rules of the same action*. Maintain has no Maintain rule, so its card explains the threshold fallback and shows the strongest non-qualifying rules. Review clearly indicates no actionable recommendation and displays provisional or available rule evidence.
 - `--scope development --render-summary-plots`: development-only heatmaps and threshold-comparison bar charts plus CSV/JSON exports; no test data or individual development figures. `--scope test --render-plots`: individual test cards plus CSV/JSON exports, guarded by policy freeze.
 
-Figures avoid explanatory paragraphs, repeated provenance and separate limitations blocks. The combined report requires a previously documented freeze and never writes CSV/JSON into its PNG-only output folder.
+Figures avoid explanatory paragraphs, repeated provenance and separate limitations blocks. The combined export requires a previously documented policy freeze. It writes figures to `summary/` (eight PNGs) and `test/<model>/` (90 PNGs), and numerical files to `data/`:
+
+- `data/recommendation_distribution.csv` records the plotted model/scope/threshold/action counts, denominators and percentages. The denominator excludes Review; a zero denominator has an undefined percentage, not 0%.
+- `data/development/` and `data/test/` each contain the original CSV results for all four models (recommendations, memberships, rule activations, coverage, paired threshold changes, review flags and summaries), plus calibration, the rule registry and JSON validation/manifest metadata. Test results are descriptive, never used for policy selection.
+
+**Figure labels only:** raw codes D0, D2, D6 and D10 display as **Stage 0, Stage 1, Stage 2 and Stage 3**, respectively. CSV values, file names, model inputs and the adjacent-stage recommendation logic retain their original coding. The Cognitive later rule referencing D0 performance is labelled “Stage 0 performance” inside the figures.
 
 The compact presentation takes inspiration from Martínez et al. (2023), Martínez-Cid et al. (2024), Lee et al. (2020), Schoonderwoerd et al. (2021) and Liao et al. (2020), as considered within the 21-paper literature review. These studies support therapist-facing explanations, not our particular rule consequents or thresholds.
 
 ## Running the analysis
 
-Once the proposed policy is documented and **frozen**, generate the single PNG folder. The `summary/` and `test/` subdirectories contain only PNGs:
+Once the proposed policy is documented and **frozen**, generate the combined folder. The `summary/` and `test/` directories contain the PNGs, and `data/` contains CSV/JSON results:
 
 ```powershell
 & $Python .\python\MOD_18_fuzzy_recommendations.py `
   --modeling-data $ModelingData `
   --holdout-split $HoldoutSplit `
-  --output-dir ".\outputs\MOD_18_png_figures" `
+  --output-dir ".\outputs\MOD_18_results_v2" `
   --render-figure-set `
   --enable-locked-test-evaluation `
   --frozen-policy-id "ACTUAL_FROZEN_POLICY_ID" `
@@ -47,4 +52,4 @@ The CLI requires a nonempty policy identifier but does **not** verify external a
 For development-only numerical exports and eight summary figures, use `--scope development --render-summary-plots` instead, with a separate output directory.
  
 ## Verification and scientific limits
-Synthetic tests are included for predictor restrictions, membership endpoints and ties, min/max inference, threshold endpoints, boundary cases, missing values, D0 baseline ordering, output counts, consolidated PNG-only export and plot-mode safeguards. The official private-data pipeline must be executed separately. Rule counts and stage comparisons describe behaviour, not clinical recommendation accuracy. Repeated observations from the same participant are not independent people. The 5+5 libraries and the Review policy require therapist approval before clinical use; do not change them using held-out outcomes. The MOD-18 branch must not be merged without explicit approval and verified checks.
+Synthetic tests include predictor restrictions, membership endpoints and ties, min/max inference, threshold endpoints, boundaries, missing values, D0 baseline ordering, stage-label presentation, 98-plot counts, both participant-scope CSV exports and plot-mode safeguards. The official private-data pipeline must be executed separately. Rule counts and stage comparisons describe behaviour, not clinical recommendation accuracy. Repeated observations from the same participant are not independent people. The 5+5 libraries and the Review policy require therapist approval before clinical use; do not change them using held-out outcomes. The MOD-18 branch must not be merged without explicit approval and verified checks.
