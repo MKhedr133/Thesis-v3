@@ -345,6 +345,15 @@ def evaluate_model(model: str, source: pd.DataFrame, refs, registry, thresholds=
         if level not in LEVELS or int(row["difficulty_stage"]) != LEVELS.index(level):
             raise RecommendationError(f"{model}: invalid stage coding")
     frame = frame.loc[frame["difficulty_stage"].isin(spec.allowed_stages)]
+    # Every assigned stage should have one record for every participant.
+    # Fail loudly rather than silently generating fewer held-out figures.
+    expected_people = set(source["participant_id"].astype(str))
+    for stage in spec.allowed_stages:
+        observed_people = set(frame.loc[
+            frame["difficulty_stage"].eq(stage), "participant_id"].astype(str))
+        if observed_people != expected_people:
+            raise RecommendationError(
+                f"{model}/D{LEVELS[stage]}: missing or unexpected participant-stage records")
     if frame.duplicated(["participant_id", "difficulty_level"]).any():
         raise RecommendationError(f"{model}: duplicate participant-stage trial")
     frame = frame.sort_values(["participant_id", "difficulty_level"], kind="stable")
@@ -454,7 +463,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
              color="#17324D", va="bottom", transform=ax0.transAxes)
     ax0.text(.99, .2, f"{result.upper()}  ·  τ {row['threshold']:.2f}",
              ha="right", size=12, color="#3A596F", transform=ax0.transAxes)
-    ax1.text(0, 1.01, "MEASURED  /  D-STAGE MEDIAN  /  L·M·H",
+    ax1.text(0, 1.01, "MEASURED / STAGE MEDIAN / LOW·MED·HIGH",
              size=9, weight="bold", color="#385269", transform=ax1.transAxes)
     for i, (feature, v) in enumerate(m.iterrows()):
         key = BY_FEATURE[feature]
@@ -468,7 +477,8 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
             "—" if pd.isna(v["low"]) else
             f"{v['low']:.2f} · {v['medium']:.2f} · {v['high']:.2f}"
         )
-        ax1.text(.0, y, name, fontsize=9.4, va="center", transform=ax1.transAxes)
+        ax1.text(.0, y, f"{key}  {name}", fontsize=9.4, va="center",
+                 transform=ax1.transAxes)
         ax1.text(.52, y, f"{observed} / {ref}", fontsize=9.1,
                  va="center", transform=ax1.transAxes)
         ax1.text(.99, y, weights, fontsize=8.9, ha="right",
@@ -500,8 +510,12 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
              fontsize=11, transform=ax3.transAxes)
     ax3.text(.61, .51, f"Threshold {row['threshold']:.2f}",
              fontsize=10, transform=ax3.transAxes)
-    ax3.text(0, .19, "Why: " + _short_reason(model, row["strongest_rules"]),
-             fontsize=9.6, transform=ax3.transAxes)
+    brief = (
+        "Review: " + str(row["review_flags"]).split("|")[0]
+        if result == "Review"
+        else "Why: " + _short_reason(model, row["strongest_rules"])
+    )
+    ax3.text(0, .19, brief[:115], fontsize=9.6, transform=ax3.transAxes)
     ax3.text(0, -.055, f"MOD-18 {VERSION}  ·  development-stage calibration  ·  "
              "candidate rules; therapist approval required",
              fontsize=8.2, transform=ax3.transAxes, color="#718294")
@@ -531,6 +545,20 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
                  .size().rename("count").reset_index())
         tally.insert(0, "model", model)
         tally.to_csv(folder / "model_summary.csv", index=False)
+        review_cases = recs.loc[recs["final_action"].eq("Review")].copy()
+        review_cases.to_csv(folder / "review_flags.csv", index=False)
+        # Compare the two thresholds on the same participant-stage row.
+        paired = recs.pivot(
+            index=["participant_id", "difficulty_level"],
+            columns="threshold", values=["raw_action", "final_action"])
+        paired.columns = [
+            f"{action}_at_{threshold:.2f}" for action, threshold in paired.columns]
+        paired = paired.reset_index()
+        paired["raw_changed"] = (
+            paired["raw_action_at_0.10"] != paired["raw_action_at_0.20"])
+        paired["safeguarded_changed"] = (
+            paired["final_action_at_0.10"] != paired["final_action_at_0.20"])
+        paired.to_csv(folder / "threshold_comparison.csv", index=False)
         overview.append(tally)
         for _, r in recs.iterrows():
             if (r["model"] != "cognitive_primary"
@@ -553,6 +581,20 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
         destination / "cross_model_summary.csv", index=False)
     pd.DataFrame(routed).to_csv(
         destination / "routed_recommendations.csv", index=False)
+    with (destination / "validation_report.json").open("w", encoding="utf-8") as f:
+        json.dump({
+            "scope": scope,
+            "models": {
+                model: {
+                    "unique_trial_count": int(
+                        recs[["participant_id", "difficulty_level"]].drop_duplicates().shape[0]),
+                    "review_decisions": int(recs["final_action"].eq("Review").sum()),
+                    "stages": sorted(map(int, recs["difficulty_level"].unique())),
+                }
+                for model, (recs, _, _) in results.items()
+            },
+            "interpretation": "counts of candidate rule behaviour, not clinical accuracy",
+        }, f, indent=2)
     manifest = {
         "module": "MOD-18", "rule_version": VERSION, "scope": scope,
         "policy_id": policy_id, "calibration": "development-only, per model-stage",
