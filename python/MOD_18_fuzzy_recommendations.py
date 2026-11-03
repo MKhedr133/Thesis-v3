@@ -20,7 +20,7 @@ import pandas as pd
 
 import MOD_14_direct_linear_regression_evaluation as MOD14
 
-VERSION = "candidate-v0.1"
+VERSION = "candidate-v0.2-boundary-review"
 THRESHOLDS = (0.10, 0.20)
 LEVELS = (0, 2, 6, 10)
 
@@ -358,40 +358,70 @@ def evaluate_rules(model: str, measured):
 
 def decide(model: str, stage: int, threshold: float, scores, actions, audit,
            measured, baseline_status: str = "not_applicable"):
-    """Preserve the raw decision separately from the safeguarded proposal."""
+    """Three actions; Review only for impossible transitions.
+
+    Invalid inputs give a separate Unavailable *status*, never a fabricated
+    recommendation. Other warnings are retained as nonblocking diagnostics.
+    """
     inc, dec = actions["Increase"], actions["Decrease"]
-    if not (math.isfinite(inc) and math.isfinite(dec)):
-        raw = "Review"
-    elif inc >= threshold and dec >= threshold:
-        raw = "Review"
-    elif inc >= threshold:
-        raw = "Increase"
-    elif dec >= threshold:
-        raw = "Decrease"
+    diagnostics = list(audit)
+    if baseline_status == "missing_participant_baseline":
+        diagnostics.append("MISSING_PARTICIPANT_D0_BASELINE")
+    elif baseline_status == "ambiguous_participant_baseline":
+        diagnostics.append("AMBIGUOUS_PARTICIPANT_D0_BASELINE")
+
+    invalid = (
+        any(flag.startswith("MISSING_OR_INVALID:") for flag in diagnostics)
+        or baseline_status in (
+            "missing_participant_baseline", "ambiguous_participant_baseline"
+        )
+        or not (math.isfinite(inc) and math.isfinite(dec))
+    )
+
+    if invalid:
+        raw = "Unavailable"
+        final = "Unavailable"
+        if not (math.isfinite(inc) and math.isfinite(dec)):
+            diagnostics.append("NONFINITE_RULE_SUPPORT")
     else:
-        raw = "Maintain"
-    flags = list(audit)
-    if raw == "Review" and not flags:
-        flags.append("CONFLICTING_ACTIONS")
-    if raw == "Decrease" and stage == 0:
-        flags.append("LOWER_BOUNDARY")
-    if raw == "Increase" and stage == 3:
-        flags.append("UPPER_BOUNDARY")
-    if baseline_status == "unavailable_before_trial":
-        flags.append("D0_BASELINE_NOT_YET_OBSERVED")
-    if raw == "Maintain" and not flags:
-        demand = measured.get(FEATURES["M"])
-        if demand is not None and demand["memberships"]["H"] >= threshold:
-            flags.append("UNMATCHED_HIGH_MENTAL_DEMAND")
-        if model == "cognitive_later":
+        if inc >= threshold and dec >= threshold:
+            diagnostics.append("COMPETING_RULE_SUPPORT")
+            if math.isclose(inc, dec, rel_tol=0, abs_tol=1e-12):
+                # Exact ties do not justify choosing either direction.
+                raw = "Maintain"
+                diagnostics.append("TIED_RULE_SUPPORT")
+            else:
+                raw = "Increase" if inc > dec else "Decrease"
+        elif inc >= threshold:
+            raw = "Increase"
+        elif dec >= threshold:
+            raw = "Decrease"
+        else:
+            raw = "Maintain"
+
+        boundary = (raw == "Decrease" and stage == 0) or (
+            raw == "Increase" and stage == 3
+        )
+        final = "Review" if boundary else raw
+
+        if raw == "Maintain":
+            demand = measured.get(FEATURES["M"])
+            if demand is not None and demand["memberships"]["H"] >= threshold:
+                diagnostics.append("UNMATCHED_HIGH_MENTAL_DEMAND")
+            if model == "cognitive_later":
+                loss = measured.get(FEATURES["G"])
+                if loss is not None and loss["memberships"]["H"] >= threshold:
+                    diagnostics.append("UNMATCHED_HIGH_PERFORMANCE_DROP")
+        if model == "cognitive_later" and raw == "Increase":
             loss = measured.get(FEATURES["G"])
-            if loss is not None and loss["memberships"]["H"] >= threshold:
-                flags.append("UNMATCHED_HIGH_PERFORMANCE_DROP")
-    if model == "cognitive_later" and raw == "Increase":
-        loss = measured.get(FEATURES["G"])
-        if loss is not None and loss["value"] > 0:
-            flags.append("INCREASE_WITH_D0_PERFORMANCE_DROP")
-    final = "Review" if flags else raw
+            if loss is not None and loss["value"] > 0:
+                diagnostics.append("INCREASE_WITH_D0_PERFORMANCE_DROP")
+
+    review_flags = []
+    if final == "Review":
+        review_flags.append(
+            "LOWER_BOUNDARY" if stage == 0 else "UPPER_BOUNDARY"
+        )
     current = LEVELS[stage]
     proposed = {
         "Increase": LEVELS[stage + 1] if stage < 3 else None,
@@ -406,30 +436,37 @@ def decide(model: str, stage: int, threshold: float, scores, actions, audit,
                      if name.startswith(lead) and math.isfinite(score)
                      and math.isclose(score, support, abs_tol=1e-12)]
     return {
-        "raw_action": raw, "final_action": final, "proposed_level": proposed,
-        "review_flags": "|".join(dict.fromkeys(flags)),
+        "raw_action": raw, "final_action": final,
+        "recommendation_status": (
+            "data_unavailable" if final == "Unavailable" else
+            "boundary_review" if final == "Review" else "issued"
+        ),
+        "proposed_level": proposed,
+        "review_flags": "|".join(review_flags),
+        "diagnostic_flags": "|".join(dict.fromkeys(diagnostics)),
         "strongest_rules": "|".join(strongest),
     }
 
 
 def baseline_status_for(row, original: pd.DataFrame, model: str) -> str:
-    """Detect retrospective Cognitive D0 values unavailable in trial order."""
+    """Confirm this participant has a unique Cognitive Stage 0 reference.
+
+    The later-stage performance-change predictor is already defined relative
+    to the participant's D0 measurement in the modelling dataset. This
+    lookup checks participant/condition provenance, not chronological order.
+    """
     if model != "cognitive_later":
         return "not_applicable"
-    if "trial_order" not in original.columns:
-        return "unknown_trial_order"
     sub = original.loc[
-        original["participant_id"].eq(row["participant_id"])
+        original["participant_id"].astype(str).eq(str(row["participant_id"]))
         & original["condition_name"].eq("Cognitive")
         & pd.to_numeric(original["difficulty_level"], errors="coerce").eq(0)
     ]
-    if len(sub) != 1:
-        return "unavailable_before_trial"
-    prev = pd.to_numeric(sub.iloc[0]["trial_order"], errors="coerce")
-    current = pd.to_numeric(row.get("trial_order"), errors="coerce")
-    if not math.isfinite(float(prev)) or not math.isfinite(float(current)):
-        return "unknown_trial_order"
-    return "available" if prev < current else "unavailable_before_trial"
+    if len(sub) == 0:
+        return "missing_participant_baseline"
+    if len(sub) > 1:
+        return "ambiguous_participant_baseline"
+    return "participant_d0_reference"
 
 
 def evaluate_model(model: str, source: pd.DataFrame, refs, registry, thresholds=THRESHOLDS):
@@ -467,8 +504,6 @@ def evaluate_model(model: str, source: pd.DataFrame, refs, registry, thresholds=
         stage = int(row["difficulty_stage"])
         measured, audit = record_memberships(model, stage, row, refs, registry)
         baseline = baseline_status_for(row, source, model)
-        if baseline == "unknown_trial_order":
-            audit.append("UNVERIFIED_D0_BASELINE_ORDER")
         scores, supports = evaluate_rules(model, measured)
         identity = {"model": model, "participant_id": str(row["participant_id"]),
                     "assigned_stage": stage, "difficulty_level": LEVELS[stage],
@@ -566,7 +601,8 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
     proposed = row["proposed_level"]
     act = activations.set_index("rule_id")["score"].reindex(RULES[model])
     color = {"Increase": "#246c70", "Decrease": "#a85b39",
-             "Maintain": "#526f91", "Review": "#9a5260"}[final]
+             "Maintain": "#526f91", "Review": "#9a5260",
+             "Unavailable": "#6d747c"}[final]
     next_stage = f"→ {stage_label(int(proposed))}" if pd.notna(proposed) else ""
     fig = plt.figure(figsize=(11.8, 6.35), facecolor="#fbfcfd")
     title_ax = fig.add_axes([.06, .72, .88, .23])
@@ -584,11 +620,13 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
     title_ax.text(0, .12, stage_label(stage), fontsize=24, weight="bold",
                   color="#183448", transform=title_ax.transAxes)
     title_ax.text(.37, .48,
-                  "STATUS" if final == "Review" else "RECOMMENDATION",
+                  "STATUS" if final in ("Review", "Unavailable")
+                  else "RECOMMENDATION",
                   fontsize=9, color="#697b8a", transform=title_ax.transAxes)
     display_action = (
-        "REVIEW REQUIRED" if final == "Review"
-        else f"{final.upper()}  {next_stage}"
+        "REVIEW REQUIRED" if final == "Review" else
+        "DATA UNAVAILABLE" if final == "Unavailable" else
+        f"{final.upper()}  {next_stage}"
     )
     title_ax.text(.37, .12, display_action,
                   fontsize=22, weight="bold", color=color,
@@ -669,9 +707,14 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
         heading = "STRONGEST NON-QUALIFYING RULES"
         shown = sorted(finite, key=lambda item: (-item[1], item[0]))[:5]
     else:
-        rule_ax.text(0, .97, "REVIEW REQUIRED", fontsize=9, weight="bold",
+        rule_ax.text(0, .97,
+                     "DATA UNAVAILABLE" if final == "Unavailable"
+                     else "REVIEW REQUIRED",
+                     fontsize=9, weight="bold",
                      color=color, transform=rule_ax.transAxes, va="top")
-        flag = str(row.get("review_flags", "")).split("|")[0]
+        field = ("diagnostic_flags" if final == "Unavailable"
+                 else "review_flags")
+        flag = str(row.get(field, "")).split("|")[0]
         if not flag:
             flag = "Conflicting or unavailable rule evidence"
         rule_ax.text(0, .69, flag.replace("_", " ").replace(":", ": ").replace("D0", "Stage 0"),
