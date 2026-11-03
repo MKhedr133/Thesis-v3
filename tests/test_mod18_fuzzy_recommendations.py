@@ -310,6 +310,12 @@ class TestPipeline(unittest.TestCase):
                                 policy_id="synthetic-lock")
             self.assertTrue((folder / "cross_model_summary.csv").exists())
             self.assertTrue((folder / "manifest.json").exists())
+            self.assertTrue(
+                (folder / "cognitive_later" / "unavailable_cases.csv").exists()
+            )
+            self.assertIn("diagnostic_flags", pd.read_csv(
+                folder / "cognitive_later" / "recommendations.csv"
+            ).columns)
             routed = pd.read_csv(folder / "routed_recommendations.csv")
             self.assertEqual(len(routed), 72 * 2)
             self.assertEqual(len(pd.read_csv(
@@ -523,11 +529,11 @@ class TestPipeline(unittest.TestCase):
 
         row = pd.Series({
             "model": "cognitive_later", "participant_id": "T01",
-            "difficulty_level": 2, "threshold": .20,
+            "difficulty_level": 10, "threshold": .20,
             "raw_action": "Increase", "final_action": "Review",
             "proposed_level": np.nan, "strongest_rules": "I1",
             "increase_support": .63, "decrease_support": .03,
-            "review_flags": "UNVERIFIED_D0_BASELINE_ORDER",
+            "review_flags": "UPPER_BOUNDARY",
         })
         activation = pd.DataFrame([
             {"rule_id": rule, "score": .63 if rule == "I1" else .05}
@@ -602,6 +608,54 @@ class TestPipeline(unittest.TestCase):
                              26 * len(expected_stages) * 10)
             self.assertTrue(all(len(value) == 4 or value == "–"
                                 for value in text_cells))
+
+    def test_data_unavailable_is_not_review_or_maintain(self):
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+        result = pd.Series({
+            "model": "visual", "participant_id": "T01",
+            "difficulty_level": 2, "threshold": .20,
+            "raw_action": "Unavailable", "final_action": "Unavailable",
+            "proposed_level": np.nan, "strongest_rules": "",
+            "increase_support": np.nan, "decrease_support": np.nan,
+            "review_flags": "",
+            "diagnostic_flags": "MISSING_OR_INVALID:mental_demand_score_0_to_10",
+        })
+        activations = pd.DataFrame([
+            {"rule_id": key, "score": np.nan}
+            for key in MOD18.RULES["visual"]
+        ])
+        output_text = []
+        real_text = Axes.text
+
+        def capture(ax, x, y, txt, *args, **kwargs):
+            output_text.append(str(txt))
+            return real_text(ax, x, y, txt, *args, **kwargs)
+
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "unavailable.png"
+            with patch.object(Axes, "text", new=capture):
+                MOD18.plot_trial(result, pd.DataFrame(), activations, target)
+            self.assertTrue(target.exists())
+        self.assertIn("STATUS", output_text)
+        self.assertIn("DATA UNAVAILABLE", output_text)
+        self.assertNotIn("REVIEW REQUIRED", output_text)
+        self.assertTrue(any("MISSING OR INVALID" in line
+                            for line in output_text))
+
+    def test_unavailable_counts_are_separate_from_review_distribution(self):
+        frame = pd.DataFrame([
+            {"threshold": tau, "final_action": "Unavailable",
+             "raw_action": "Unavailable"}
+            for tau in MOD18.THRESHOLDS
+        ])
+        summary = MOD18.recommendation_distribution_table(frame, frame)
+        self.assertTrue(summary["count"].eq(0).all())
+        self.assertTrue(summary["denominator"].eq(0).all())
+        self.assertTrue(summary["percentage"].isna().all())
+        self.assertTrue(summary["review_count"].eq(0).all())
+        self.assertTrue(summary["unavailable_count"].eq(1).all())
+        self.assertTrue(summary["basis"].eq("safeguarded").all())
 
     def test_explicit_rule_labels_preserve_rule_ids(self):
         self.assertEqual(MOD18.rule_label("D1"), "Decrease rule 1 (D1)")
