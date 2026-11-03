@@ -103,38 +103,87 @@ class TestRuleContract(unittest.TestCase):
         self.assertAlmostEqual(support["Decrease"], .63)
         self.assertAlmostEqual(support["Increase"], 0.)
 
-    def test_threshold_boundaries_and_conflict(self):
-        empty = {"Increase": 0., "Decrease": .2}
-        scores = {k: .2 if k == "D1" else 0. for k in MOD18.RULES["visual"]}
-        x = MOD18.decide("visual", 2, .2, scores, empty, [], {})
+    def test_only_impossible_transitions_require_review(self):
+        scores = {k: 0. for k in MOD18.RULES["visual"]}
+        decrease = {"Increase": 0., "Decrease": .20}
+        increase = {"Increase": .30, "Decrease": 0.}
+        x = MOD18.decide("visual", 2, .20, scores, decrease, [], {})
         self.assertEqual((x["raw_action"], x["final_action"], x["proposed_level"]),
                          ("Decrease", "Decrease", 2))
-        x = MOD18.decide("visual", 2, .21, scores, empty, [], {})
+        x = MOD18.decide("visual", 2, .21, scores, decrease, [], {})
         self.assertEqual(x["final_action"], "Maintain")
-        x = MOD18.decide("visual", 0, .2, scores, empty, [], {})
-        self.assertEqual(x["final_action"], "Review")
-        self.assertIn("LOWER_BOUNDARY", x["review_flags"])
-        scores["I1"] = .3
-        conflict = MOD18.decide("visual", 2, .2, scores,
-                                {"Increase": .3, "Decrease": .2}, [], {})
-        self.assertEqual(conflict["final_action"], "Review")
-        self.assertIn("CONFLICTING", conflict["review_flags"])
+        lower = MOD18.decide("visual", 0, .20, scores, decrease, [], {})
+        self.assertEqual(lower["final_action"], "Review")
+        self.assertEqual(lower["recommendation_status"], "boundary_review")
+        self.assertIsNone(lower["proposed_level"])
+        self.assertEqual(lower["review_flags"], "LOWER_BOUNDARY")
+        upper = MOD18.decide("visual", 3, .20, scores, increase, [], {})
+        self.assertEqual(upper["final_action"], "Review")
+        self.assertEqual(upper["review_flags"], "UPPER_BOUNDARY")
+        self.assertIsNone(upper["proposed_level"])
+        at_middle = MOD18.decide("visual", 2, .20, scores, increase, [], {})
+        self.assertEqual(at_middle["final_action"], "Increase")
+        self.assertEqual(at_middle["proposed_level"], 10)
 
-    def test_missing_is_not_zero(self):
+    def test_conflicting_support_chooses_stronger_action_or_maintain_on_tie(self):
+        scores = {k: 0. for k in MOD18.RULES["visual"]}
+        cases = (
+            (.40, .20, "Increase"),
+            (.20, .40, "Decrease"),
+            (.30, .30, "Maintain"),
+        )
+        for inc, dec, expected in cases:
+            result = MOD18.decide(
+                "visual", 1, .20, scores,
+                {"Increase": inc, "Decrease": dec}, [], {}
+            )
+            self.assertEqual(result["final_action"], expected)
+            self.assertEqual(result["review_flags"], "")
+            self.assertIn("COMPETING_RULE_SUPPORT", result["diagnostic_flags"])
+            if inc == dec:
+                self.assertIn("TIED_RULE_SUPPORT", result["diagnostic_flags"])
+
+    def test_valid_outside_calibration_is_diagnostic_not_review(self):
+        scores = {k: 0. for k in MOD18.RULES["visual"]}
+        result = MOD18.decide(
+            "visual", 1, .20, scores,
+            {"Increase": .45, "Decrease": .05},
+            ["OUTSIDE_CALIBRATION:time"], {}
+        )
+        self.assertEqual(result["final_action"], "Increase")
+        self.assertIn("OUTSIDE_CALIBRATION:time",
+                      result["diagnostic_flags"])
+        self.assertEqual(result["review_flags"], "")
+
+    def test_missing_is_not_zero_and_not_a_review(self):
         values = {k: None for k in MOD18.FEATURES.values()}
         scores, support = MOD18.evaluate_rules("visual", values)
         self.assertTrue(math.isnan(scores["D1"]))
-        x = MOD18.decide("visual", 1, .2, scores, support,
-                         ["MISSING_OR_INVALID:mental_demand_score_0_to_10"], {})
-        self.assertEqual(x["final_action"], "Review")
+        result = MOD18.decide(
+            "visual", 1, .2, scores, support,
+            ["MISSING_OR_INVALID:mental_demand_score_0_to_10"], {}
+        )
+        self.assertEqual(result["final_action"], "Unavailable")
+        self.assertEqual(result["recommendation_status"], "data_unavailable")
+        self.assertIsNone(result["proposed_level"])
+        self.assertEqual(result["review_flags"], "")
+        self.assertIn("MISSING_OR_INVALID", result["diagnostic_flags"])
 
-    def test_positive_performance_deterioration_blocks_increase(self):
-        measured = {MOD18.FEATURES["G"]: {"value": 40.,
-                                          "memberships": {"H": .1}}}
-        x = MOD18.decide("cognitive_later", 2, .2, {},
-                         {"Increase": .6, "Decrease": .0}, [], measured, "available")
-        self.assertEqual(x["final_action"], "Review")
-        self.assertIn("INCREASE_WITH_D0_PERFORMANCE_DROP", x["review_flags"])
+    def test_positive_performance_deterioration_is_diagnostic_not_review(self):
+        measured = {MOD18.FEATURES["G"]: {
+            "value": 40., "memberships": {"H": .1}
+        }}
+        result = MOD18.decide(
+            "cognitive_later", 2, .2, {},
+            {"Increase": .6, "Decrease": .0}, [], measured,
+            "participant_d0_reference"
+        )
+        self.assertEqual(result["final_action"], "Increase")
+        self.assertEqual(result["proposed_level"], 10)
+        self.assertIn("INCREASE_WITH_D0_PERFORMANCE_DROP",
+                      result["diagnostic_flags"])
+        self.assertEqual(result["review_flags"], "")
+
 
 
 class TestPipeline(unittest.TestCase):
@@ -180,38 +229,75 @@ class TestPipeline(unittest.TestCase):
             }
             self.assertEqual(set(recs["difficulty_level"]), expected_levels)
 
-    def test_later_baseline_future_is_flagged(self):
-        modified = self.test.copy()
-        bad_id = modified["participant_id"].iloc[0]
-        ix = (modified["participant_id"].eq(bad_id)
-              & modified["condition_name"].eq("Cognitive")
-              & modified["difficulty_level"].eq(0))
-        modified.loc[ix, "trial_order"] = 99
-        recs, _, _ = MOD18.evaluate_model("cognitive_later", modified,
-                                         self.refs, self.registry)
-        bad = recs.loc[recs["participant_id"].eq(bad_id)]
-        self.assertTrue(bad["review_flags"].str.contains(
-            "D0_BASELINE_NOT_YET_OBSERVED").all())
-        self.assertTrue(bad["final_action"].eq("Review").all())
-
-    def test_missing_trial_order_blocks_cognitive_later_without_erasing_raw_actions(self):
-        # Chronology cannot be inferred from ordinal difficulty-stage numbers.
-        no_order = self.dev.drop(columns="trial_order")
+    def test_later_baseline_is_participant_specific_without_trial_order(self):
+        modified = self.dev.copy()
+        person = str(modified["participant_id"].iloc[0])
+        d0 = modified.loc[
+            modified["participant_id"].eq(person)
+            & modified["condition_name"].eq("Cognitive")
+            & modified["difficulty_level"].eq(0)
+        ].iloc[0]
+        later = modified.loc[
+            modified["participant_id"].eq(person)
+            & modified["condition_name"].eq("Cognitive")
+            & modified["difficulty_level"].eq(6)
+        ].iloc[0]
+        self.assertEqual(
+            MOD18.baseline_status_for(later, modified, "cognitive_later"),
+            "participant_d0_reference"
+        )
+        self.assertEqual(d0["performance_change_from_d0_percentage_points"], 0.)
+        self.assertGreater(
+            later["performance_change_from_d0_percentage_points"], 0.
+        )
+        # Deliberately place Stage 0 after Stage 2 chronologically.
+        mask = (modified["participant_id"].eq(person)
+                & modified["condition_name"].eq("Cognitive")
+                & modified["difficulty_level"].eq(0))
+        modified.loc[mask, "trial_order"] = 99
+        no_order = modified.drop(columns="trial_order")
         recs, _, _ = MOD18.evaluate_model(
             "cognitive_later", no_order, self.refs, self.registry
         )
         self.assertEqual(len(recs), 26 * 3 * len(MOD18.THRESHOLDS))
-        self.assertTrue(recs["baseline_status"].eq("unknown_trial_order").all())
-        self.assertTrue(recs["review_flags"].str.contains(
-            "UNVERIFIED_D0_BASELINE_ORDER"
-        ).all())
-        self.assertTrue(recs["final_action"].eq("Review").all())
+        self.assertTrue(
+            recs["baseline_status"].eq("participant_d0_reference").all()
+        )
+        self.assertFalse(
+            recs["diagnostic_flags"].str.contains(
+                "UNVERIFIED_D0_BASELINE_ORDER|D0_BASELINE_NOT_YET_OBSERVED",
+                regex=True, na=False,
+            ).any()
+        )
         self.assertTrue(recs["raw_action"].isin(
-            {"Increase", "Decrease", "Maintain", "Review"}
+            {"Increase", "Decrease", "Maintain", "Unavailable"}
         ).all())
-        table = MOD18.recommendation_distribution_table(recs, recs)
-        self.assertEqual(set(table["basis"]), {"provisional"})
-        self.assertEqual(set(table["review_count"]), {26 * 3})
+        self.assertTrue(
+            recs["final_action"].isin(
+                {"Increase", "Decrease", "Maintain", "Review", "Unavailable"}
+            ).all()
+        )
+        # A missing participant-matched D0 cannot be silently substituted
+        # by a different participant's Stage 0 record.
+        no_baseline = modified.drop(d0.name)
+        self.assertEqual(
+            MOD18.baseline_status_for(later, no_baseline, "cognitive_later"),
+            "missing_participant_baseline"
+        )
+        duplicated = pd.concat([modified, d0.to_frame().T], ignore_index=True)
+        self.assertEqual(
+            MOD18.baseline_status_for(later, duplicated, "cognitive_later"),
+            "ambiguous_participant_baseline"
+        )
+        result = MOD18.decide(
+            "cognitive_later", 1, .2, {},
+            {"Increase": .6, "Decrease": .0}, [], {},
+            "missing_participant_baseline",
+        )
+        self.assertEqual(result["final_action"], "Unavailable")
+        self.assertIn("MISSING_PARTICIPANT_D0_BASELINE",
+                      result["diagnostic_flags"])
+        self.assertEqual(result["review_flags"], "")
 
     def test_output_exports_and_one_compact_plot(self):
         with TemporaryDirectory() as temp:
