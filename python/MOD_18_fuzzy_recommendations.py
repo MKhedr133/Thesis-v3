@@ -693,8 +693,7 @@ def plot_rule_activation_heatmap(
     )
     matrix = indexed.to_numpy(dtype=float).T
     fig, ax = plt.subplots(figsize=(12.8, 4.6), facecolor="white")
-    cmap = plt.get_cmap("Blues").copy()
-    cmap.set_bad("#edf1f4")
+    cmap = plt.get_cmap("Blues").with_extremes(bad="#edf1f4")
     image = ax.imshow(matrix, cmap=cmap, vmin=0, vmax=1,
                       interpolation="nearest", aspect="auto")
     ax.set_yticks(np.arange(len(rule_ids)), rule_ids, fontsize=9)
