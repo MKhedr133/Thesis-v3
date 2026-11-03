@@ -24,6 +24,32 @@ VERSION = "candidate-v0.1"
 THRESHOLDS = (0.10, 0.20)
 LEVELS = (0, 2, 6, 10)
 
+# MOD-18 routing only; the frozen MOD-14 model registry remains unchanged.
+MOD18_STAGES = {
+    "visual": (0, 1, 2, 3),
+    "auditory": (0, 1, 2, 3),
+    "cognitive_primary": (0,),
+    "cognitive_later": (1, 2, 3),
+}
+
+
+def eligible_stages(model: str, registry) -> tuple[int, ...]:
+    """Prospective-stage eligibility, independent of the frozen MLR workflow."""
+    stages = MOD18_STAGES[model]
+    if not set(stages).issubset(registry[model].allowed_stages):
+        raise RecommendationError(
+            f"{model}: MOD-18 stages must belong to the frozen model registry"
+        )
+    return stages
+
+
+def rule_label(rule_id: str) -> str:
+    """Display label without changing the stable rule identifier."""
+    if len(rule_id) != 2 or rule_id[0] not in "DI" or rule_id[1] not in "12345":
+        raise RecommendationError(f"Unknown fuzzy rule identifier: {rule_id}")
+    action = "Decrease" if rule_id.startswith("D") else "Increase"
+    return f"{action} rule {rule_id[1]} ({rule_id})"
+
 
 def stage_label(level: int) -> str:
     """Presentation-only label; underlying difficulty codes stay unchanged."""
@@ -244,7 +270,7 @@ def calibrate(development: pd.DataFrame, registry=None):
     refs, records = {}, []
     for model, spec in registry.items():
         complete = MOD14.prepare_model_frame(development, model_id=model)
-        for stage in spec.allowed_stages:
+        for stage in eligible_stages(model, registry):
             cohort = complete.loc[complete["difficulty_stage"].eq(stage)]
             if cohort["participant_id"].nunique() < 2:
                 raise RecommendationError(f"{model}/D{LEVELS[stage]}: insufficient reference")
@@ -271,6 +297,7 @@ def rule_registry_table() -> pd.DataFrame:
         for name, antecedents in rules.items():
             rows.append({
                 "model": model, "rule_id": name,
+                "rule_name": rule_label(name),
                 "action": "Decrease" if name[0] == "D" else "Increase",
                 "antecedents": " AND ".join(
                     f"{LABELS[f][0]} {dict(L='Low', M='Medium', H='High')[c]}"
@@ -421,11 +448,12 @@ def evaluate_model(model: str, source: pd.DataFrame, refs, registry, thresholds=
         level = int(row["difficulty_level"])
         if level not in LEVELS or int(row["difficulty_stage"]) != LEVELS.index(level):
             raise RecommendationError(f"{model}: invalid stage coding")
-    frame = frame.loc[frame["difficulty_stage"].isin(spec.allowed_stages)]
+    stages = eligible_stages(model, registry)
+    frame = frame.loc[frame["difficulty_stage"].isin(stages)]
     # Every assigned stage should have one record for every participant.
     # Fail loudly rather than silently generating fewer held-out figures.
     expected_people = set(source["participant_id"].astype(str))
-    for stage in spec.allowed_stages:
+    for stage in stages:
         observed_people = set(frame.loc[
             frame["difficulty_stage"].eq(stage), "participant_id"].astype(str))
         if observed_people != expected_people:
@@ -460,6 +488,7 @@ def evaluate_model(model: str, source: pd.DataFrame, refs, registry, thresholds=
         for name, score in scores.items():
             activation_rows.append({
                 **identity, "rule_id": name,
+                "rule_name": rule_label(name),
                 "action": "Increase" if name.startswith("I") else "Decrease",
                 "score": score, "status": (
                     "exploratory" if name in EXPLORATORY[model] else "candidate"
@@ -599,7 +628,8 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                          transform=rule_ax.transAxes, va="top")
         if selected:
             strength = float(act[selected])
-            rule_ax.text(0, .79, f"{selected}  ·  activation {strength:.2f}",
+            rule_ax.text(0, .79,
+                         f"{rule_label(selected)}  ·  activation {strength:.2f}",
                          fontsize=12, weight="bold", color=color,
                          transform=rule_ax.transAxes, va="top")
             antecedents, consequent = readable_rule(model, selected).split("\n")
@@ -656,7 +686,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
         y = np.arange(len(shown))
         bar_colors = [color if rid == selected else "#9bafbf" for rid in rule_ids]
         bars_ax.barh(y, vals, color=bar_colors, height=.55)
-        bars_ax.set_yticks(y, labels=rule_ids)
+        bars_ax.set_yticks(y, labels=[rule_label(rid) for rid in rule_ids])
         bars_ax.invert_yaxis()
         bars_ax.set_xlim(0, 1.10)
         bars_ax.set_xticks([0, .5, 1], ["0", "0.5", "1"])
@@ -682,7 +712,11 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
 def plot_rule_activation_heatmap(
     model: str, activations: pd.DataFrame, output_file: Path,
 ) -> None:
-    """Observation-level *development* activations, grouped by assigned stage."""
+    """Show numeric activations per observation, grouped into stage panels.
+
+    Each observation is a column and each rule is a row. Separate stage panels
+    keep the values readable instead of compressing up to 104 columns.
+    """
     rule_ids = list(RULES[model])
     required = {"participant_id", "difficulty_level", "rule_id", "score"}
     if not required.issubset(activations.columns):
@@ -690,43 +724,56 @@ def plot_rule_activation_heatmap(
     frame = activations.copy()
     if frame.duplicated(["participant_id", "difficulty_level", "rule_id"]).any():
         raise RecommendationError(f"{model}: duplicate rule scores")
-    ordered = (frame[["difficulty_level", "participant_id"]]
-               .drop_duplicates()
-               .sort_values(["difficulty_level", "participant_id"]))
-    indexed = frame.pivot(
-        index=["difficulty_level", "participant_id"],
-        columns="rule_id", values="score",
-    ).reindex(
-        index=pd.MultiIndex.from_frame(ordered), columns=rule_ids
+    stages = sorted(frame["difficulty_level"].unique())
+    if not stages or any(int(level) not in LEVELS for level in stages):
+        raise RecommendationError(f"{model}: invalid heatmap stage")
+
+    fig, axes = plt.subplots(
+        len(stages), 1, figsize=(18.0, 4.15 * len(stages) + .7),
+        squeeze=False, facecolor="white",
     )
-    matrix = indexed.to_numpy(dtype=float).T
-    fig, ax = plt.subplots(figsize=(12.8, 4.6), facecolor="white")
     cmap = plt.get_cmap("Blues").with_extremes(bad="#edf1f4")
-    image = ax.imshow(matrix, cmap=cmap, vmin=0, vmax=1,
-                      interpolation="nearest", aspect="auto")
-    ax.set_yticks(np.arange(len(rule_ids)), rule_ids, fontsize=9)
-    ax.set_xticks([])
-    stages = ordered["difficulty_level"].to_numpy()
-    begin = 0
-    centers, labels = [], []
-    for level in sorted(ordered["difficulty_level"].unique()):
-        count = int(np.count_nonzero(stages == level))
-        centers.append(begin + (count - 1) / 2)
-        labels.append(stage_label(int(level)))
-        begin += count
-        if begin < len(ordered):
-            ax.axvline(begin - .5, color="white", lw=2)
-    ax.set_xticks(centers, labels, fontsize=9)
-    ax.tick_params(length=0)
-    ax.set_xlabel("Assigned stage · one column per development observation",
-                  fontsize=9, color="#546777", labelpad=9)
-    ax.set_title(f"{model.replace('_', ' ').title()} · Rule activation",
-                 fontsize=14, color="#1c394f", loc="left", pad=14)
-    fig.colorbar(image, ax=ax, label="Activation", shrink=.76, pad=.018)
-    fig.tight_layout()
+    for ax, level in zip(axes[:, 0], stages):
+        stage = frame.loc[frame["difficulty_level"].eq(level)]
+        people = sorted(stage["participant_id"].astype(str).unique())
+        wide = stage.pivot(
+            index="rule_id", columns="participant_id", values="score"
+        ).reindex(index=rule_ids, columns=people)
+        matrix = wide.to_numpy(dtype=float)
+        image = ax.imshow(
+            matrix, cmap=cmap, vmin=0, vmax=1,
+            interpolation="nearest", aspect="auto",
+        )
+        ax.set_yticks(
+            np.arange(len(rule_ids)),
+            labels=[rule_label(rid) for rid in rule_ids],
+            fontsize=8.5,
+        )
+        ax.set_xticks([])
+        ax.tick_params(length=0)
+        ax.set_title(stage_label(int(level)), loc="left",
+                     fontsize=11, color="#263e52", pad=9)
+        # Matplotlib text is centred on each cell; NaN is a grey dash.
+        # Four characters at 7 pt fit inside each of 26 participant columns.
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                value = matrix[i, j]
+                ax.text(
+                    j, i, f"{value:.2f}" if np.isfinite(value) else "–",
+                    ha="center", va="center", fontsize=7.3,
+                    color="white" if np.isfinite(value) and value >= .57
+                          else "#253d51",
+                )
+    fig.suptitle(f"{model.replace('_', ' ').title()} · Rule activation",
+                 fontsize=15, color="#1c394f", y=.998)
+    fig.subplots_adjust(left=.165, right=.92, top=.95,
+                        bottom=.035, hspace=.36)
+    fig.colorbar(image, ax=list(axes[:, 0]), shrink=.6,
+                 label="Activation", pad=.012)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=170, facecolor="white")
     plt.close(fig)
+
 
 
 def recommendation_distribution_table(
@@ -858,7 +905,7 @@ def write_figure_set(
     calibration: pd.DataFrame,
     policy_id: str,
 ) -> int:
-    """Export 98 figures and their numerical results under one output root.
+    """Export 80 figures and their numerical results under one output root.
 
     Scope-specific CSV/JSON exports are kept separate. Neither calibration
     nor the policy is modified by the descriptive held-out visualisations.
@@ -888,14 +935,14 @@ def write_figure_set(
         selected = test_recs.loc[
             np.isclose(test_recs["threshold"], plot_threshold)
         ]
-        expected_rows = len(spec.allowed_stages) * 6
+        expected_rows = len(eligible_stages(model, registry)) * 6
         if len(selected) != expected_rows or selected.duplicated(
             ["participant_id", "difficulty_level"]
         ).any():
             raise RecommendationError(
                 f"{model}: expected {expected_rows} unique held-out trials"
             )
-        for stage in spec.allowed_stages:
+        for stage in eligible_stages(model, registry):
             stage_rows = selected.loc[selected["assigned_stage"].eq(stage)]
             if set(stage_rows["participant_id"].astype(str)) != test_ids:
                 raise RecommendationError(
@@ -943,9 +990,9 @@ def write_figure_set(
             plot_trial(row, same_member, same_rules, target)
 
     actual = list(destination.rglob("*.png"))
-    if len(actual) != 98:
+    if len(actual) != 80:
         raise RecommendationError(
-            f"Figure set incomplete: expected 98 PNGs, got {len(actual)}"
+            f"Figure set incomplete: expected 80 PNGs, got {len(actual)}"
         )
 
     # Reuse the regular, separately scoped exports. Each contains both
@@ -1099,7 +1146,7 @@ def parser():
     )
     p.add_argument(
         "--render-figure-set", action="store_true",
-        help="One folder: 98 PNGs plus development/test numerical CSV/JSON results",
+        help="One folder: 80 PNGs plus development/test numerical CSV/JSON results",
     )
     p.add_argument("--plot-threshold", type=float, choices=THRESHOLDS, default=.20)
     return p
