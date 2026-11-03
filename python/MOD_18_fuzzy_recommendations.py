@@ -841,7 +841,8 @@ def recommendation_distribution_table(
             block = recs.loc[np.isclose(recs["threshold"], threshold)]
             approved = block.loc[block["final_action"].isin(actions)]
             review_count = int(block["final_action"].eq("Review").sum())
-            if approved.empty and not block.empty:
+            unavailable_count = int(block["final_action"].eq("Unavailable").sum())
+            if approved.empty and review_count == len(block) and review_count > 0:
                 basis = "provisional"
                 eligible = block.loc[block["raw_action"].isin(actions)]
                 field = "raw_action"
@@ -861,6 +862,7 @@ def recommendation_distribution_table(
                     ),
                     "basis": basis,
                     "review_count": review_count,
+                    "unavailable_count": unavailable_count,
                     "observation_count": int(len(block)),
                 })
     return pd.DataFrame(rows)
@@ -901,6 +903,7 @@ def plot_recommendation_distribution(
             ]
             basis = str(subset["basis"].iloc[0])
             review = int(subset["review_count"].iloc[0])
+            unavailable = int(subset["unavailable_count"].iloc[0])
             total = int(subset["observation_count"].iloc[0])
             coordinates = x + (idx - .5) * width
             ax.bar(
@@ -919,6 +922,10 @@ def plot_recommendation_distribution(
             if basis == "provisional":
                 provisional_notes.append(
                     f"τ {threshold:.2f}: {review}/{total} Review · provisional"
+                )
+            if unavailable:
+                provisional_notes.append(
+                    f"τ {threshold:.2f}: {unavailable}/{total} data unavailable"
                 )
         ax.set_ylim(0, peak + label_space)
         ax.set_xticks(x, actions, fontsize=10)
@@ -987,6 +994,12 @@ def plot_development_summaries(
             total = int(subset["observation_count"].iloc[0])
             provisional_notes.append(
                 f"τ {threshold:.2f}: {review}/{total} Review · provisional"
+            )
+        unavailable = int(subset["unavailable_count"].iloc[0])
+        if unavailable:
+            total = int(subset["observation_count"].iloc[0])
+            provisional_notes.append(
+                f"τ {threshold:.2f}: {unavailable}/{total} data unavailable"
             )
     ax.set_xticks(x, ["Increase", "Maintain", "Decrease"])
     ax.set_ylabel("Action counts")
@@ -1164,6 +1177,10 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
         tally.to_csv(folder / "model_summary.csv", index=False)
         review_cases = recs.loc[recs["final_action"].eq("Review")].copy()
         review_cases.to_csv(folder / "review_flags.csv", index=False)
+        unavailable_cases = recs.loc[
+            recs["final_action"].eq("Unavailable")
+        ].copy()
+        unavailable_cases.to_csv(folder / "unavailable_cases.csv", index=False)
         # Compare the two thresholds on the same participant-stage row.
         paired = recs.pivot(
             index=["participant_id", "difficulty_level"],
@@ -1211,6 +1228,7 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
                     "unique_trial_count": int(
                         recs[["participant_id", "difficulty_level"]].drop_duplicates().shape[0]),
                     "review_decisions": int(recs["final_action"].eq("Review").sum()),
+                    "data_unavailable": int(recs["final_action"].eq("Unavailable").sum()),
                     "stages": sorted(map(int, recs["difficulty_level"].unique())),
                 }
                 for model, (recs, _, _) in results.items()
@@ -1228,8 +1246,16 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
         ),
         "rule_status": "research candidate, not clinically validated",
         "separation": "independent of SHAP and MOD-17 retrospective MLR explanation",
-        "prospective_cognitive_rule": "D0 uses primary; later uses same-condition "
-                                     "prior D0 when available",
+        "prospective_cognitive_rule": (
+            "D0 uses primary; later uses same-participant Cognitive D0 "
+            "reference for precomputed performance change, without an "
+            "assumption about historical session order"
+        ),
+        "decision_policy": (
+            "Three actions; Review only for Stage 0 decrease or Stage 3 "
+            "increase. Invalid data is Unavailable (not a recommendation). "
+            "Competing support uses stronger action; exact ties Maintain."
+        ),
         "heldout_design_rule": "no rule/threshold/plot tuning on test participants",
     }
     (destination / "manifest.json").write_text(
