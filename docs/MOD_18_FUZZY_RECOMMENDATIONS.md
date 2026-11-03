@@ -18,11 +18,12 @@ The shared directory contains `fuzzy_calibration.csv`, `rule_registry.csv`, `cro
 
 Three output modes:
 
-- `--render-figure-set`: **one PNG-only folder** with eight development plots (four heatmaps, four threshold comparisons) in `development/` and 90 held-out recommendation plots in `test/<model>/`. Expected test counts: Visual 24, Auditory 24, Cognitive primary 24, Cognitive later 18. Files are `participant_<ID>_D<level>.png`.
-- `--scope development --render-summary-plots`: eight aggregate figures plus numerical CSV/JSON exports, no individual development plots.
-- `--scope test --render-plots`: held-out individual figures plus numerical CSV/JSON exports.
+- `--render-figure-set`: **one PNG-only folder with 98 plots**. The `development/` directory contains four **recommendation distribution** figures and four **rule-activation heatmaps**. Each distribution PNG has two side-by-side panels: development (26 participants) and held-out test (six), with grouped—not stacked—bars for thresholds 0.10 and 0.20. The categories are Increase, Maintain and Decrease; Review is omitted. Each bar shows count and percentage, with the percentage denominator defined as non-Review participant-stage observations *at that threshold*. A participant may contribute more than one stage; counts are not numbers of distinct participants. Both panels are descriptive; **never choose or revise the threshold based on test results**.
+- The heatmaps show ten rule rows (D1–D5; I1–I5) against individual **development observations** ordered and separated by assigned stage, with activation strength 0–1. They do not aggregate to stage means.
+- The `test/<model>/` directories contain 90 compact individual PNGs: Visual 24; Auditory 24; Cognitive primary 24; Cognitive later 18. Each card shows (1) assigned stage, (2) safeguarded action and next stage when applicable, (3) strongest **written IF–THEN rule** with its strength and (4) activation strengths of the *other four rules of the same action*. Maintain has no Maintain rule, so its card explains the threshold fallback and shows the strongest non-qualifying rules. Review clearly indicates no actionable recommendation and displays provisional or available rule evidence.
+- `--scope development --render-summary-plots`: development-only heatmaps and threshold-comparison bar charts plus CSV/JSON exports; no test data or individual development figures. `--scope test --render-plots`: individual test cards plus CSV/JSON exports, guarded by policy freeze.
 
-Individual figures retain concise headings, values versus stage medians, L/M/H memberships, ten rule scores and one-line decision rationale. No separate *Limitations and review* section. Plot modes enforce their scope; `--plot-threshold` controls test figures while development threshold plots compare both gates.
+Figures avoid explanatory paragraphs, repeated provenance and separate limitations blocks. The combined report requires a previously documented freeze and never writes CSV/JSON into its PNG-only output folder.
 
 The compact presentation takes inspiration from Martínez et al. (2023), Martínez-Cid et al. (2024), Lee et al. (2020), Schoonderwoerd et al. (2021) and Liao et al. (2020), as considered within the 21-paper literature review. These studies support therapist-facing explanations, not our particular rule consequents or thresholds.
 
