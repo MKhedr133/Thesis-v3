@@ -325,15 +325,24 @@ class TestPipeline(unittest.TestCase):
             for rule in MOD18.RULES["visual"]
         ])
         messages = []
+        headings = []
         real_text = Axes.text
+        real_set_title = Axes.set_title
 
         def capture_text(axis, x, y, text, *args, **kwargs):
             messages.append(str(text))
             return real_text(axis, x, y, text, *args, **kwargs)
 
+        def capture_title(axis, title, *args, **kwargs):
+            # set_title creates a Text artist without calling Axes.text().
+            result = real_set_title(axis, title, *args, **kwargs)
+            headings.append(axis.get_title(loc=kwargs.get("loc", "center")))
+            return result
+
         with TemporaryDirectory() as temp:
             output = Path(temp) / "example.png"
-            with patch.object(Axes, "text", new=capture_text):
+            with patch.object(Axes, "text", new=capture_text), \
+                 patch.object(Axes, "set_title", new=capture_title):
                 MOD18.plot_trial(row, pd.DataFrame(), activation, output)
             self.assertTrue(output.exists())
         joined = "\n".join(messages)
@@ -341,7 +350,8 @@ class TestPipeline(unittest.TestCase):
         self.assertIn("RECOMMENDATION", joined)
         self.assertIn("IF Irrelevant focus is High", joined)
         self.assertIn("THEN Decrease difficulty", joined)
-        self.assertIn("OTHER DECREASE RULES", joined)
+        self.assertIn("OTHER DECREASE RULES", headings)
+        self.assertNotIn("D4", [heading for heading in headings])
         self.assertNotIn("LIMITATIONS", joined)
 
     def test_development_heatmap_contains_observation_level_columns(self):
