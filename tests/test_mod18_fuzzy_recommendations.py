@@ -308,6 +308,42 @@ class TestPipeline(unittest.TestCase):
         with self.assertRaises(MOD18.RecommendationError):
             MOD18.readable_rule("visual", "INVALID")
 
+    def test_compact_recommendation_card_contains_written_rule_and_other_four(self):
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+        row = pd.Series({
+            "model": "visual", "participant_id": "T01",
+            "difficulty_level": 6, "threshold": .2,
+            "raw_action": "Decrease", "final_action": "Decrease",
+            "proposed_level": 2, "strongest_rules": "D4",
+            "increase_support": .05, "decrease_support": .63,
+            "review_flags": "",
+        })
+        activation = pd.DataFrame([
+            {"rule_id": rule, "score": (.63 if rule == "D4"
+                                       else .41 if rule == "D1" else .06)}
+            for rule in MOD18.RULES["visual"]
+        ])
+        messages = []
+        real_text = Axes.text
+
+        def capture_text(axis, x, y, text, *args, **kwargs):
+            messages.append(str(text))
+            return real_text(axis, x, y, text, *args, **kwargs)
+
+        with TemporaryDirectory() as temp:
+            output = Path(temp) / "example.png"
+            with patch.object(Axes, "text", new=capture_text):
+                MOD18.plot_trial(row, pd.DataFrame(), activation, output)
+            self.assertTrue(output.exists())
+        joined = "\n".join(messages)
+        self.assertIn("ASSIGNED STAGE", joined)
+        self.assertIn("RECOMMENDATION", joined)
+        self.assertIn("IF Irrelevant focus is High", joined)
+        self.assertIn("THEN Decrease difficulty", joined)
+        self.assertIn("OTHER DECREASE RULES", joined)
+        self.assertNotIn("LIMITATIONS", joined)
+
     def test_development_heatmap_contains_observation_level_columns(self):
         recs, mem, scores = MOD18.evaluate_model(
             "visual", self.dev, self.refs, self.registry
@@ -317,11 +353,22 @@ class TestPipeline(unittest.TestCase):
             scores[["participant_id", "difficulty_level"]].drop_duplicates().shape[0],
             104,
         )
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+        shapes = []
+        original_imshow = Axes.imshow
+
+        def capture_image(axis, matrix, *args, **kwargs):
+            shapes.append(np.asarray(matrix).shape)
+            return original_imshow(axis, matrix, *args, **kwargs)
+
         with TemporaryDirectory() as temp:
             output = Path(temp) / "visual_heatmap.png"
-            MOD18.plot_rule_activation_heatmap("visual", scores, output)
+            with patch.object(Axes, "imshow", new=capture_image):
+                MOD18.plot_rule_activation_heatmap("visual", scores, output)
             self.assertTrue(output.exists())
             self.assertGreater(output.stat().st_size, 3000)
+        self.assertEqual(shapes, [(10, 104)])
 
     def test_combined_figure_set_contains_only_98_pngs(self):
         from unittest.mock import patch
