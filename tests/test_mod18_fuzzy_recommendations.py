@@ -248,6 +248,81 @@ class TestPipeline(unittest.TestCase):
             self.assertEqual(manifest["plot_mode"], "aggregate_development")
 
 
+    def test_distribution_excludes_review_and_uses_actionable_denominator(self):
+        dev = pd.DataFrame([
+            {"threshold": .1, "final_action": "Increase"},
+            {"threshold": .1, "final_action": "Maintain"},
+            {"threshold": .1, "final_action": "Decrease"},
+            {"threshold": .1, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Maintain"},
+            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Review"},
+        ])
+        test = pd.DataFrame([
+            {"threshold": .1, "final_action": "Increase"},
+            {"threshold": .1, "final_action": "Increase"},
+            {"threshold": .1, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .2, "final_action": "Review"},
+        ])
+        stats = MOD18.recommendation_distribution_table(dev, test)
+        self.assertEqual(len(stats), 12)
+        self.assertEqual(set(stats["action"]), {"Increase", "Maintain", "Decrease"})
+        def one(scope, threshold, action):
+            return stats.loc[
+                stats["scope"].eq(scope) &
+                np.isclose(stats["threshold"], threshold) &
+                stats["action"].eq(action)
+            ].iloc[0]
+
+        self.assertEqual(one("development", .1, "Increase")["count"], 1)
+        self.assertEqual(one("development", .1, "Increase")["denominator"], 3)
+        self.assertAlmostEqual(
+            one("development", .1, "Increase")["percentage"], 100 / 3
+        )
+        self.assertEqual(one("development", .2, "Maintain")["count"], 1)
+        self.assertEqual(one("development", .2, "Maintain")["percentage"], 100)
+        self.assertEqual(one("test", .1, "Increase")["denominator"], 2)
+        self.assertEqual(one("test", .1, "Increase")["percentage"], 100)
+        self.assertEqual(one("test", .2, "Increase")["denominator"], 0)
+        self.assertEqual(one("test", .2, "Increase")["percentage"], 0)
+        with TemporaryDirectory() as temp:
+            image = Path(temp) / "distribution.png"
+            MOD18.plot_recommendation_distribution("visual", dev, test, image)
+            self.assertTrue(image.exists())
+            self.assertGreater(image.stat().st_size, 4000)
+
+    def test_explanation_uses_actual_if_then_rule(self):
+        d4 = MOD18.readable_rule("visual", "D4")
+        self.assertEqual(
+            d4,
+            "IF Irrelevant focus is High AND Grab interval is High\n"
+            "THEN Decrease difficulty",
+        )
+        i1 = MOD18.readable_rule("cognitive_later", "I1")
+        self.assertEqual(i1.count(" AND "), 2)
+        self.assertIn("THEN Increase difficulty", i1)
+        self.assertIn("D0 performance drop is Low", i1)
+        with self.assertRaises(MOD18.RecommendationError):
+            MOD18.readable_rule("visual", "INVALID")
+
+    def test_development_heatmap_contains_observation_level_columns(self):
+        recs, mem, scores = MOD18.evaluate_model(
+            "visual", self.dev, self.refs, self.registry
+        )
+        self.assertEqual(scores["participant_id"].nunique(), 26)
+        self.assertEqual(
+            scores[["participant_id", "difficulty_level"]].drop_duplicates().shape[0],
+            104,
+        )
+        with TemporaryDirectory() as temp:
+            output = Path(temp) / "visual_heatmap.png"
+            MOD18.plot_rule_activation_heatmap("visual", scores, output)
+            self.assertTrue(output.exists())
+            self.assertGreater(output.stat().st_size, 3000)
+
     def test_combined_figure_set_contains_only_98_pngs(self):
         from unittest.mock import patch
 
@@ -279,6 +354,14 @@ class TestPipeline(unittest.TestCase):
             self.assertTrue(
                 (destination / "development"
                  / "visual_rule_activation_heatmap.png").exists()
+            )
+            self.assertTrue(
+                (destination / "development"
+                 / "visual_recommendation_distribution.png").exists()
+            )
+            self.assertFalse(
+                (destination / "development"
+                 / "visual_threshold_comparison.png").exists()
             )
             self.assertTrue(
                 (destination / "test" / "cognitive_later"
