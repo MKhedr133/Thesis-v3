@@ -583,9 +583,14 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                   transform=title_ax.transAxes)
     title_ax.text(0, .12, stage_label(stage), fontsize=24, weight="bold",
                   color="#183448", transform=title_ax.transAxes)
-    title_ax.text(.37, .48, "RECOMMENDATION", fontsize=9,
-                  color="#697b8a", transform=title_ax.transAxes)
-    title_ax.text(.37, .12, f"{final.upper()}  {next_stage}",
+    title_ax.text(.37, .48,
+                  "STATUS" if final == "Review" else "RECOMMENDATION",
+                  fontsize=9, color="#697b8a", transform=title_ax.transAxes)
+    display_action = (
+        "REVIEW REQUIRED" if final == "Review"
+        else f"{final.upper()}  {next_stage}"
+    )
+    title_ax.text(.37, .12, display_action,
                   fontsize=22, weight="bold", color=color,
                   transform=title_ax.transAxes)
     title_ax.plot([0, 1], [.01, .01], transform=title_ax.transAxes,
