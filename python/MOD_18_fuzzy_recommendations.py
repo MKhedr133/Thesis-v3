@@ -921,21 +921,36 @@ def plot_development_summaries(
     # Retain a development-only threshold comparison for legacy CLI users.
     counts = recommendation_distribution_table(recommendations, recommendations)
     counts = counts.loc[counts["scope"].eq("development")]
-    fig, ax = plt.subplots(figsize=(7, 4), facecolor="white")
+    fig, ax = plt.subplots(figsize=(7, 4.6), facecolor="white")
     x = np.arange(3)
+    provisional_notes = []
     for i, threshold in enumerate(THRESHOLDS):
         subset = counts.loc[np.isclose(counts["threshold"], threshold)]
         nums = [int(subset.loc[subset["action"].eq(action), "count"].iloc[0])
                 for action in ("Increase", "Maintain", "Decrease")]
+        basis = str(subset["basis"].iloc[0])
         ax.bar(x + (i - .5) * .34, nums, width=.31,
                color=("#2e5e83", "#90b0c7")[i],
+               alpha=.62 if basis == "provisional" else 1.,
+               hatch="//" if basis == "provisional" else None,
                label=f"τ {threshold:.2f}")
+        if basis == "provisional":
+            review = int(subset["review_count"].iloc[0])
+            total = int(subset["observation_count"].iloc[0])
+            provisional_notes.append(
+                f"τ {threshold:.2f}: {review}/{total} Review · provisional"
+            )
     ax.set_xticks(x, ["Increase", "Maintain", "Decrease"])
-    ax.set_ylabel("Development recommendations")
+    ax.set_ylabel("Action counts")
     ax.set_title(f"{model.replace('_', ' ').title()} · Development thresholds",
                  loc="left", fontsize=12)
     ax.legend(frameon=False)
-    fig.tight_layout()
+    if provisional_notes:
+        fig.text(.5, .055, "\n".join(provisional_notes),
+                 ha="center", va="center", fontsize=8.5, color="#875d3e")
+        fig.subplots_adjust(bottom=.24)
+    else:
+        fig.tight_layout()
     output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / f"{model}_threshold_comparison.png",
                 dpi=170, facecolor="white")
