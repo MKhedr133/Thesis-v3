@@ -44,7 +44,7 @@ Once the proposed policy is documented and **frozen**, generate the combined fol
 & $Python .\python\MOD_18_fuzzy_recommendations.py `
   --modeling-data $ModelingData `
   --holdout-split $HoldoutSplit `
-  --output-dir ".\outputs\MOD_18_results_boundary_v2" `
+  --output-dir ".\outputs\MOD_18_results_boundary_v3" `
   --render-figure-set `
   --enable-locked-test-evaluation `
   --frozen-policy-id "ACTUAL_FROZEN_POLICY_ID" `
