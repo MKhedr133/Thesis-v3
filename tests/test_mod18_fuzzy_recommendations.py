@@ -431,6 +431,41 @@ class TestPipeline(unittest.TestCase):
         self.assertNotIn("D4", [heading for heading in headings])
         self.assertNotIn("LIMITATIONS", joined)
 
+    def test_review_is_shown_as_status_not_a_fourth_recommendation(self):
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+
+        row = pd.Series({
+            "model": "cognitive_later", "participant_id": "T01",
+            "difficulty_level": 2, "threshold": .20,
+            "raw_action": "Increase", "final_action": "Review",
+            "proposed_level": np.nan, "strongest_rules": "I1",
+            "increase_support": .63, "decrease_support": .03,
+            "review_flags": "UNVERIFIED_D0_BASELINE_ORDER",
+        })
+        activation = pd.DataFrame([
+            {"rule_id": rule, "score": .63 if rule == "I1" else .05}
+            for rule in MOD18.RULES["cognitive_later"]
+        ])
+        labels = []
+        actual_text = Axes.text
+
+        def capture(axis, x, y, message, *args, **kwargs):
+            labels.append(str(message))
+            return actual_text(axis, x, y, message, *args, **kwargs)
+
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "review.png"
+            with patch.object(Axes, "text", new=capture):
+                MOD18.plot_trial(row, pd.DataFrame(), activation, target)
+            self.assertTrue(target.exists())
+        self.assertIn("STATUS", labels)
+        self.assertIn("REVIEW REQUIRED", labels)
+        self.assertNotIn("RECOMMENDATION", labels)
+        self.assertTrue(any("PROVISIONAL" in label for label in labels))
+        self.assertTrue(any("THEN Increase difficulty" in label
+                            for label in labels))
+
     def test_development_heatmap_shows_values_by_stage(self):
         from unittest.mock import patch
         from matplotlib.axes import Axes
