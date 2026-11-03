@@ -275,7 +275,7 @@ def regression_ready_modeling_data() -> pd.DataFrame:
     return data
 
 
-def regression_ready_training():
+def regression_ready_training_from_full_cohort():
     """Return regression-ready training data and frozen test IDs."""
     data = (
         regression_ready_modeling_data()
@@ -909,7 +909,7 @@ class LinearRegressionTests(
         (
             self.training,
             self.test_ids,
-        ) = regression_ready_training()
+        ) = regression_ready_training_from_full_cohort()
 
     def test_all_four_models_can_fit(
         self,
@@ -1099,7 +1099,7 @@ class ParticipantBootstrapTests(
         (
             self.training,
             self.test_ids,
-        ) = regression_ready_training()
+        ) = regression_ready_training_from_full_cohort()
 
         self.frame = (
             MOD13.prepare_model_frame(
@@ -1294,7 +1294,7 @@ class BootstrapSummaryTests(
         (
             self.training,
             self.test_ids,
-        ) = regression_ready_training()
+        ) = regression_ready_training_from_full_cohort()
 
     def test_final_coefficient_comes_from_full_training_fit(
         self,
@@ -1460,7 +1460,7 @@ class BootstrapSummaryTests(
             ],
         )
 
-def regression_ready_training():
+def regression_ready_training_from_development():
     """Create deterministic non-collinear data for regression tests."""
     training, _, test_ids = (
         MOD13.prepare_training_data(
@@ -1540,7 +1540,7 @@ class DevelopmentOutputTests(
         (
             self.training,
             self.test_ids,
-        ) = regression_ready_training()
+        ) = regression_ready_training_from_development()
 
     def test_all_four_models_are_developed(
         self,
@@ -1677,7 +1677,7 @@ class FrozenModelTests(
         (
             self.training,
             self.test_ids,
-        ) = regression_ready_training()
+        ) = regression_ready_training_from_development()
 
         results = (
             MOD13.develop_all_models(
