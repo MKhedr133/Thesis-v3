@@ -24,6 +24,14 @@ VERSION = "candidate-v0.1"
 THRESHOLDS = (0.10, 0.20)
 LEVELS = (0, 2, 6, 10)
 
+
+def stage_label(level: int) -> str:
+    """Presentation-only label; underlying difficulty codes stay unchanged."""
+    if level not in LEVELS:
+        raise RecommendationError(f"Unrecognized difficulty level: {level}")
+    return f"Stage {LEVELS.index(level)}"
+
+
 # Shorthand is used only in the versioned rule registry.
 FEATURES = {
     "M": "mental_demand_score_0_to_10",
@@ -496,7 +504,7 @@ def readable_rule(model: str, rule_id: str) -> str:
     if rule_id not in RULES[model]:
         raise RecommendationError(f"Unrecognized rule: {model}/{rule_id}")
     antecedents = [
-        f"{LABELS[feature][0]} is "
+        f"{LABELS[feature][0].replace('D0', 'Stage 0')} is "
         f"{dict(L='Low', M='Medium', H='High')[membership]}"
         for feature, membership in RULES[model][rule_id]
     ]
@@ -530,7 +538,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
     act = activations.set_index("rule_id")["score"].reindex(RULES[model])
     color = {"Increase": "#246c70", "Decrease": "#a85b39",
              "Maintain": "#526f91", "Review": "#9a5260"}[final]
-    next_stage = f"→ D{int(proposed)}" if pd.notna(proposed) else ""
+    next_stage = f"→ {stage_label(int(proposed))}" if pd.notna(proposed) else ""
     fig = plt.figure(figsize=(11.8, 6.35), facecolor="#fbfcfd")
     title_ax = fig.add_axes([.06, .72, .88, .23])
     rule_ax = fig.add_axes([.06, .41, .88, .27])
@@ -544,7 +552,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                   transform=title_ax.transAxes)
     title_ax.text(0, .48, "ASSIGNED STAGE", fontsize=9, color="#697b8a",
                   transform=title_ax.transAxes)
-    title_ax.text(0, .12, f"D{stage}", fontsize=24, weight="bold",
+    title_ax.text(0, .12, stage_label(stage), fontsize=24, weight="bold",
                   color="#183448", transform=title_ax.transAxes)
     title_ax.text(.37, .48, "RECOMMENDATION", fontsize=9,
                   color="#697b8a", transform=title_ax.transAxes)
@@ -586,7 +594,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                      transform=rule_ax.transAxes, va="top")
         if final == "Review":
             flag = str(row.get("review_flags", "")).split("|")[0]
-            rule_ax.text(.99, .97, flag.replace("_", " ")[:36],
+            rule_ax.text(.99, .97, flag.replace("_", " ").replace("D0", "Stage 0")[:36],
                          fontsize=8, color="#9a5260", ha="right",
                          transform=rule_ax.transAxes, va="top")
         if selected:
@@ -631,7 +639,7 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
         flag = str(row.get("review_flags", "")).split("|")[0]
         if not flag:
             flag = "Conflicting or unavailable rule evidence"
-        rule_ax.text(0, .69, flag.replace("_", " ").replace(":", ": "),
+        rule_ax.text(0, .69, flag.replace("_", " ").replace(":", ": ").replace("D0", "Stage 0"),
                      fontsize=11, color="#213b4f",
                      transform=rule_ax.transAxes, va="top")
         rule_ax.text(0, .27, "No automatic stage recommendation",
@@ -704,7 +712,7 @@ def plot_rule_activation_heatmap(
     for level in sorted(ordered["difficulty_level"].unique()):
         count = int(np.count_nonzero(stages == level))
         centers.append(begin + (count - 1) / 2)
-        labels.append(f"D{int(level)}")
+        labels.append(stage_label(int(level)))
         begin += count
         if begin < len(ordered):
             ax.axvline(begin - .5, color="white", lw=2)
@@ -847,11 +855,13 @@ def write_figure_set(
     development_results: dict,
     test_results: dict,
     plot_threshold: float,
+    calibration: pd.DataFrame,
+    policy_id: str,
 ) -> int:
-    """Export exactly the requested 8 development and 90 held-out PNGs.
+    """Export 98 figures and their numerical results under one output root.
 
-    The output root contains *only* images, with summary/ and test/
-    directories. This method never calibrates, tunes or writes analysis CSVs.
+    Scope-specific CSV/JSON exports are kept separate. Neither calibration
+    nor the policy is modified by the descriptive held-out visualisations.
     """
     if destination.exists():
         if not destination.is_dir() or any(destination.iterdir()):
@@ -933,10 +943,36 @@ def write_figure_set(
             plot_trial(row, same_member, same_rules, target)
 
     actual = list(destination.rglob("*.png"))
-    if len(actual) != 98 or len(list(destination.rglob("*.*"))) != 98:
+    if len(actual) != 98:
         raise RecommendationError(
             f"Figure set incomplete: expected 98 PNGs, got {len(actual)}"
         )
+
+    # Reuse the regular, separately scoped exports. Each contains both
+    # thresholds, measured memberships, rule strengths, review flags and
+    # source-calibration metadata; no redundant PNGs are generated here.
+    data_dir = destination / "data"
+    registry_table = rule_registry_table()
+    for scope, scoped_results in (
+        ("development", development_results), ("test", test_results),
+    ):
+        write_outputs(
+            data_dir / scope, scope, calibration, registry_table,
+            scoped_results, render_plots=False,
+            plot_threshold=plot_threshold, policy_id=policy_id,
+        )
+
+    # Exact counts behind the two-panel distribution figures.
+    distribution_tables = []
+    for model in registry:
+        summary = recommendation_distribution_table(
+            development_results[model][0], test_results[model][0]
+        )
+        summary.insert(0, "model", model)
+        distribution_tables.append(summary)
+    pd.concat(distribution_tables, ignore_index=True).to_csv(
+        data_dir / "recommendation_distribution.csv", index=False
+    )
     return len(actual)
 
 
@@ -1063,7 +1099,7 @@ def parser():
     )
     p.add_argument(
         "--render-figure-set", action="store_true",
-        help="One PNG-only folder: 8 development charts and 90 held-out trial figures",
+        help="One folder: 98 PNGs plus development/test numerical CSV/JSON results",
     )
     p.add_argument("--plot-threshold", type=float, choices=THRESHOLDS, default=.20)
     return p
@@ -1118,9 +1154,10 @@ def main(argv=None):
             for model in registry
         }
         count = write_figure_set(
-            args.output_dir, development_results, test_results, args.plot_threshold
+            args.output_dir, development_results, test_results,
+            args.plot_threshold, calibration, args.frozen_policy_id
         )
-        print(f"MOD-18 figure set: {count} PNGs in {args.output_dir}")
+        print(f"MOD-18 figures and data: {count} PNGs, development/test CSVs in {args.output_dir}")
         return
     write_outputs(args.output_dir, args.scope, calibration,
                   rule_registry_table(), results, args.render_plots,
