@@ -346,21 +346,21 @@ class TestPipeline(unittest.TestCase):
                     destination, dev_results, test_results, plot_threshold=.20
                 )
             self.assertEqual(produced, 98)
-            self.assertEqual(len(list((destination / "development").glob("*.png"))), 8)
+            self.assertEqual(len(list((destination / "summary").glob("*.png"))), 8)
             self.assertEqual(len(list((destination / "test").rglob("*.png"))), 90)
             self.assertEqual(len(list(destination.rglob("*.png"))), 98)
             self.assertEqual(len(list(destination.rglob("*.csv"))), 0)
             self.assertEqual(len(list(destination.rglob("*.json"))), 0)
             self.assertTrue(
-                (destination / "development"
+                (destination / "summary"
                  / "visual_rule_activation_heatmap.png").exists()
             )
             self.assertTrue(
-                (destination / "development"
+                (destination / "summary"
                  / "visual_recommendation_distribution.png").exists()
             )
             self.assertFalse(
-                (destination / "development"
+                (destination / "summary"
                  / "visual_threshold_comparison.png").exists()
             )
             self.assertTrue(
