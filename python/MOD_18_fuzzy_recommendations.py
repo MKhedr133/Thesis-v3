@@ -103,6 +103,71 @@ RULES = {
         "I5": (("G", "L"), ("M", "L"), ("LD", "H")),
     },
 }
+
+# Short, hypothesis-level explanations. Not clinical endorsements.
+RULE_REASONS = {
+    "visual": {
+        "D1": "Demand and irrelevant gaze rise together",
+        "D2": "Demand coincides with slow shopping",
+        "D3": "Demand coincides with slow target search",
+        "D4": "Irrelevant gaze and slower progression coincide",
+        "D5": "Demand coincides with extensive scanning",
+        "I1": "Low demand, little distraction and quick search",
+        "I2": "Low demand, little distraction and fast progress",
+        "I3": "Low demand and fast search and progress",
+        "I4": "Low demand, little distraction and limited scanning",
+        "I5": "Low demand, quick progress and little list checking",
+    },
+    "auditory": {
+        "D1": "Demand coincides with slow shopping",
+        "D2": "Demand coincides with slow product search",
+        "D3": "Shopping and search times are both prolonged",
+        "D4": "Demand coincides with extensive scanning",
+        "D5": "Slow shopping accompanies extensive scanning",
+        "I1": "Low demand and fast shopping and search",
+        "I2": "Low demand, fast shopping and limited scanning",
+        "I3": "Low demand, fast search and limited scanning",
+        "I4": "Low demand, fast search and typical shopping pace",
+        "I5": "Low demand, fast shopping and typical scanning",
+    },
+    "cognitive_primary": {
+        "D1": "Demand and slow shopping coincide",
+        "D2": "Demand and slow target search coincide",
+        "D3": "Slow shopping and target search coincide",
+        "D4": "High demand accompanies limited list checks",
+        "D5": "High demand accompanies little list consultation",
+        "I1": "Low demand and fast shopping and search",
+        "I2": "Low demand, fast progress and little irrelevant gaze",
+        "I3": "Low demand, fast progress and limited scanning",
+        "I4": "Low demand, fast progress and frequent list checks",
+        "I5": "Low demand, fast progress and prolonged list use",
+    },
+    "cognitive_later": {
+        "D1": "Product performance fell with high demand",
+        "D2": "Product performance fell with slower shopping",
+        "D3": "High demand accompanies slow shopping",
+        "D4": "Product performance fell with slower target search",
+        "D5": "Product performance fell with little list use",
+        "I1": "Lower relative deterioration, demand and grab time",
+        "I2": "Lower relative deterioration, demand and search time",
+        "I3": "Lower relative deterioration with faster task pace",
+        "I4": "Low relative deterioration, demand and frequent list use",
+        "I5": "Low relative deterioration, demand and prolonged list use",
+    },
+}
+FEATURE_WARNINGS = {
+    "M": "Perceived effort is subjective",
+    "P": "Timing includes movement, planning and list use",
+    "T": "Search time depends on visual layout",
+    "F": "Focus covers selected irrelevant-object labels",
+    "H": "Scanning may be appropriate for the layout",
+    "LC": "List checking may be successful compensation",
+    "LD": "List use may support correct product collection",
+    "G": "Stage-relative Low can conceal a large absolute decline",
+    "R": "Reach duration is affected by motor factors",
+    "RP": "Reach path ratio is affected by movement geometry",
+}
+
 EXPLORATORY = {
     "visual": {"D5", "I4", "I5"},
     "auditory": {"D4", "D5", "I2", "I3", "I4", "I5"},
@@ -205,6 +270,10 @@ def rule_registry_table() -> pd.DataFrame:
                 ),
                 "feature_keys": ",".join(f for f, _ in antecedents),
                 "status": "exploratory" if name in EXPLORATORY[model] else "candidate",
+                "rationale": RULE_REASONS[model][name],
+                "measurement_cautions": "; ".join(
+                    dict.fromkeys(FEATURE_WARNINGS[f] for f, _ in antecedents)
+                ),
                 "clinically_approved": False,
             })
     return pd.DataFrame(rows)
