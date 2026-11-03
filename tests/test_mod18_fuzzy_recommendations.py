@@ -294,6 +294,14 @@ class TestPipeline(unittest.TestCase):
             self.assertTrue(image.exists())
             self.assertGreater(image.stat().st_size, 4000)
 
+    def test_display_stages_do_not_change_data_levels(self):
+        self.assertEqual(
+            [MOD18.stage_label(level) for level in MOD18.LEVELS],
+            ["Stage 0", "Stage 1", "Stage 2", "Stage 3"]
+        )
+        with self.assertRaises(MOD18.RecommendationError):
+            MOD18.stage_label(5)
+
     def test_explanation_uses_actual_if_then_rule(self):
         d4 = MOD18.readable_rule("visual", "D4")
         self.assertEqual(
@@ -304,7 +312,7 @@ class TestPipeline(unittest.TestCase):
         i1 = MOD18.readable_rule("cognitive_later", "I1")
         self.assertEqual(i1.count(" AND "), 2)
         self.assertIn("THEN Increase difficulty", i1)
-        self.assertIn("D0 performance drop is Low", i1)
+        self.assertIn("Stage 0 performance drop is Low", i1)
         with self.assertRaises(MOD18.RecommendationError):
             MOD18.readable_rule("visual", "INVALID")
 
@@ -348,6 +356,9 @@ class TestPipeline(unittest.TestCase):
         joined = "\n".join(messages)
         self.assertIn("ASSIGNED STAGE", joined)
         self.assertIn("RECOMMENDATION", joined)
+        self.assertIn("Stage 2", joined)
+        self.assertIn("DECREASE  → Stage 1", joined)
+        self.assertNotIn("D6", joined)
         self.assertIn("IF Irrelevant focus is High", joined)
         self.assertIn("THEN Decrease difficulty", joined)
         self.assertIn("OTHER DECREASE RULES", headings)
@@ -366,21 +377,30 @@ class TestPipeline(unittest.TestCase):
         from unittest.mock import patch
         from matplotlib.axes import Axes
         shapes = []
+        stage_ticks = []
         original_imshow = Axes.imshow
+        original_set_xticks = Axes.set_xticks
 
         def capture_image(axis, matrix, *args, **kwargs):
             shapes.append(np.asarray(matrix).shape)
             return original_imshow(axis, matrix, *args, **kwargs)
 
+        def capture_xticks(axis, ticks, labels=None, *args, **kwargs):
+            if labels is not None and len(labels) == 4:
+                stage_ticks.extend(labels)
+            return original_set_xticks(axis, ticks, labels=labels, *args, **kwargs)
+
         with TemporaryDirectory() as temp:
             output = Path(temp) / "visual_heatmap.png"
-            with patch.object(Axes, "imshow", new=capture_image):
+            with patch.object(Axes, "imshow", new=capture_image), \
+                 patch.object(Axes, "set_xticks", new=capture_xticks):
                 MOD18.plot_rule_activation_heatmap("visual", scores, output)
             self.assertTrue(output.exists())
             self.assertGreater(output.stat().st_size, 3000)
         self.assertEqual(shapes, [(10, 104)])
+        self.assertEqual(stage_ticks, ["Stage 0", "Stage 1", "Stage 2", "Stage 3"])
 
-    def test_combined_figure_set_contains_only_98_pngs(self):
+    def test_combined_figure_set_includes_98_pngs_and_scoped_csvs(self):
         from unittest.mock import patch
 
         dev_results = {
@@ -400,14 +420,46 @@ class TestPipeline(unittest.TestCase):
             destination = Path(temp) / "MOD_18_png_figures"
             with patch.object(MOD18, "plot_trial", side_effect=cheap_trial_renderer):
                 produced = MOD18.write_figure_set(
-                    destination, dev_results, test_results, plot_threshold=.20
+                    destination, dev_results, test_results, plot_threshold=.20,
+                    calibration=self.calibration, policy_id="synthetic-lock"
                 )
             self.assertEqual(produced, 98)
             self.assertEqual(len(list((destination / "summary").glob("*.png"))), 8)
             self.assertEqual(len(list((destination / "test").rglob("*.png"))), 90)
             self.assertEqual(len(list(destination.rglob("*.png"))), 98)
-            self.assertEqual(len(list(destination.rglob("*.csv"))), 0)
-            self.assertEqual(len(list(destination.rglob("*.json"))), 0)
+            self.assertTrue(
+                (destination / "data" / "recommendation_distribution.csv").is_file()
+            )
+            distribution = pd.read_csv(
+                destination / "data" / "recommendation_distribution.csv"
+            )
+            self.assertEqual(len(distribution), 4 * 2 * 2 * 3)
+            self.assertEqual(set(distribution["scope"]), {"development", "test"})
+            self.assertEqual(
+                set(distribution["action"]), {"Increase", "Maintain", "Decrease"}
+            )
+            for scope in ("development", "test"):
+                self.assertTrue(
+                    (destination / "data" / scope / "visual"
+                     / "recommendations.csv").is_file()
+                )
+                self.assertTrue(
+                    (destination / "data" / scope / "cognitive_later"
+                     / "rule_activations.csv").is_file()
+                )
+                self.assertTrue(
+                    (destination / "data" / scope / "manifest.json").is_file()
+                )
+            test_recs = pd.read_csv(
+                destination / "data" / "test" / "visual" / "recommendations.csv"
+            )
+            self.assertEqual(set(test_recs["difficulty_level"]), {0, 2, 6, 10})
+            self.assertEqual(
+                len(pd.read_csv(
+                    destination / "data" / "test" / "cognitive_later"
+                    / "recommendations.csv"
+                )), 36
+            )
             self.assertTrue(
                 (destination / "summary"
                  / "visual_rule_activation_heatmap.png").exists()
@@ -426,7 +478,8 @@ class TestPipeline(unittest.TestCase):
             )
             with self.assertRaises(MOD18.RecommendationError):
                 MOD18.write_figure_set(
-                    destination, dev_results, test_results, plot_threshold=.20
+                    destination, dev_results, test_results, plot_threshold=.20,
+                    calibration=self.calibration, policy_id="synthetic-lock"
                 )
 
     def test_combined_figure_set_rejects_split_contamination(self):
@@ -451,7 +504,8 @@ class TestPipeline(unittest.TestCase):
                 MOD18.RecommendationError, "participant boundary"
             ):
                 MOD18.write_figure_set(
-                    destination, dev_results, test_results, plot_threshold=.20
+                    destination, dev_results, test_results, plot_threshold=.20,
+                    calibration=self.calibration, policy_id="synthetic-lock"
                 )
             self.assertFalse(destination.exists())
 
