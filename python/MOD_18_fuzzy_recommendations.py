@@ -596,9 +596,9 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                          linespacing=1.35)
             rule_ax.text(0, .11, consequent, fontsize=11.3, weight="bold",
                          color=color, transform=rule_ax.transAxes, va="bottom")
-        heading = (f"{rule_group.upper()} RULE STRENGTHS" if final != "Review"
-                   else f"PROVISIONAL {rule_group.upper()} RULE STRENGTHS")
-        shown = group
+        heading = (f"OTHER {rule_group.upper()} RULES" if final != "Review"
+                   else f"OTHER PROVISIONAL {rule_group.upper()} RULES")
+        shown = [(rid, value) for rid, value in group if rid != selected]
     elif final == "Maintain":
         inc = float(row["increase_support"])
         dec = float(row["decrease_support"])
