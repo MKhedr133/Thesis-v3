@@ -850,7 +850,7 @@ def write_figure_set(
 ) -> int:
     """Export exactly the requested 8 development and 90 held-out PNGs.
 
-    The output root contains *only* images, with development/ and test/
+    The output root contains *only* images, with summary/ and test/
     directories. This method never calibrates, tunes or writes analysis CSVs.
     """
     if destination.exists():
@@ -898,7 +898,7 @@ def write_figure_set(
         expected_test[model] = selected
 
     destination.mkdir(parents=True, exist_ok=True)
-    dev_dir = destination / "development"
+    dev_dir = destination / "summary"
     test_dir = destination / "test"
     for model in registry:
         dev_recs, _, dev_activations = development_results[model]
