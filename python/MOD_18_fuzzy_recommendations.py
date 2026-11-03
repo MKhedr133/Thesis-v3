@@ -585,176 +585,181 @@ def _short_reason(model, strongest: str) -> str:
 
 def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                target: Path):
-    """Compact therapist-facing recommendation: stage, action, rule, strengths.
+    """Self-contained rule explanation with three actions and explicit statuses.
 
-    Maintain has no dedicated 5-rule class: it is the threshold fallback.
-    Review is a safeguard, not an actionable recommendation.
+    Maintain shows all ten activations, while directional recommendations
+    show the triggering rule and the other four rules of its action.
+    This is a presentation-only change; decision policy is unchanged.
     """
     import textwrap
+    from matplotlib.patches import Rectangle
 
     model = str(row["model"])
     person = str(row["participant_id"])
     stage = int(row["difficulty_level"])
     final = str(row["final_action"])
     raw = str(row["raw_action"])
-    threshold = float(row["threshold"])
     proposed = row["proposed_level"]
     act = activations.set_index("rule_id")["score"].reindex(RULES[model])
     color = {"Increase": "#246c70", "Decrease": "#a85b39",
              "Maintain": "#526f91", "Review": "#9a5260",
              "Unavailable": "#6d747c"}[final]
     next_stage = f"→ {stage_label(int(proposed))}" if pd.notna(proposed) else ""
-    fig = plt.figure(figsize=(11.8, 6.35), facecolor="#fbfcfd")
-    title_ax = fig.add_axes([.06, .72, .88, .23])
-    rule_ax = fig.add_axes([.06, .41, .88, .27])
-    bars_ax = fig.add_axes([.22, .08, .71, .29])
-    for ax in (title_ax, rule_ax):
-        ax.set_axis_off()
-
-    title_ax.text(0, .95,
-                  f"{model.replace('_', ' ').title()}  ·  {person}  ·  τ {threshold:.2f}",
-                  fontsize=10.5, color="#5a6b7a", va="top",
-                  transform=title_ax.transAxes)
-    title_ax.text(0, .48, "ASSIGNED STAGE", fontsize=9, color="#697b8a",
-                  transform=title_ax.transAxes)
-    title_ax.text(0, .12, stage_label(stage), fontsize=24, weight="bold",
-                  color="#183448", transform=title_ax.transAxes)
-    title_ax.text(.37, .48,
-                  "STATUS" if final in ("Review", "Unavailable")
-                  else "RECOMMENDATION",
-                  fontsize=9, color="#697b8a", transform=title_ax.transAxes)
-    display_action = (
-        "REVIEW REQUIRED" if final == "Review" else
-        "DATA UNAVAILABLE" if final == "Unavailable" else
-        f"{final.upper()}  {next_stage}"
-    )
-    title_ax.text(.37, .12, display_action,
-                  fontsize=22, weight="bold", color=color,
-                  transform=title_ax.transAxes)
-    title_ax.plot([0, 1], [.01, .01], transform=title_ax.transAxes,
-                  color="#dce4eb", linewidth=1)
-
-    finite = [(rid, float(value)) for rid, value in act.items()
-              if pd.notna(value) and math.isfinite(float(value))]
+    finite = [
+        (rid, float(value)) for rid, value in act.items()
+        if pd.notna(value) and math.isfinite(float(value))
+    ]
     strongest = str(row.get("strongest_rules", "")).split("|")[0]
+
     if final in ("Increase", "Decrease"):
         rule_group = final
-        selected = strongest if strongest in RULES[model] else ""
     elif final == "Review" and raw in ("Increase", "Decrease"):
         rule_group = raw
-        selected = strongest if strongest in RULES[model] else ""
-    elif final == "Review" and finite:
-        # With competing supports, show the strongest *provisional* IF rule.
-        selected = max(finite, key=lambda item: (item[1], item[0]))[0]
-        rule_group = "Increase" if selected.startswith("I") else "Decrease"
     else:
         rule_group = None
-        selected = ""
 
+    selected = ""
     if rule_group:
         prefix = "I" if rule_group == "Increase" else "D"
         group = sorted(
             ((rid, value) for rid, value in finite if rid.startswith(prefix)),
             key=lambda item: (-item[1], item[0]),
         )
-        if not selected and group:
+        if strongest in RULES[model] and strongest.startswith(prefix):
+            selected = strongest
+        elif group:
             selected = group[0][0]
-        rule_ax.text(0, .97,
-                     "STRONGEST RULE" if final != "Review"
-                     else "PROVISIONAL RULE · REVIEW REQUIRED",
-                     fontsize=9, weight="bold", color="#526777",
-                     transform=rule_ax.transAxes, va="top")
-        if final == "Review":
-            flag = str(row.get("review_flags", "")).split("|")[0]
-            rule_ax.text(.99, .97, flag.replace("_", " ").replace("D0", "Stage 0")[:36],
-                         fontsize=8, color="#9a5260", ha="right",
-                         transform=rule_ax.transAxes, va="top")
-        if selected:
-            strength = float(act[selected])
-            rule_ax.text(0, .79,
-                         f"{rule_label(selected)}  ·  activation {strength:.2f}",
-                         fontsize=12, weight="bold", color=color,
-                         transform=rule_ax.transAxes, va="top")
-            antecedents, consequent = readable_rule(model, selected).split("\n")
-            # Wrap only if necessary; never drop the antecedents.
-            antecedent_lines = textwrap.wrap(
-                antecedents, width=86, subsequent_indent="   "
-            )
-            rule_ax.text(0, .60, "\n".join(antecedent_lines),
-                         fontsize=11.2, color="#213b4f",
-                         transform=rule_ax.transAxes, va="top",
-                         linespacing=1.35)
-            rule_ax.text(0, .11, consequent, fontsize=11.3, weight="bold",
-                         color=color, transform=rule_ax.transAxes, va="bottom")
-        heading = (f"OTHER {rule_group.upper()} RULES" if final != "Review"
-                   else f"OTHER PROVISIONAL {rule_group.upper()} RULES")
+        # The four companion rules retain their stable rule IDs.
         shown = [(rid, value) for rid, value in group if rid != selected]
-    elif final == "Maintain":
-        inc = float(row["increase_support"])
-        dec = float(row["decrease_support"])
-        rule_ax.text(0, .97, "THRESHOLD DECISION", fontsize=9,
-                     weight="bold", color="#526777",
-                     transform=rule_ax.transAxes, va="top")
-        rule_ax.text(
-            0, .70,
-            f"IF Increase support {inc:.2f} < {threshold:.2f} AND "
-            f"Decrease support {dec:.2f} < {threshold:.2f}",
-            fontsize=11.2, color="#213b4f", transform=rule_ax.transAxes,
-            va="top")
-        rule_ax.text(0, .23, "THEN Maintain difficulty",
-                     fontsize=11.3, weight="bold", color=color,
-                     transform=rule_ax.transAxes, va="top")
-        heading = "STRONGEST NON-QUALIFYING RULES"
-        shown = sorted(finite, key=lambda item: (-item[1], item[0]))[:5]
+        heading = f"Other {rule_group} rule activations"
     else:
-        rule_ax.text(0, .97,
-                     "DATA UNAVAILABLE" if final == "Unavailable"
-                     else "REVIEW REQUIRED",
-                     fontsize=9, weight="bold",
-                     color=color, transform=rule_ax.transAxes, va="top")
-        field = ("diagnostic_flags" if final == "Unavailable"
-                 else "review_flags")
-        flag = str(row.get(field, "")).split("|")[0]
-        if not flag:
-            flag = "Conflicting or unavailable rule evidence"
-        rule_ax.text(0, .69, flag.replace("_", " ").replace(":", ": ").replace("D0", "Stage 0"),
-                     fontsize=11, color="#213b4f",
-                     transform=rule_ax.transAxes, va="top")
-        rule_ax.text(0, .27, "No automatic stage recommendation",
-                     fontsize=11, weight="bold", color=color,
-                     transform=rule_ax.transAxes, va="top")
-        heading = "AVAILABLE RULE STRENGTHS"
-        shown = sorted(finite, key=lambda item: (-item[1], item[0]))[:5]
+        # Maintain must never discard five rules or an opposite-action group.
+        # Unavailable likewise shows every score, including missing scores.
+        shown = [
+            (rid, float(act[rid]) if pd.notna(act[rid]) else math.nan)
+            for rid in RULES[model]
+        ]
+        heading = "All rule activation strengths"
 
-    bars_ax.set_title(heading, loc="left", fontsize=9, color="#526777",
-                      weight="bold", pad=10)
-    if shown:
-        rule_ids = [rid for rid, _ in shown]
-        vals = [value for _, value in shown]
-        y = np.arange(len(shown))
-        bar_colors = [color if rid == selected else "#9bafbf" for rid in rule_ids]
-        bars_ax.barh(y, vals, color=bar_colors, height=.55)
-        bars_ax.set_yticks(y, labels=[rule_label(rid) for rid in rule_ids])
-        bars_ax.invert_yaxis()
-        bars_ax.set_xlim(0, 1.10)
-        bars_ax.set_xticks([0, .5, 1], ["0", "0.5", "1"])
-        bars_ax.tick_params(axis="both", length=0, labelsize=9, colors="#596d7b")
-        for yi, value in zip(y, vals):
-            bars_ax.text(min(value + .025, 1.04), yi, f"{value:.2f}",
-                         va="center", fontsize=9, color="#244155")
+    # A ten-rule Maintain card needs more height than a four-rule card.
+    nrows = max(len(shown), 1)
+    figure_height = 4.1 + .83 * nrows
+    fig = plt.figure(figsize=(13.2, figure_height), facecolor="#fbfcfd")
+    title_ax = fig.add_axes([.06, (figure_height - 1.67) / figure_height,
+                             .88, 1.27 / figure_height])
+    rule_ax = fig.add_axes([.06, (figure_height - 3.63) / figure_height,
+                            .88, 1.65 / figure_height])
+    list_ax = fig.add_axes([.06, .39 / figure_height,
+                            .89, (figure_height - 4.13) / figure_height])
+    for ax in (title_ax, rule_ax, list_ax):
+        ax.set_axis_off()
+
+    # Keep the condition and participant identifier, but not threshold τ.
+    title_ax.text(0, .99, f"{model.replace('_', ' ').title()}  ·  {person}",
+                  fontsize=11, color="#5a6b7a", va="top",
+                  transform=title_ax.transAxes)
+    title_ax.text(0, .51, "ASSIGNED STAGE", fontsize=9.3, color="#697b8a",
+                  transform=title_ax.transAxes)
+    title_ax.text(0, .15, stage_label(stage), fontsize=24, weight="bold",
+                  color="#183448", transform=title_ax.transAxes)
+    title_ax.text(.39, .51, "RECOMMENDATION", fontsize=9.3,
+                  color="#697b8a", transform=title_ax.transAxes)
+    displayed = (
+        "REVIEW" if final == "Review" else
+        "DATA UNAVAILABLE" if final == "Unavailable" else
+        f"{final.upper()}  {next_stage}"
+    )
+    title_ax.text(.39, .15, displayed, fontsize=22, weight="bold",
+                  color=color, transform=title_ax.transAxes)
+    title_ax.plot([0, 1], [.015, .015], transform=title_ax.transAxes,
+                  color="#dce4eb", linewidth=1)
+
+    if selected:
+        strength = float(act[selected])
+        antecedents, consequent = readable_rule(model, selected).split("\n")
+        rule_ax.text(
+            0, .98, f"{rule_label(selected)}  ·  activation {strength:.2f}",
+            fontsize=12, weight="bold", color=color,
+            transform=rule_ax.transAxes, va="top",
+        )
+        wrapped = textwrap.wrap(antecedents, width=100,
+                                subsequent_indent="   ")
+        rule_ax.text(0, .72, "\n".join(wrapped), fontsize=11.2,
+                     color="#213b4f", transform=rule_ax.transAxes,
+                     va="top", linespacing=1.34)
+        rule_ax.text(0, .14, consequent, fontsize=11.3, weight="bold",
+                     color=color, transform=rule_ax.transAxes,
+                     va="bottom")
+    elif final == "Maintain":
+        rule_ax.text(
+            0, .85,
+            "None of the Increase or Decrease rules is sufficiently active "
+            "to recommend changing difficulty.",
+            fontsize=11.4, color="#213b4f",
+            transform=rule_ax.transAxes, va="top",
+        )
     else:
-        bars_ax.text(.5, .45, "No valid rule activations",
-                     ha="center", va="center", transform=bars_ax.transAxes,
-                     color="#687986")
-        bars_ax.set_xlim(0, 1)
-        bars_ax.set_yticks([])
-        bars_ax.set_xticks([])
-    for edge in ("top", "right", "left"):
-        bars_ax.spines[edge].set_visible(False)
-    bars_ax.spines["bottom"].set_color("#d7e1e9")
+        rule_ax.text(
+            0, .85, "Insufficient valid measurements to recommend a stage.",
+            fontsize=11.4, color="#213b4f",
+            transform=rule_ax.transAxes, va="top",
+        )
+
+    list_ax.text(0, 1.005, heading, fontsize=10.4, weight="bold",
+                 color="#526777", transform=list_ax.transAxes, va="bottom")
+    # Each row includes the rule identifier, its expanded IF antecedent,
+    # and a numerical activation on a shared 0-1 scale. No misleading
+    # "provisional" or upper/lower boundary decorations are displayed.
+    for index, (rule_id, value) in enumerate(shown):
+        step = 1.0 / nrows
+        y_top = 1.0 - index * step
+        list_ax.text(
+            0, y_top - .18 * step, rule_label(rule_id),
+            fontsize=9.4, weight="bold", color="#334e62",
+            transform=list_ax.transAxes, va="top",
+        )
+        if_statement = readable_rule(model, rule_id).split("\n", 1)[0]
+        wrapped_if = textwrap.wrap(
+            if_statement, width=89, subsequent_indent="   "
+        )
+        list_ax.text(
+            0, y_top - .49 * step, "\n".join(wrapped_if),
+            fontsize=8.6, color="#536879", linespacing=1.16,
+            transform=list_ax.transAxes, va="top",
+        )
+        center_y = y_top - .48 * step
+        track_x, track_width = .785, .143
+        bar_h = .26 * step
+        list_ax.add_patch(Rectangle(
+            (track_x, center_y - bar_h / 2), track_width, bar_h,
+            transform=list_ax.transAxes, facecolor="#e7edf2",
+            edgecolor="none",
+        ))
+        if math.isfinite(value):
+            list_ax.add_patch(Rectangle(
+                (track_x, center_y - bar_h / 2),
+                track_width * min(1.0, max(0.0, value)), bar_h,
+                transform=list_ax.transAxes, facecolor="#9bafbf",
+                edgecolor="none",
+            ))
+        list_ax.text(
+            .945, center_y, f"{value:.2f}" if math.isfinite(value) else "–",
+            fontsize=9.4, color="#244155", va="center",
+            transform=list_ax.transAxes,
+        )
+        if index < len(shown) - 1:
+            list_ax.plot(
+                [0, 1], [y_top - .97 * step] * 2,
+                transform=list_ax.transAxes, color="#e8edf1", linewidth=.65,
+            )
+    list_ax.text(.787, 1.008, "Activation", fontsize=8.5,
+                 color="#526777", va="bottom",
+                 transform=list_ax.transAxes)
+
     target.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(target, dpi=170, facecolor=fig.get_facecolor())
     plt.close(fig)
+
 
 
 def plot_rule_activation_heatmap(
@@ -813,9 +818,15 @@ def plot_rule_activation_heatmap(
                           else "#253d51",
                 )
     fig.suptitle(f"{model.replace('_', ' ').title()} · Rule activation",
-                 fontsize=15, color="#1c394f", y=.998)
-    fig.subplots_adjust(left=.165, right=.92, top=.95,
-                        bottom=.035, hspace=.36)
+                 fontsize=15, color="#1c394f", y=.99)
+    fig.text(
+        .165, .957,
+        "Horizontal axis: each column represents one development participant "
+        "at the stage shown (ordered by participant ID)",
+        fontsize=9.5, color="#536879",
+    )
+    fig.subplots_adjust(left=.165, right=.92, top=.885,
+                        bottom=.035, hspace=.40)
     fig.colorbar(image, ax=list(axes[:, 0]), shrink=.6,
                  label="Activation", pad=.012)
     output_file.parent.mkdir(parents=True, exist_ok=True)
