@@ -491,107 +491,309 @@ def rule_coverage(activations: pd.DataFrame, thresholds=THRESHOLDS):
     return pd.DataFrame(rows)
 
 
+def readable_rule(model: str, rule_id: str) -> str:
+    """Expand a versioned rule into its complete human-readable IF–THEN form."""
+    if rule_id not in RULES[model]:
+        raise RecommendationError(f"Unrecognized rule: {model}/{rule_id}")
+    antecedents = [
+        f"{LABELS[feature][0]} is "
+        f"{dict(L='Low', M='Medium', H='High')[membership]}"
+        for feature, membership in RULES[model][rule_id]
+    ]
+    action = "Decrease" if rule_id.startswith("D") else "Increase"
+    return "IF " + " AND ".join(antecedents) + f"\nTHEN {action} difficulty"
+
+
 def _short_reason(model, strongest: str) -> str:
+    """Legacy compact text for downstream consumers of this module."""
     ids = strongest.split("|")[:2] if strongest else []
-    if not ids:
-        return "No qualifying change rule"
-    return "; ".join(
-        " + ".join(LABELS[key][0] + " " +
-                   {"L": "Low", "M": "Medium", "H": "High"}[category]
-                   for key, category in RULES[model][rid])
-        for rid in ids
-    )
+    return "; ".join(readable_rule(model, rid).replace("\n", " ")
+                     for rid in ids) if ids else "No qualifying change rule"
 
 
 def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                target: Path):
-    """A compact single-trial figure: short labels, no limitations text block."""
+    """Compact therapist-facing recommendation: stage, action, rule, strengths.
+
+    Maintain has no dedicated 5-rule class: it is the threshold fallback.
+    Review is a safeguard, not an actionable recommendation.
+    """
+    import textwrap
+
     model = str(row["model"])
-    stage = int(row["difficulty_level"])
     person = str(row["participant_id"])
-    m = member.set_index("feature")
-    act = activations.set_index("rule_id")["score"]
-    n = len(m)
-    fig = plt.figure(figsize=(12.0, max(7.6, 4.9 + .37*n)), facecolor="white")
-    gs = fig.add_gridspec(3, 2, height_ratios=[0.95, 4.6, 1.25],
-                          width_ratios=[1.08, 1.0], hspace=.25, wspace=.2,
-                          left=.055, right=.975, top=.93, bottom=.065)
-    ax0 = fig.add_subplot(gs[0, :])
-    ax1 = fig.add_subplot(gs[1, 0])
-    ax2 = fig.add_subplot(gs[1, 1])
-    ax3 = fig.add_subplot(gs[2, :])
-    for ax in (ax0, ax1, ax2, ax3):
-        ax.set_axis_off()
-    result = str(row["final_action"])
+    stage = int(row["difficulty_level"])
+    final = str(row["final_action"])
+    raw = str(row["raw_action"])
+    threshold = float(row["threshold"])
     proposed = row["proposed_level"]
-    destination = f"D{int(proposed)}" if pd.notna(proposed) else "—"
-    stage_str = f"D{stage}  →  {destination}" if result != "Review" else f"D{stage}  →  REVIEW"
-    ax0.text(0, .91, f"{model.replace('_', ' ').title()}  |  {person}  |  D{stage}",
-             size=12, color="#495B6C", va="top", transform=ax0.transAxes)
-    ax0.text(0, .16, stage_str, size=22, weight="bold",
-             color="#17324D", va="bottom", transform=ax0.transAxes)
-    ax0.text(.99, .2, f"{result.upper()}  ·  τ {row['threshold']:.2f}",
-             ha="right", size=12, color="#3A596F", transform=ax0.transAxes)
-    ax1.text(0, 1.01, "MEASURED / STAGE MEDIAN / LOW·MED·HIGH",
-             size=9, weight="bold", color="#385269", transform=ax1.transAxes)
-    for i, (feature, v) in enumerate(m.iterrows()):
-        key = BY_FEATURE[feature]
-        name, unit = LABELS[key]
-        y = .95 - (i+.45) * (.87 / max(n, 1))
-        value = v["measured_value"]
-        unit_str = f" {unit}" if unit else ""
-        observed = "—" if pd.isna(value) else f"{value:.3g}{unit_str}"
-        ref = f"{v['reference_median']:.3g}{unit_str}"
-        weights = (
-            "—" if pd.isna(v["low"]) else
-            f"{v['low']:.2f} · {v['medium']:.2f} · {v['high']:.2f}"
+    act = activations.set_index("rule_id")["score"].reindex(RULES[model])
+    color = {"Increase": "#246c70", "Decrease": "#a85b39",
+             "Maintain": "#526f91", "Review": "#9a5260"}[final]
+    next_stage = f"→ D{int(proposed)}" if pd.notna(proposed) else ""
+    fig = plt.figure(figsize=(11.8, 6.35), facecolor="#fbfcfd")
+    title_ax = fig.add_axes([.06, .72, .88, .23])
+    rule_ax = fig.add_axes([.06, .41, .88, .27])
+    bars_ax = fig.add_axes([.22, .08, .71, .29])
+    for ax in (title_ax, rule_ax):
+        ax.set_axis_off()
+
+    title_ax.text(0, .95,
+                  f"{model.replace('_', ' ').title()}  ·  {person}  ·  τ {threshold:.2f}",
+                  fontsize=10.5, color="#5a6b7a", va="top",
+                  transform=title_ax.transAxes)
+    title_ax.text(0, .48, "ASSIGNED STAGE", fontsize=9, color="#697b8a",
+                  transform=title_ax.transAxes)
+    title_ax.text(0, .12, f"D{stage}", fontsize=24, weight="bold",
+                  color="#183448", transform=title_ax.transAxes)
+    title_ax.text(.37, .48, "RECOMMENDATION", fontsize=9,
+                  color="#697b8a", transform=title_ax.transAxes)
+    title_ax.text(.37, .12, f"{final.upper()}  {next_stage}",
+                  fontsize=22, weight="bold", color=color,
+                  transform=title_ax.transAxes)
+    title_ax.plot([0, 1], [.01, .01], transform=title_ax.transAxes,
+                  color="#dce4eb", linewidth=1)
+
+    finite = [(rid, float(value)) for rid, value in act.items()
+              if pd.notna(value) and math.isfinite(float(value))]
+    strongest = str(row.get("strongest_rules", "")).split("|")[0]
+    if final in ("Increase", "Decrease"):
+        rule_group = final
+        selected = strongest if strongest in RULES[model] else ""
+    elif final == "Review" and raw in ("Increase", "Decrease"):
+        rule_group = raw
+        selected = strongest if strongest in RULES[model] else ""
+    else:
+        rule_group = None
+        selected = ""
+
+    if rule_group:
+        prefix = "I" if rule_group == "Increase" else "D"
+        group = sorted(
+            ((rid, value) for rid, value in finite if rid.startswith(prefix)),
+            key=lambda item: (-item[1], item[0]),
         )
-        ax1.text(.0, y, f"{key}  {name}", fontsize=9.4, va="center",
-                 transform=ax1.transAxes)
-        ax1.text(.52, y, f"{observed} / {ref}", fontsize=9.1,
-                 va="center", transform=ax1.transAxes)
-        ax1.text(.99, y, weights, fontsize=8.9, ha="right",
-                 va="center", transform=ax1.transAxes, color="#486783")
-    ax2.text(0, 1.01, "RULE ACTIVATION  ·  MIN-AND",
-             size=9, weight="bold", color="#385269", transform=ax2.transAxes)
-    y_positions = np.linspace(.94, .12, 10)
-    for i, name in enumerate((*[f"D{j}" for j in range(1,6)],
-                              *[f"I{j}" for j in range(1,6)])):
-        score = float(act[name])
-        y = y_positions[i]
-        ax2.text(0, y, name, transform=ax2.transAxes, va="center",
-                 fontsize=9, weight="bold")
-        ax2.text(.085, y, "+".join(f"{k}{cat}" for k,cat in RULES[model][name]),
-                 transform=ax2.transAxes, va="center", fontsize=8.6)
-        if math.isfinite(score):
-            ax2.barh(y, max(0, score) * .32, left=.52, height=.045,
-                     transform=ax2.transAxes, color="#557D9A" if name[0]=="D"
-                     else "#91A7B5", zorder=2)
-            ax2.text(.98, y, f"{score:.2f}", ha="right", va="center",
-                     transform=ax2.transAxes, size=9)
-    ax3.text(0, .90, "ACTION SUPPORT  ·  MAX-OR", fontsize=9, weight="bold",
-             transform=ax3.transAxes, color="#385269")
-    inc = float(row["increase_support"])
-    dec = float(row["decrease_support"])
-    ax3.text(0, .51, f"Increase {inc:.2f}" if math.isfinite(inc) else "Increase —",
-             fontsize=11, transform=ax3.transAxes)
-    ax3.text(.31, .51, f"Decrease {dec:.2f}" if math.isfinite(dec) else "Decrease —",
-             fontsize=11, transform=ax3.transAxes)
-    ax3.text(.61, .51, f"Threshold {row['threshold']:.2f}",
-             fontsize=10, transform=ax3.transAxes)
-    brief = (
-        "Review: " + str(row["review_flags"]).split("|")[0]
-        if result == "Review"
-        else "Why: " + _short_reason(model, row["strongest_rules"])
-    )
-    ax3.text(0, .19, brief[:115], fontsize=9.6, transform=ax3.transAxes)
-    ax3.text(0, -.055, f"MOD-18 {VERSION}  ·  development-stage calibration  ·  "
-             "candidate rules; therapist approval required",
-             fontsize=8.2, transform=ax3.transAxes, color="#718294")
+        if not selected and group:
+            selected = group[0][0]
+        rule_ax.text(0, .97,
+                     "STRONGEST RULE" if final != "Review"
+                     else "PROVISIONAL RULE · REVIEW REQUIRED",
+                     fontsize=9, weight="bold", color="#526777",
+                     transform=rule_ax.transAxes, va="top")
+        if selected:
+            strength = float(act[selected])
+            rule_ax.text(0, .79, f"{selected}  ·  activation {strength:.2f}",
+                         fontsize=12, weight="bold", color=color,
+                         transform=rule_ax.transAxes, va="top")
+            antecedents, consequent = readable_rule(model, selected).split("\n")
+            # Wrap only if necessary; never drop the antecedents.
+            antecedent_lines = textwrap.wrap(
+                antecedents, width=86, subsequent_indent="   "
+            )
+            rule_ax.text(0, .60, "\n".join(antecedent_lines),
+                         fontsize=11.2, color="#213b4f",
+                         transform=rule_ax.transAxes, va="top",
+                         linespacing=1.35)
+            rule_ax.text(0, .11, consequent, fontsize=11.3, weight="bold",
+                         color=color, transform=rule_ax.transAxes, va="bottom")
+        heading = (f"{rule_group.upper()} RULE STRENGTHS" if final != "Review"
+                   else f"PROVISIONAL {rule_group.upper()} RULE STRENGTHS")
+        shown = group
+    elif final == "Maintain":
+        inc = float(row["increase_support"])
+        dec = float(row["decrease_support"])
+        rule_ax.text(0, .97, "THRESHOLD DECISION", fontsize=9,
+                     weight="bold", color="#526777",
+                     transform=rule_ax.transAxes, va="top")
+        rule_ax.text(
+            0, .70,
+            f"IF Increase support {inc:.2f} < {threshold:.2f} AND "
+            f"Decrease support {dec:.2f} < {threshold:.2f}",
+            fontsize=11.2, color="#213b4f", transform=rule_ax.transAxes,
+            va="top")
+        rule_ax.text(0, .23, "THEN Maintain difficulty",
+                     fontsize=11.3, weight="bold", color=color,
+                     transform=rule_ax.transAxes, va="top")
+        heading = "STRONGEST NON-QUALIFYING RULES"
+        shown = sorted(finite, key=lambda item: (-item[1], item[0]))[:5]
+    else:
+        rule_ax.text(0, .97, "REVIEW REQUIRED", fontsize=9, weight="bold",
+                     color=color, transform=rule_ax.transAxes, va="top")
+        flag = str(row.get("review_flags", "")).split("|")[0]
+        if not flag:
+            flag = "Conflicting or unavailable rule evidence"
+        rule_ax.text(0, .69, flag.replace("_", " ").replace(":", ": "),
+                     fontsize=11, color="#213b4f",
+                     transform=rule_ax.transAxes, va="top")
+        rule_ax.text(0, .27, "No automatic stage recommendation",
+                     fontsize=11, weight="bold", color=color,
+                     transform=rule_ax.transAxes, va="top")
+        heading = "AVAILABLE RULE STRENGTHS"
+        shown = sorted(finite, key=lambda item: (-item[1], item[0]))[:5]
+
+    bars_ax.set_title(heading, loc="left", fontsize=9, color="#526777",
+                      weight="bold", pad=10)
+    if shown:
+        rule_ids = [rid for rid, _ in shown]
+        vals = [value for _, value in shown]
+        y = np.arange(len(shown))
+        bar_colors = [color if rid == selected else "#9bafbf" for rid in rule_ids]
+        bars_ax.barh(y, vals, color=bar_colors, height=.55)
+        bars_ax.set_yticks(y, labels=rule_ids)
+        bars_ax.invert_yaxis()
+        bars_ax.set_xlim(0, 1.10)
+        bars_ax.set_xticks([0, .5, 1], ["0", "0.5", "1"])
+        bars_ax.tick_params(axis="both", length=0, labelsize=9, colors="#596d7b")
+        for yi, value in zip(y, vals):
+            bars_ax.text(min(value + .025, 1.04), yi, f"{value:.2f}",
+                         va="center", fontsize=9, color="#244155")
+    else:
+        bars_ax.text(.5, .45, "No valid rule activations",
+                     ha="center", va="center", transform=bars_ax.transAxes,
+                     color="#687986")
+        bars_ax.set_xlim(0, 1)
+        bars_ax.set_yticks([])
+        bars_ax.set_xticks([])
+    for edge in ("top", "right", "left"):
+        bars_ax.spines[edge].set_visible(False)
+    bars_ax.spines["bottom"].set_color("#d7e1e9")
     target.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(target, dpi=165, bbox_inches="tight", facecolor="white")
+    fig.savefig(target, dpi=170, facecolor=fig.get_facecolor())
     plt.close(fig)
 
+
+def plot_rule_activation_heatmap(
+    model: str, activations: pd.DataFrame, output_file: Path,
+) -> None:
+    """Observation-level *development* activations, grouped by assigned stage."""
+    rule_ids = list(RULES[model])
+    required = {"participant_id", "difficulty_level", "rule_id", "score"}
+    if not required.issubset(activations.columns):
+        raise RecommendationError(f"{model}: incomplete heatmap input")
+    frame = activations.copy()
+    if frame.duplicated(["participant_id", "difficulty_level", "rule_id"]).any():
+        raise RecommendationError(f"{model}: duplicate rule scores")
+    ordered = (frame[["difficulty_level", "participant_id"]]
+               .drop_duplicates()
+               .sort_values(["difficulty_level", "participant_id"]))
+    indexed = frame.pivot(
+        index=["difficulty_level", "participant_id"],
+        columns="rule_id", values="score",
+    ).reindex(
+        index=pd.MultiIndex.from_frame(ordered), columns=rule_ids
+    )
+    matrix = indexed.to_numpy(dtype=float).T
+    fig, ax = plt.subplots(figsize=(12.8, 4.6), facecolor="white")
+    cmap = plt.get_cmap("Blues").copy()
+    cmap.set_bad("#edf1f4")
+    image = ax.imshow(matrix, cmap=cmap, vmin=0, vmax=1,
+                      interpolation="nearest", aspect="auto")
+    ax.set_yticks(np.arange(len(rule_ids)), rule_ids, fontsize=9)
+    ax.set_xticks([])
+    stages = ordered["difficulty_level"].to_numpy()
+    begin = 0
+    centers, labels = [], []
+    for level in sorted(ordered["difficulty_level"].unique()):
+        count = int(np.count_nonzero(stages == level))
+        centers.append(begin + (count - 1) / 2)
+        labels.append(f"D{int(level)}")
+        begin += count
+        if begin < len(ordered):
+            ax.axvline(begin - .5, color="white", lw=2)
+    ax.set_xticks(centers, labels, fontsize=9)
+    ax.tick_params(length=0)
+    ax.set_xlabel("Assigned stage · one column per development observation",
+                  fontsize=9, color="#546777", labelpad=9)
+    ax.set_title(f"{model.replace('_', ' ').title()} · Rule activation",
+                 fontsize=14, color="#1c394f", loc="left", pad=14)
+    fig.colorbar(image, ax=ax, label="Activation", shrink=.76, pad=.018)
+    fig.tight_layout()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=170, facecolor="white")
+    plt.close(fig)
+
+
+def recommendation_distribution_table(
+    development_recs: pd.DataFrame, test_recs: pd.DataFrame,
+) -> pd.DataFrame:
+    """Non-Review counts and percentages, pooled over participant-stage trials."""
+    rows = []
+    actions = ("Increase", "Maintain", "Decrease")
+    for scope, recs in (("development", development_recs), ("test", test_recs)):
+        for threshold in THRESHOLDS:
+            block = recs.loc[np.isclose(recs["threshold"], threshold)]
+            eligible = block.loc[block["final_action"].isin(actions)]
+            denominator = len(eligible)
+            counts = eligible["final_action"].value_counts()
+            for action in actions:
+                count = int(counts.get(action, 0))
+                rows.append({
+                    "scope": scope, "threshold": threshold, "action": action,
+                    "count": count, "denominator": denominator,
+                    "percentage": 100 * count / denominator if denominator else 0.,
+                })
+    return pd.DataFrame(rows)
+
+
+def plot_recommendation_distribution(
+    model: str, development_recs: pd.DataFrame, test_recs: pd.DataFrame,
+    output_file: Path,
+) -> None:
+    """Two grouped-bar panels (26 development vs 6 test participants)."""
+    summary = recommendation_distribution_table(development_recs, test_recs)
+    actions = ("Increase", "Maintain", "Decrease")
+    x = np.arange(3)
+    width = .34
+    colors = ("#2e5e83", "#90b0c7")
+    fig, axes = plt.subplots(
+        1, 2, figsize=(12.8, 4.7), facecolor="white",
+        gridspec_kw={"wspace": .26}
+    )
+    for ax, (scope, participants) in zip(
+        axes, (("development", 26), ("test", 6))
+    ):
+        scope_data = summary.loc[summary["scope"].eq(scope)]
+        peak = max(1, int(scope_data["count"].max()))
+        label_space = max(1.6, peak * .22)
+        for idx, threshold in enumerate(THRESHOLDS):
+            subset = scope_data.loc[np.isclose(scope_data["threshold"], threshold)]
+            values = [int(subset.loc[subset["action"].eq(name), "count"].iloc[0])
+                      for name in actions]
+            percents = [
+                float(subset.loc[subset["action"].eq(name), "percentage"].iloc[0])
+                for name in actions
+            ]
+            coordinates = x + (idx - .5) * width
+            ax.bar(coordinates, values, width=width * .92,
+                   label=f"τ {threshold:.2f}", color=colors[idx])
+            for px, count, percent in zip(coordinates, values, percents):
+                ax.text(px, count + label_space * .14,
+                        f"{count} · {percent:.0f}%",
+                        fontsize=8.8, ha="center", color="#254257")
+        ax.set_ylim(0, peak + label_space)
+        ax.set_xticks(x, actions, fontsize=10)
+        ax.set_ylabel("Recommendations (count)", fontsize=9)
+        ax.set_title(
+            f"{scope.title()} · {participants} participants",
+            fontsize=11, loc="left", pad=12, color="#254257"
+        )
+        ax.spines[["top", "right"]].set_visible(False)
+        ax.spines[["left", "bottom"]].set_color("#d7e1e8")
+        ax.tick_params(length=0, colors="#526777")
+        ax.grid(axis="y", color="#e8edf2", linewidth=.8)
+        ax.set_axisbelow(True)
+    fig.suptitle(
+        f"{model.replace('_', ' ').title()} · Recommendation distribution",
+        fontsize=14, color="#1c394f", weight="bold", y=.99
+    )
+    handles, labels = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(.5, .94),
+               frameon=False, ncol=2)
+    # Use independent y-scales so the smaller held-out panel remains legible.
+    fig.subplots_adjust(left=.08, right=.98, bottom=.13, top=.80, wspace=.25)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, dpi=170, facecolor="white")
+    plt.close(fig)
 
 
 def plot_development_summaries(
@@ -599,67 +801,36 @@ def plot_development_summaries(
     activations: pd.DataFrame, output_dir: Path,
     plot_threshold: float,
 ) -> None:
-    """Two aggregate development plots; no participant-level figures."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    model_label = model.replace("_", " ").title()
-    levels = sorted(recommendations["difficulty_level"].unique())
-    actions = ("Increase", "Decrease", "Maintain", "Review")
-    colors = {
-        "Increase": "#587b98", "Decrease": "#b07b58",
-        "Maintain": "#8b9b96", "Review": "#b56b75",
-    }
+    """Development-only exports: observation heatmap and two-threshold counts.
 
-    # Heatmap: the mean rule firing for each assigned development stage.
-    order = [f"D{i}" for i in range(1, 6)] + [
-        f"I{i}" for i in range(1, 6)]
-    heat = activations.pivot_table(
-        index="rule_id", columns="difficulty_level",
-        values="score", aggfunc="mean",
-    ).reindex(index=order, columns=levels)
-    fig, ax = plt.subplots(figsize=(7.5, 5))
-    image = ax.imshow(
-        heat.to_numpy(dtype=float), vmin=0, vmax=1,
-        cmap="Blues", aspect="auto",
+    The comparison involving held-out participants is *only* produced in the
+    locked, combined figure-set mode after the policy has been frozen.
+    """
+    plot_rule_activation_heatmap(
+        model, activations, output_dir / f"{model}_rule_activation_heatmap.png"
     )
-    ax.set_xticks(range(len(levels)), [f"D{n}" for n in levels])
-    ax.set_yticks(range(len(order)), order)
-    ax.set_xlabel("Assigned stage")
-    ax.set_title(f"{model_label} · Mean rule activation")
-    for row in range(len(order)):
-        for col in range(len(levels)):
-            value = heat.iloc[row, col]
-            if pd.notna(value):
-                ax.text(
-                    col, row, f"{value:.2f}", ha="center", va="center",
-                    fontsize=9, color="white" if value > .56 else "#293a4a",
-                )
-    fig.colorbar(image, ax=ax, label="Mean activation", shrink=.8)
+    # Retain a development-only threshold comparison for legacy CLI users.
+    counts = recommendation_distribution_table(recommendations, recommendations)
+    counts = counts.loc[counts["scope"].eq("development")]
+    fig, ax = plt.subplots(figsize=(7, 4), facecolor="white")
+    x = np.arange(3)
+    for i, threshold in enumerate(THRESHOLDS):
+        subset = counts.loc[np.isclose(counts["threshold"], threshold)]
+        nums = [int(subset.loc[subset["action"].eq(action), "count"].iloc[0])
+                for action in ("Increase", "Maintain", "Decrease")]
+        ax.bar(x + (i - .5) * .34, nums, width=.31,
+               color=("#2e5e83", "#90b0c7")[i],
+               label=f"τ {threshold:.2f}")
+    ax.set_xticks(x, ["Increase", "Maintain", "Decrease"])
+    ax.set_ylabel("Development recommendations")
+    ax.set_title(f"{model.replace('_', ' ').title()} · Development thresholds",
+                 loc="left", fontsize=12)
+    ax.legend(frameon=False)
     fig.tight_layout()
-    fig.savefig(output_dir / f"{model}_rule_activation_heatmap.png", dpi=165)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_dir / f"{model}_threshold_comparison.png",
+                dpi=170, facecolor="white")
     plt.close(fig)
-
-    # Threshold comparison: final action counts, identical denominator.
-    count = pd.crosstab(
-        recommendations["threshold"], recommendations["final_action"]
-    ).reindex(index=THRESHOLDS, columns=actions, fill_value=0)
-    fig, ax = plt.subplots(figsize=(7.4, 4.3))
-    bottom = np.zeros(len(count), dtype=float)
-    for action in actions:
-        values = count[action].to_numpy(dtype=float)
-        ax.bar(
-            np.arange(len(count)), values, bottom=bottom,
-            label=action, color=colors[action], width=.62,
-        )
-        bottom += values
-    ax.set_xticks(range(len(count)), [f"{t:.2f}" for t in count.index])
-    ax.set_xlabel("Activation threshold")
-    ax.set_ylabel("Development trials")
-    ax.set_title(f"{model_label} · Threshold comparison")
-    ax.legend(frameon=False, ncol=4, loc="upper center", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(output_dir / f"{model}_threshold_comparison.png", dpi=165)
-    plt.close(fig)
-
 
 
 def write_figure_set(
@@ -722,10 +893,15 @@ def write_figure_set(
     test_dir = destination / "test"
     for model in registry:
         dev_recs, _, dev_activations = development_results[model]
-        plot_development_summaries(
-            model, dev_recs, dev_activations, dev_dir, plot_threshold
+        plot_rule_activation_heatmap(
+            model, dev_activations,
+            dev_dir / f"{model}_rule_activation_heatmap.png"
         )
-        _, members, activations = test_results[model]
+        test_recs, members, activations = test_results[model]
+        plot_recommendation_distribution(
+            model, dev_recs, test_recs,
+            dev_dir / f"{model}_recommendation_distribution.png"
+        )
         for _, row in expected_test[model].iterrows():
             person = str(row["participant_id"])
             level = int(row["difficulty_level"])
