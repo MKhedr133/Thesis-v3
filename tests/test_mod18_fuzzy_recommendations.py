@@ -148,19 +148,25 @@ class TestPipeline(unittest.TestCase):
 
     def test_dev_only_anchors_and_four_stage_eligibility(self):
         for model, spec in self.registry.items():
-            for stage in spec.allowed_stages:
+            for stage in MOD18.eligible_stages(model, self.registry):
                 a = self.refs[(model, stage, spec.predictors[0])]
                 self.assertEqual(a.count, 26)
         self.assertNotIn(("cognitive_later", 0,
                           MOD18.FEATURES["M"]), self.refs)
+        self.assertNotIn(("cognitive_primary", 1,
+                          MOD18.FEATURES["M"]), self.refs)
+        self.assertEqual(MOD18.eligible_stages("cognitive_primary",
+                                              self.registry), (0,))
+        self.assertEqual(MOD18.eligible_stages("cognitive_later",
+                                              self.registry), (1, 2, 3))
 
     def test_expected_model_stage_records(self):
         results = {model: MOD18.evaluate_model(model, self.test,
                                                 self.refs, self.registry)
                    for model in self.registry}
         expected = {"visual": 24, "auditory": 24,
-                    "cognitive_primary": 24, "cognitive_later": 18}
-        self.assertEqual(sum(expected.values()), 90)
+                    "cognitive_primary": 6, "cognitive_later": 18}
+        self.assertEqual(sum(expected.values()), 72)
         for model, (recs, members, scores) in results.items():
             self.assertEqual(len(recs), expected[model] * 2)
             self.assertEqual(len(scores), expected[model] * 10)
@@ -168,6 +174,11 @@ class TestPipeline(unittest.TestCase):
                              expected[model] * len(self.registry[model].predictors))
             self.assertFalse(recs["participant_id"].isin(
                 self.dev["participant_id"]).any())
+            expected_levels = {
+                MOD18.LEVELS[stage]
+                for stage in MOD18.eligible_stages(model, self.registry)
+            }
+            self.assertEqual(set(recs["difficulty_level"]), expected_levels)
 
     def test_later_baseline_future_is_flagged(self):
         modified = self.test.copy()
@@ -365,42 +376,74 @@ class TestPipeline(unittest.TestCase):
         self.assertNotIn("D4", [heading for heading in headings])
         self.assertNotIn("LIMITATIONS", joined)
 
-    def test_development_heatmap_contains_observation_level_columns(self):
-        recs, mem, scores = MOD18.evaluate_model(
-            "visual", self.dev, self.refs, self.registry
-        )
-        self.assertEqual(scores["participant_id"].nunique(), 26)
-        self.assertEqual(
-            scores[["participant_id", "difficulty_level"]].drop_duplicates().shape[0],
-            104,
-        )
+    def test_development_heatmap_shows_values_by_stage(self):
         from unittest.mock import patch
         from matplotlib.axes import Axes
-        shapes = []
-        stage_ticks = []
+
         original_imshow = Axes.imshow
-        original_set_xticks = Axes.set_xticks
+        original_text = Axes.text
+        original_title = Axes.set_title
+        for model, expected_shapes, expected_stages in (
+            ("visual", [(10, 26)] * 4,
+             ["Stage 0", "Stage 1", "Stage 2", "Stage 3"]),
+            ("cognitive_primary", [(10, 26)], ["Stage 0"]),
+            ("cognitive_later", [(10, 26)] * 3,
+             ["Stage 1", "Stage 2", "Stage 3"]),
+        ):
+            _, _, scores = MOD18.evaluate_model(
+                model, self.dev, self.refs, self.registry
+            )
+            shapes, labels, text_cells = [], [], []
 
-        def capture_image(axis, matrix, *args, **kwargs):
-            shapes.append(np.asarray(matrix).shape)
-            return original_imshow(axis, matrix, *args, **kwargs)
+            def capture_image(axis, matrix, *args, **kwargs):
+                shapes.append(np.asarray(matrix).shape)
+                return original_imshow(axis, matrix, *args, **kwargs)
 
-        def capture_xticks(axis, ticks, labels=None, *args, **kwargs):
-            if labels is not None and len(labels) == 4:
-                stage_ticks.extend(labels)
-            return original_set_xticks(axis, ticks, labels=labels, *args, **kwargs)
+            def capture_title(axis, title, *args, **kwargs):
+                if str(title).startswith("Stage "):
+                    labels.append(str(title))
+                return original_title(axis, title, *args, **kwargs)
 
-        with TemporaryDirectory() as temp:
-            output = Path(temp) / "visual_heatmap.png"
-            with patch.object(Axes, "imshow", new=capture_image), \
-                 patch.object(Axes, "set_xticks", new=capture_xticks):
-                MOD18.plot_rule_activation_heatmap("visual", scores, output)
-            self.assertTrue(output.exists())
-            self.assertGreater(output.stat().st_size, 3000)
-        self.assertEqual(shapes, [(10, 104)])
-        self.assertEqual(stage_ticks, ["Stage 0", "Stage 1", "Stage 2", "Stage 3"])
+            def capture_text(axis, x, y, content, *args, **kwargs):
+                # Numeric annotation inside every individual cell.
+                if isinstance(content, str) and (
+                    content == "–" or content.replace(".", "").isdigit()
+                ):
+                    text_cells.append(content)
+                return original_text(axis, x, y, content, *args, **kwargs)
 
-    def test_combined_figure_set_includes_98_pngs_and_scoped_csvs(self):
+            with TemporaryDirectory() as temp:
+                image = Path(temp) / f"{model}.png"
+                with patch.object(Axes, "imshow", new=capture_image), \
+                     patch.object(Axes, "text", new=capture_text), \
+                     patch.object(Axes, "set_title", new=capture_title):
+                    MOD18.plot_rule_activation_heatmap(model, scores, image)
+                self.assertTrue(image.is_file())
+                self.assertGreater(image.stat().st_size, 5000)
+            self.assertEqual(shapes, expected_shapes)
+            self.assertEqual(labels, expected_stages)
+            self.assertEqual(len(text_cells),
+                             26 * len(expected_stages) * 10)
+            self.assertTrue(all(len(value) == 4 or value == "–"
+                                for value in text_cells))
+
+    def test_explicit_rule_labels_preserve_rule_ids(self):
+        self.assertEqual(MOD18.rule_label("D1"), "Decrease rule 1 (D1)")
+        self.assertEqual(MOD18.rule_label("I5"), "Increase rule 5 (I5)")
+        with self.assertRaises(MOD18.RecommendationError):
+            MOD18.rule_label("D6")
+        registry = MOD18.rule_registry_table()
+        self.assertEqual(
+            registry.loc[registry["rule_id"].eq("D1"), "rule_name"].iloc[0],
+            "Decrease rule 1 (D1)"
+        )
+        _, _, score_table = MOD18.evaluate_model(
+            "cognitive_primary", self.test, self.refs, self.registry
+        )
+        self.assertEqual(score_table["rule_id"].nunique(), 10)
+        self.assertIn("Increase rule 1 (I1)", set(score_table["rule_name"]))
+
+    def test_combined_figure_set_includes_80_pngs_and_scoped_csvs(self):
         from unittest.mock import patch
 
         dev_results = {
@@ -423,10 +466,10 @@ class TestPipeline(unittest.TestCase):
                     destination, dev_results, test_results, plot_threshold=.20,
                     calibration=self.calibration, policy_id="synthetic-lock"
                 )
-            self.assertEqual(produced, 98)
+            self.assertEqual(produced, 80)
             self.assertEqual(len(list((destination / "summary").glob("*.png"))), 8)
-            self.assertEqual(len(list((destination / "test").rglob("*.png"))), 90)
-            self.assertEqual(len(list(destination.rglob("*.png"))), 98)
+            self.assertEqual(len(list((destination / "test").rglob("*.png"))), 72)
+            self.assertEqual(len(list(destination.rglob("*.png"))), 80)
             self.assertTrue(
                 (destination / "data" / "recommendation_distribution.csv").is_file()
             )
@@ -476,6 +519,16 @@ class TestPipeline(unittest.TestCase):
                 (destination / "test" / "cognitive_later"
                  / "participant_Y01_D10.png").exists()
             )
+            self.assertEqual(len(list(
+                (destination / "test" / "cognitive_primary").glob("*.png")
+            )), 6)
+            self.assertEqual(len(list(
+                (destination / "test" / "cognitive_later").glob("*.png")
+            )), 18)
+            self.assertEqual(set(
+                pd.read_csv(destination / "data" / "test" / "cognitive_primary"
+                            / "recommendations.csv")["difficulty_level"]
+            ), {0})
             with self.assertRaises(MOD18.RecommendationError):
                 MOD18.write_figure_set(
                     destination, dev_results, test_results, plot_threshold=.20,
