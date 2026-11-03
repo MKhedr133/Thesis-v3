@@ -485,45 +485,46 @@ class TestPipeline(unittest.TestCase):
             "increase_support": .05, "decrease_support": .63,
             "review_flags": "",
         })
-        activation = pd.DataFrame([
-            {"rule_id": rule, "score": (.63 if rule == "D4"
-                                       else .41 if rule == "D1" else .06)}
-            for rule in MOD18.RULES["visual"]
+        activations = pd.DataFrame([
+            {"rule_id": rid, "score": (.63 if rid == "D4"
+                                      else .41 if rid == "D1" else .06)}
+            for rid in MOD18.RULES["visual"]
         ])
         messages = []
-        headings = []
-        real_text = Axes.text
-        real_set_title = Axes.set_title
+        original_text = Axes.text
 
-        def capture_text(axis, x, y, text, *args, **kwargs):
-            messages.append(str(text))
-            return real_text(axis, x, y, text, *args, **kwargs)
+        def capture(ax, x, y, message, *args, **kwargs):
+            messages.append(str(message))
+            return original_text(ax, x, y, message, *args, **kwargs)
 
-        def capture_title(axis, title, *args, **kwargs):
-            # set_title creates a Text artist without calling Axes.text().
-            result = real_set_title(axis, title, *args, **kwargs)
-            headings.append(axis.get_title(loc=kwargs.get("loc", "center")))
-            return result
+        with TemporaryDirectory() as folder:
+            image = Path(folder) / "example.png"
+            with patch.object(Axes, "text", new=capture):
+                MOD18.plot_trial(row, pd.DataFrame(), activations, image)
+            self.assertTrue(image.is_file())
+            self.assertGreater(image.stat().st_size, 5000)
 
-        with TemporaryDirectory() as temp:
-            output = Path(temp) / "example.png"
-            with patch.object(Axes, "text", new=capture_text), \
-                 patch.object(Axes, "set_title", new=capture_title):
-                MOD18.plot_trial(row, pd.DataFrame(), activation, output)
-            self.assertTrue(output.exists())
         joined = "\n".join(messages)
-        self.assertIn("ASSIGNED STAGE", joined)
-        self.assertIn("RECOMMENDATION", joined)
-        self.assertIn("Stage 2", joined)
-        self.assertIn("DECREASE  → Stage 1", joined)
-        self.assertNotIn("D6", joined)
+        self.assertIn("Visual  ·  T01", messages)
+        self.assertIn("ASSIGNED STAGE", messages)
+        self.assertIn("RECOMMENDATION", messages)
+        self.assertIn("Stage 2", messages)
+        self.assertIn("DECREASE  → Stage 1", messages)
         self.assertIn("IF Irrelevant focus is High", joined)
         self.assertIn("THEN Decrease difficulty", joined)
-        self.assertIn("OTHER DECREASE RULES", headings)
-        self.assertNotIn("D4", [heading for heading in headings])
-        self.assertNotIn("LIMITATIONS", joined)
+        self.assertIn("Other Decrease rule activations", messages)
+        self.assertIn("Decrease rule 1 (D1)", messages)
+        self.assertIn(
+            MOD18.readable_rule("visual", "D1").split("\n")[0], messages
+        )
+        self.assertNotIn("Decrease rule 4 (D4)", messages)
+        self.assertNotIn("STRONGEST RULE", joined)
+        self.assertNotIn("PROVISIONAL", joined)
+        self.assertNotIn("τ 0.20", joined)
+        self.assertNotIn("THRESHOLD DECISION", joined)
 
-    def test_review_is_shown_as_status_not_a_fourth_recommendation(self):
+
+    def test_review_is_shown_as_recommendation_without_boundary_banner(self):
         from unittest.mock import patch
         from matplotlib.axes import Axes
 
@@ -535,36 +536,47 @@ class TestPipeline(unittest.TestCase):
             "increase_support": .63, "decrease_support": .03,
             "review_flags": "UPPER_BOUNDARY",
         })
-        activation = pd.DataFrame([
-            {"rule_id": rule, "score": .63 if rule == "I1" else .05}
-            for rule in MOD18.RULES["cognitive_later"]
+        activations = pd.DataFrame([
+            {"rule_id": rid, "score": .63 if rid == "I1" else .05}
+            for rid in MOD18.RULES["cognitive_later"]
         ])
         labels = []
-        actual_text = Axes.text
+        original_text = Axes.text
 
-        def capture(axis, x, y, message, *args, **kwargs):
+        def capture(ax, x, y, message, *args, **kwargs):
             labels.append(str(message))
-            return actual_text(axis, x, y, message, *args, **kwargs)
+            return original_text(ax, x, y, message, *args, **kwargs)
 
         with TemporaryDirectory() as folder:
             target = Path(folder) / "review.png"
             with patch.object(Axes, "text", new=capture):
-                MOD18.plot_trial(row, pd.DataFrame(), activation, target)
+                MOD18.plot_trial(row, pd.DataFrame(), activations, target)
             self.assertTrue(target.exists())
-        self.assertIn("STATUS", labels)
-        self.assertIn("REVIEW REQUIRED", labels)
-        self.assertNotIn("RECOMMENDATION", labels)
-        self.assertTrue(any("PROVISIONAL" in label for label in labels))
-        self.assertTrue(any("THEN Increase difficulty" in label
-                            for label in labels))
+        joined = "\n".join(labels)
+        self.assertIn("RECOMMENDATION", labels)
+        self.assertIn("REVIEW", labels)
+        self.assertNotIn("STATUS", labels)
+        self.assertNotIn("REVIEW REQUIRED", joined)
+        self.assertNotIn("UPPER BOUNDARY", joined)
+        self.assertNotIn("LOWER BOUNDARY", joined)
+        self.assertNotIn("PROVISIONAL", joined)
+        self.assertNotIn("τ 0.20", joined)
+        self.assertIn("THEN Increase difficulty", joined)
+        self.assertIn(
+            MOD18.readable_rule("cognitive_later", "I2").split("\n")[0],
+            labels,
+        )
+
 
     def test_development_heatmap_shows_values_by_stage(self):
         from unittest.mock import patch
         from matplotlib.axes import Axes
+        from matplotlib.figure import Figure
 
         original_imshow = Axes.imshow
         original_text = Axes.text
         original_title = Axes.set_title
+        original_figure_text = Figure.text
         for model, expected_shapes, expected_stages in (
             ("visual", [(10, 26)] * 4,
              ["Stage 0", "Stage 1", "Stage 2", "Stage 3"]),
@@ -575,7 +587,7 @@ class TestPipeline(unittest.TestCase):
             _, _, scores = MOD18.evaluate_model(
                 model, self.dev, self.refs, self.registry
             )
-            shapes, labels, text_cells = [], [], []
+            shapes, labels, text_cells, annotations = [], [], [], []
 
             def capture_image(axis, matrix, *args, **kwargs):
                 shapes.append(np.asarray(matrix).shape)
@@ -594,14 +606,26 @@ class TestPipeline(unittest.TestCase):
                     text_cells.append(content)
                 return original_text(axis, x, y, content, *args, **kwargs)
 
+            def capture_figure_text(fig, x, y, content, *args, **kwargs):
+                annotations.append(str(content))
+                return original_figure_text(
+                    fig, x, y, content, *args, **kwargs
+                )
+
             with TemporaryDirectory() as temp:
                 image = Path(temp) / f"{model}.png"
                 with patch.object(Axes, "imshow", new=capture_image), \
                      patch.object(Axes, "text", new=capture_text), \
-                     patch.object(Axes, "set_title", new=capture_title):
+                     patch.object(Axes, "set_title", new=capture_title), \
+                     patch.object(Figure, "text", new=capture_figure_text):
                     MOD18.plot_rule_activation_heatmap(model, scores, image)
                 self.assertTrue(image.is_file())
                 self.assertGreater(image.stat().st_size, 5000)
+            self.assertTrue(
+                any("Horizontal axis: each column represents one "
+                    "development participant" in label
+                    for label in annotations)
+            )
             self.assertEqual(shapes, expected_shapes)
             self.assertEqual(labels, expected_stages)
             self.assertEqual(len(text_cells),
@@ -622,26 +646,77 @@ class TestPipeline(unittest.TestCase):
             "diagnostic_flags": "MISSING_OR_INVALID:mental_demand_score_0_to_10",
         })
         activations = pd.DataFrame([
-            {"rule_id": key, "score": np.nan}
-            for key in MOD18.RULES["visual"]
+            {"rule_id": rid, "score": np.nan}
+            for rid in MOD18.RULES["visual"]
         ])
-        output_text = []
+        labels = []
         real_text = Axes.text
 
-        def capture(ax, x, y, txt, *args, **kwargs):
-            output_text.append(str(txt))
-            return real_text(ax, x, y, txt, *args, **kwargs)
+        def capture(axis, x, y, txt, *args, **kwargs):
+            labels.append(str(txt))
+            return real_text(axis, x, y, txt, *args, **kwargs)
 
         with TemporaryDirectory() as folder:
             target = Path(folder) / "unavailable.png"
             with patch.object(Axes, "text", new=capture):
                 MOD18.plot_trial(result, pd.DataFrame(), activations, target)
             self.assertTrue(target.exists())
-        self.assertIn("STATUS", output_text)
-        self.assertIn("DATA UNAVAILABLE", output_text)
-        self.assertNotIn("REVIEW REQUIRED", output_text)
-        self.assertTrue(any("MISSING OR INVALID" in line
-                            for line in output_text))
+        self.assertIn("RECOMMENDATION", labels)
+        self.assertIn("DATA UNAVAILABLE", labels)
+        self.assertNotIn("STATUS", labels)
+        self.assertNotIn("REVIEW", labels)
+        self.assertTrue(any("Insufficient valid measurements" in line
+                            for line in labels))
+        for rid in MOD18.RULES["visual"]:
+            self.assertIn(MOD18.rule_label(rid), labels)
+
+
+    def test_maintain_explains_below_threshold_and_lists_all_ten_rules(self):
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+
+        row = pd.Series({
+            "model": "auditory", "participant_id": "P06",
+            "difficulty_level": 0, "threshold": .20,
+            "raw_action": "Maintain", "final_action": "Maintain",
+            "proposed_level": 0, "strongest_rules": "",
+            "increase_support": 0.0, "decrease_support": .19,
+            "review_flags": "",
+        })
+        activations = pd.DataFrame([
+            {"rule_id": rid, "score": .19 if rid == "D2" else .0}
+            for rid in MOD18.RULES["auditory"]
+        ])
+        labels = []
+        real_text = Axes.text
+
+        def capture(axis, x, y, txt, *args, **kwargs):
+            labels.append(str(txt))
+            return real_text(axis, x, y, txt, *args, **kwargs)
+
+        with TemporaryDirectory() as folder:
+            target = Path(folder) / "maintain.png"
+            with patch.object(Axes, "text", new=capture):
+                MOD18.plot_trial(row, pd.DataFrame(), activations, target)
+            self.assertTrue(target.is_file())
+            self.assertGreater(target.stat().st_size, 6000)
+        joined = "\n".join(labels)
+        self.assertIn("Auditory  ·  P06", labels)
+        self.assertIn("MAINTAIN  → Stage 0", labels)
+        self.assertIn(
+            "None of the Increase or Decrease rules is sufficiently active "
+            "to recommend changing difficulty.",
+            labels,
+        )
+        self.assertIn("All rule activation strengths", labels)
+        self.assertNotIn("THRESHOLD DECISION", joined)
+        self.assertNotIn("STRONGEST NON-QUALIFYING RULES", joined)
+        for rid in MOD18.RULES["auditory"]:
+            self.assertIn(MOD18.rule_label(rid), labels)
+            self.assertIn(
+                MOD18.readable_rule("auditory", rid).split("\n")[0],
+                labels,
+            )
 
     def test_unavailable_counts_are_separate_from_review_distribution(self):
         frame = pd.DataFrame([
