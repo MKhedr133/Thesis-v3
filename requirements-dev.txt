@@ -3,3 +3,5 @@ pandas
 matplotlib
 openpyxl
 statsmodels==0.15.0
+scikit-learn
+pytest
