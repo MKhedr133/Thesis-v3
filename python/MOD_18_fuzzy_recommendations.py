@@ -563,6 +563,10 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
     elif final == "Review" and raw in ("Increase", "Decrease"):
         rule_group = raw
         selected = strongest if strongest in RULES[model] else ""
+    elif final == "Review" and finite:
+        # With competing supports, show the strongest *provisional* IF rule.
+        selected = max(finite, key=lambda item: (item[1], item[0]))[0]
+        rule_group = "Increase" if selected.startswith("I") else "Decrease"
     else:
         rule_group = None
         selected = ""
@@ -580,6 +584,11 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
                      else "PROVISIONAL RULE · REVIEW REQUIRED",
                      fontsize=9, weight="bold", color="#526777",
                      transform=rule_ax.transAxes, va="top")
+        if final == "Review":
+            flag = str(row.get("review_flags", "")).split("|")[0]
+            rule_ax.text(.99, .97, flag.replace("_", " ")[:36],
+                         fontsize=8, color="#9a5260", ha="right",
+                         transform=rule_ax.transAxes, va="top")
         if selected:
             strength = float(act[selected])
             rule_ax.text(0, .79, f"{selected}  ·  activation {strength:.2f}",
