@@ -261,26 +261,29 @@ class TestPipeline(unittest.TestCase):
 
     def test_distribution_excludes_review_and_uses_actionable_denominator(self):
         dev = pd.DataFrame([
-            {"threshold": .1, "final_action": "Increase"},
-            {"threshold": .1, "final_action": "Maintain"},
-            {"threshold": .1, "final_action": "Decrease"},
-            {"threshold": .1, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Maintain"},
-            {"threshold": .2, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .1, "final_action": "Increase", "raw_action": "Increase"},
+            {"threshold": .1, "final_action": "Maintain", "raw_action": "Maintain"},
+            {"threshold": .1, "final_action": "Decrease", "raw_action": "Decrease"},
+            {"threshold": .1, "final_action": "Review", "raw_action": "Decrease"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Increase"},
+            {"threshold": .2, "final_action": "Maintain", "raw_action": "Maintain"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Decrease"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Maintain"},
         ])
         test = pd.DataFrame([
-            {"threshold": .1, "final_action": "Increase"},
-            {"threshold": .1, "final_action": "Increase"},
-            {"threshold": .1, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Review"},
-            {"threshold": .2, "final_action": "Review"},
+            {"threshold": .1, "final_action": "Increase", "raw_action": "Increase"},
+            {"threshold": .1, "final_action": "Increase", "raw_action": "Increase"},
+            {"threshold": .1, "final_action": "Review", "raw_action": "Decrease"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Increase"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Maintain"},
+            {"threshold": .2, "final_action": "Review", "raw_action": "Decrease"},
         ])
         stats = MOD18.recommendation_distribution_table(dev, test)
         self.assertEqual(len(stats), 12)
-        self.assertEqual(set(stats["action"]), {"Increase", "Maintain", "Decrease"})
+        self.assertEqual(
+            set(stats["action"]), {"Increase", "Maintain", "Decrease"}
+        )
+
         def one(scope, threshold, action):
             return stats.loc[
                 stats["scope"].eq(scope) &
@@ -295,15 +298,48 @@ class TestPipeline(unittest.TestCase):
         )
         self.assertEqual(one("development", .2, "Maintain")["count"], 1)
         self.assertEqual(one("development", .2, "Maintain")["percentage"], 100)
+        self.assertEqual(one("development", .2, "Maintain")["basis"], "safeguarded")
+        self.assertEqual(one("development", .2, "Maintain")["review_count"], 3)
         self.assertEqual(one("test", .1, "Increase")["denominator"], 2)
         self.assertEqual(one("test", .1, "Increase")["percentage"], 100)
-        self.assertEqual(one("test", .2, "Increase")["denominator"], 0)
-        self.assertTrue(math.isnan(one("test", .2, "Increase")["percentage"]))
+        self.assertEqual(one("test", .2, "Increase")["denominator"], 3)
+        self.assertAlmostEqual(one("test", .2, "Increase")["percentage"], 100 / 3)
+        self.assertEqual(one("test", .2, "Increase")["basis"], "provisional")
+        self.assertEqual(one("test", .2, "Increase")["review_count"], 3)
+        self.assertEqual(one("test", .2, "Increase")["observation_count"], 3)
+
+        # Even with nonzero bars, the test panel must identify provisional
+        # evidence and report that every final recommendation was blocked.
+        from unittest.mock import patch
+        from matplotlib.axes import Axes
+        original_text = Axes.text
+        text_labels = []
+
+        def capture_text(axis, x, y, label, *args, **kwargs):
+            text_labels.append(str(label))
+            return original_text(axis, x, y, label, *args, **kwargs)
+
         with TemporaryDirectory() as temp:
             image = Path(temp) / "distribution.png"
-            MOD18.plot_recommendation_distribution("visual", dev, test, image)
+            with patch.object(Axes, "text", new=capture_text):
+                MOD18.plot_recommendation_distribution("visual", dev, test, image)
             self.assertTrue(image.exists())
             self.assertGreater(image.stat().st_size, 4000)
+        self.assertTrue(any("3/3 Review" in label and
+                            "provisional" in label for label in text_labels))
+
+    def test_distribution_all_review_without_raw_actions_is_not_misrepresented(self):
+        # A model can lack both a final and provisional action.
+        frame = pd.DataFrame([
+            {"threshold": threshold, "final_action": "Review",
+             "raw_action": "Review"}
+            for threshold in MOD18.THRESHOLDS
+        ])
+        stats = MOD18.recommendation_distribution_table(frame, frame)
+        self.assertTrue(stats["basis"].eq("provisional").all())
+        self.assertTrue(stats["count"].eq(0).all())
+        self.assertTrue(stats["percentage"].isna().all())
+        self.assertTrue(stats["denominator"].eq(0).all())
 
     def test_display_stages_do_not_change_data_levels(self):
         self.assertEqual(
