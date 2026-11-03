@@ -593,10 +593,157 @@ def plot_trial(row: pd.Series, member: pd.DataFrame, activations: pd.DataFrame,
     plt.close(fig)
 
 
+
+def plot_development_summaries(
+    model: str, recommendations: pd.DataFrame,
+    activations: pd.DataFrame, output_dir: Path,
+    plot_threshold: float,
+) -> None:
+    """Five aggregate development plots; no participant-level figures."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model_label = model.replace("_", " ").title()
+    levels = sorted(recommendations["difficulty_level"].unique())
+    actions = ("Increase", "Decrease", "Maintain", "Review")
+    colors = {
+        "Increase": "#587b98", "Decrease": "#b07b58",
+        "Maintain": "#8b9b96", "Review": "#b56b75",
+    }
+
+    # Heatmap: the mean rule firing for each assigned development stage.
+    order = [f"D{i}" for i in range(1, 6)] + [
+        f"I{i}" for i in range(1, 6)]
+    heat = activations.pivot_table(
+        index="rule_id", columns="difficulty_level",
+        values="score", aggfunc="mean",
+    ).reindex(index=order, columns=levels)
+    fig, ax = plt.subplots(figsize=(7.5, 5))
+    image = ax.imshow(
+        heat.to_numpy(dtype=float), vmin=0, vmax=1,
+        cmap="Blues", aspect="auto",
+    )
+    ax.set_xticks(range(len(levels)), [f"D{n}" for n in levels])
+    ax.set_yticks(range(len(order)), order)
+    ax.set_xlabel("Assigned stage")
+    ax.set_title(f"{model_label} · Mean rule activation")
+    for row in range(len(order)):
+        for col in range(len(levels)):
+            value = heat.iloc[row, col]
+            if pd.notna(value):
+                ax.text(
+                    col, row, f"{value:.2f}", ha="center", va="center",
+                    fontsize=9, color="white" if value > .56 else "#293a4a",
+                )
+    fig.colorbar(image, ax=ax, label="Mean activation", shrink=.8)
+    fig.tight_layout()
+    fig.savefig(output_dir / "rule_activation_heatmap.png", dpi=165)
+    plt.close(fig)
+
+    # Threshold comparison: final action counts, identical denominator.
+    count = pd.crosstab(
+        recommendations["threshold"], recommendations["final_action"]
+    ).reindex(index=THRESHOLDS, columns=actions, fill_value=0)
+    fig, ax = plt.subplots(figsize=(7.4, 4.3))
+    bottom = np.zeros(len(count), dtype=float)
+    for action in actions:
+        values = count[action].to_numpy(dtype=float)
+        ax.bar(
+            np.arange(len(count)), values, bottom=bottom,
+            label=action, color=colors[action], width=.62,
+        )
+        bottom += values
+    ax.set_xticks(range(len(count)), [f"{t:.2f}" for t in count.index])
+    ax.set_xlabel("Activation threshold")
+    ax.set_ylabel("Development trials")
+    ax.set_title(f"{model_label} · Threshold comparison")
+    ax.legend(frameon=False, ncol=4, loc="upper center", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_dir / "threshold_comparison.png", dpi=165)
+    plt.close(fig)
+
+    selected = recommendations.loc[
+        np.isclose(recommendations["threshold"], plot_threshold)
+    ].copy()
+    stage_counts = pd.crosstab(
+        selected["difficulty_level"], selected["final_action"]
+    ).reindex(index=levels, columns=actions, fill_value=0)
+    fig, ax = plt.subplots(figsize=(7.4, 4.3))
+    bottom = np.zeros(len(levels), dtype=float)
+    for action in actions:
+        values = stage_counts[action].to_numpy(dtype=float)
+        ax.bar(
+            range(len(levels)), values, bottom=bottom,
+            width=.68, label=action, color=colors[action],
+        )
+        bottom += values
+    ax.set_xticks(range(len(levels)), [f"D{n}" for n in levels])
+    ax.set_xlabel("Assigned stage")
+    ax.set_ylabel("Development trials")
+    ax.set_title(f"{model_label} · Recommendations (τ={plot_threshold:.2f})")
+    ax.legend(frameon=False, ncol=4, loc="upper center", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_dir / "recommendation_distribution.png", dpi=165)
+    plt.close(fig)
+
+    # Review reasons are counted separately; one case may have several flags.
+    review = selected.loc[selected["final_action"].eq("Review"), "review_flags"]
+    flags = [
+        item for value in review.fillna("")
+        for item in str(value).split("|") if item
+    ]
+    counts = pd.Series(flags, dtype="string").value_counts()
+    fig, ax = plt.subplots(
+        figsize=(8.0, max(3.0, 1.4 + .34 * max(len(counts), 1)))
+    )
+    if counts.empty:
+        ax.text(.5, .5, "No review flags", ha="center", va="center",
+                transform=ax.transAxes, fontsize=11)
+        ax.set_axis_off()
+    else:
+        ax.barh(
+            np.arange(len(counts)), counts.to_numpy(),
+            color=colors["Review"], height=.68,
+        )
+        ax.set_yticks(range(len(counts)), counts.index.to_list(), fontsize=8)
+        ax.invert_yaxis()
+        ax.set_xlabel("Occurrences")
+    ax.set_title(f"{model_label} · Review flags (τ={plot_threshold:.2f})")
+    fig.tight_layout()
+    fig.savefig(output_dir / "review_flag_summary.png", dpi=165)
+    plt.close(fig)
+
+    # Both supports are rule compatibilities, not confidence probabilities.
+    fig, ax = plt.subplots(figsize=(6.3, 5.2))
+    for action in actions:
+        rows = selected.loc[selected["final_action"].eq(action)]
+        ax.scatter(
+            rows["increase_support"], rows["decrease_support"],
+            s=23, alpha=.75, color=colors[action], label=action,
+            edgecolors="none",
+        )
+    ax.axvline(plot_threshold, color="#56616d", linestyle="--", linewidth=1)
+    ax.axhline(plot_threshold, color="#56616d", linestyle="--", linewidth=1)
+    ax.set(xlim=(-.015, 1.015), ylim=(-.015, 1.015),
+           xlabel="Increase support", ylabel="Decrease support")
+    ax.set_title(f"{model_label} · Action support")
+    ax.legend(frameon=False, fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_dir / "action_support_scatter.png", dpi=165)
+    plt.close(fig)
+
+
 def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
                   registry_table: pd.DataFrame, results, render_plots: bool,
-                  plot_threshold: float, policy_id: str | None):
+                  plot_threshold: float, policy_id: str | None,
+                  render_summary_plots: bool = False):
     """Only generated exports; never write data or mutate an existing output."""
+    if render_plots and scope != "test":
+        raise RecommendationError(
+            "Individual recommendation plots are reserved for test scope")
+    if render_summary_plots and scope != "development":
+        raise RecommendationError(
+            "Aggregate research plots are development-only")
+    if render_plots and render_summary_plots:
+        raise RecommendationError("Choose one plotting mode per run")
     if destination.exists() and any(destination.iterdir()):
         raise RecommendationError(f"Refusing to overwrite: {destination}")
     destination.mkdir(parents=True, exist_ok=True)
@@ -629,6 +776,11 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
             paired["final_action_at_0.10"] != paired["final_action_at_0.20"])
         paired.to_csv(folder / "threshold_comparison.csv", index=False)
         overview.append(tally)
+        if render_summary_plots:
+            plot_development_summaries(
+                model, recs, activations,
+                folder / "summary_figures", plot_threshold,
+            )
         for _, r in recs.iterrows():
             if (r["model"] != "cognitive_primary"
                     or int(r["difficulty_level"]) == 0):
@@ -669,6 +821,10 @@ def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
         "policy_id": policy_id, "calibration": "development-only, per model-stage",
         "inference": "min AND, max per action, threshold gate",
         "thresholds": list(THRESHOLDS), "plot_threshold": plot_threshold,
+        "plot_mode": (
+            "individual_test" if render_plots else
+            "aggregate_development" if render_summary_plots else "none"
+        ),
         "rule_status": "research candidate, not clinically validated",
         "separation": "independent of SHAP and MOD-17 retrospective MLR explanation",
         "prospective_cognitive_rule": "D0 uses primary; later uses same-condition "
@@ -687,13 +843,29 @@ def parser():
     p.add_argument("--scope", choices=("development", "test"), default="development")
     p.add_argument("--enable-locked-test-evaluation", action="store_true")
     p.add_argument("--frozen-policy-id", default=None)
-    p.add_argument("--render-plots", action="store_true")
+    p.add_argument(
+        "--render-plots", action="store_true",
+        help="Individual test participant/stage plots (test scope only)",
+    )
+    p.add_argument(
+        "--render-summary-plots", action="store_true",
+        help="Five aggregate research plots per model (development scope only)",
+    )
     p.add_argument("--plot-threshold", type=float, choices=THRESHOLDS, default=.20)
     return p
 
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.render_plots and args.scope != "test":
+        raise RecommendationError(
+            "--render-plots requires --scope test")
+    if args.render_summary_plots and args.scope != "development":
+        raise RecommendationError(
+            "--render-summary-plots requires --scope development")
+    if args.render_plots and args.render_summary_plots:
+        raise RecommendationError(
+            "Cannot request both summary and individual plots")
     if args.scope == "test" and (
         not args.enable_locked_test_evaluation or not args.frozen_policy_id
     ):
@@ -713,7 +885,8 @@ def main(argv=None):
         results[model] = evaluate_model(model, chosen, refs, registry)
     write_outputs(args.output_dir, args.scope, calibration,
                   rule_registry_table(), results, args.render_plots,
-                  args.plot_threshold, args.frozen_policy_id)
+                  args.plot_threshold, args.frozen_policy_id,
+                  render_summary_plots=args.render_summary_plots)
     print(f"MOD-18 {args.scope} exports: {args.output_dir}")
 
 
