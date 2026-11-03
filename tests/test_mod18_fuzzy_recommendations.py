@@ -215,6 +215,88 @@ class TestPipeline(unittest.TestCase):
                                     MOD18.rule_registry_table(), results,
                                     False, .2, "synthetic-lock")
 
+    def test_development_summary_plots_without_participant_figures(self):
+        with TemporaryDirectory() as temp:
+            destination = Path(temp) / "development"
+            results = {
+                model: MOD18.evaluate_model(model, self.dev, self.refs, self.registry)
+                for model in self.registry
+            }
+            MOD18.write_outputs(
+                destination, "development", self.calibration,
+                MOD18.rule_registry_table(), results,
+                render_plots=False, plot_threshold=.2, policy_id=None,
+                render_summary_plots=True,
+            )
+            expected = {
+                "rule_activation_heatmap.png",
+                "threshold_comparison.png",
+                "recommendation_distribution.png",
+                "review_flag_summary.png",
+                "action_support_scatter.png",
+            }
+            images = list(destination.rglob("*.png"))
+            self.assertEqual(len(images), 20)
+            for model in self.registry:
+                folder = destination / model / "summary_figures"
+                self.assertEqual({path.name for path in folder.glob("*.png")},
+                                 expected)
+                self.assertFalse((destination / model / "figures").exists())
+                self.assertTrue(
+                    all(path.stat().st_size > 3000 for path in folder.glob("*.png"))
+                )
+            with (destination / "manifest.json").open(encoding="utf-8") as file:
+                import json
+                manifest = json.load(file)
+            self.assertEqual(manifest["plot_mode"], "aggregate_development")
+
+    def test_plot_modes_reject_wrong_scope_without_writing_files(self):
+        results = {
+            model: MOD18.evaluate_model(model, self.dev, self.refs, self.registry)
+            for model in self.registry
+        }
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            cases = [
+                ("development", True, False),
+                ("test", False, True),
+                ("development", True, True),
+            ]
+            for i, (scope, individual, summary) in enumerate(cases):
+                dest = base / str(i)
+                with self.subTest(scope=scope, individual=individual, summary=summary):
+                    with self.assertRaises(MOD18.RecommendationError):
+                        MOD18.write_outputs(
+                            dest, scope, self.calibration,
+                            MOD18.rule_registry_table(), results,
+                            render_plots=individual, plot_threshold=.2,
+                            policy_id=None, render_summary_plots=summary,
+                        )
+                    self.assertFalse(dest.exists())
+
+    def test_cli_accepts_summary_option_for_development(self):
+        args = MOD18.parser().parse_args([
+            "--modeling-data", "model.csv", "--holdout-split", "split.csv",
+            "--output-dir", "outputs", "--scope", "development",
+            "--render-summary-plots",
+        ])
+        self.assertTrue(args.render_summary_plots)
+        self.assertFalse(args.render_plots)
+
+    def test_main_rejects_development_individual_plots(self):
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            args = [
+                "--modeling-data", str(base / "missing.csv"),
+                "--holdout-split", str(base / "missing_split.csv"),
+                "--output-dir", str(base / "output"),
+                "--scope", "development", "--render-plots",
+            ]
+            with self.assertRaisesRegex(
+                    MOD18.RecommendationError, "requires --scope test"):
+                MOD18.main(args)
+            self.assertFalse((base / "output").exists())
+
     def test_cli_denies_test_without_lock(self):
         with TemporaryDirectory() as temp:
             base = Path(temp)
