@@ -779,21 +779,41 @@ def plot_rule_activation_heatmap(
 def recommendation_distribution_table(
     development_recs: pd.DataFrame, test_recs: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Non-Review counts and percentages, pooled over participant-stage trials."""
+    """Three-action summary, with transparently labelled provisional fallback.
+
+    Prefer safeguarded actions. If *all* cases at a threshold are Review,
+    display provisional raw actions so the chart is diagnostically useful.
+    Provisional counts are not actionable recommendations. Both the basis
+    and number of blocked cases are recorded in the exported CSV.
+    """
     rows = []
     actions = ("Increase", "Maintain", "Decrease")
     for scope, recs in (("development", development_recs), ("test", test_recs)):
         for threshold in THRESHOLDS:
             block = recs.loc[np.isclose(recs["threshold"], threshold)]
-            eligible = block.loc[block["final_action"].isin(actions)]
+            approved = block.loc[block["final_action"].isin(actions)]
+            review_count = int(block["final_action"].eq("Review").sum())
+            if approved.empty and not block.empty:
+                basis = "provisional"
+                eligible = block.loc[block["raw_action"].isin(actions)]
+                field = "raw_action"
+            else:
+                basis = "safeguarded"
+                eligible = approved
+                field = "final_action"
             denominator = len(eligible)
-            counts = eligible["final_action"].value_counts()
+            counts = eligible[field].value_counts()
             for action in actions:
                 count = int(counts.get(action, 0))
                 rows.append({
                     "scope": scope, "threshold": threshold, "action": action,
                     "count": count, "denominator": denominator,
-                    "percentage": 100 * count / denominator if denominator else math.nan,
+                    "percentage": (
+                        100 * count / denominator if denominator else math.nan
+                    ),
+                    "basis": basis,
+                    "review_count": review_count,
+                    "observation_count": int(len(block)),
                 })
     return pd.DataFrame(rows)
 
@@ -802,14 +822,14 @@ def plot_recommendation_distribution(
     model: str, development_recs: pd.DataFrame, test_recs: pd.DataFrame,
     output_file: Path,
 ) -> None:
-    """Two grouped-bar panels (26 development vs 6 test participants)."""
+    """Two bar panels; provisional fallback is visibly non-actionable."""
     summary = recommendation_distribution_table(development_recs, test_recs)
     actions = ("Increase", "Maintain", "Decrease")
     x = np.arange(3)
     width = .34
     colors = ("#2e5e83", "#90b0c7")
     fig, axes = plt.subplots(
-        1, 2, figsize=(12.8, 4.7), facecolor="white",
+        1, 2, figsize=(12.8, 4.9), facecolor="white",
         gridspec_kw={"wspace": .26}
     )
     for ax, (scope, participants) in zip(
@@ -818,29 +838,55 @@ def plot_recommendation_distribution(
         scope_data = summary.loc[summary["scope"].eq(scope)]
         peak = max(1, int(scope_data["count"].max()))
         label_space = max(1.6, peak * .22)
+        provisional_notes = []
         for idx, threshold in enumerate(THRESHOLDS):
-            subset = scope_data.loc[np.isclose(scope_data["threshold"], threshold)]
-            values = [int(subset.loc[subset["action"].eq(name), "count"].iloc[0])
-                      for name in actions]
-            percents = [
-                float(subset.loc[subset["action"].eq(name), "percentage"].iloc[0])
-                for name in actions
+            subset = scope_data.loc[np.isclose(
+                scope_data["threshold"], threshold
+            )]
+            values = [
+                int(subset.loc[subset["action"].eq(action), "count"].iloc[0])
+                for action in actions
             ]
+            percents = [
+                float(subset.loc[subset["action"].eq(action), "percentage"].iloc[0])
+                for action in actions
+            ]
+            basis = str(subset["basis"].iloc[0])
+            review = int(subset["review_count"].iloc[0])
+            total = int(subset["observation_count"].iloc[0])
             coordinates = x + (idx - .5) * width
-            ax.bar(coordinates, values, width=width * .92,
-                   label=f"τ {threshold:.2f}", color=colors[idx])
+            ax.bar(
+                coordinates, values, width=width * .92,
+                label=f"τ {threshold:.2f}", color=colors[idx],
+                alpha=.62 if basis == "provisional" else 1.,
+                hatch="//" if basis == "provisional" else None,
+            )
             for px, count, percent in zip(coordinates, values, percents):
-                annotation = (f"{count} · {percent:.0f}%" if math.isfinite(percent)
-                              else f"{count} · n/a")
+                annotation = (
+                    f"{count} · {percent:.0f}%" if math.isfinite(percent)
+                    else f"{count} · n/a"
+                )
                 ax.text(px, count + label_space * .14, annotation,
                         fontsize=8.8, ha="center", color="#254257")
+            if basis == "provisional":
+                provisional_notes.append(
+                    f"τ {threshold:.2f}: {review}/{total} Review · provisional"
+                )
         ax.set_ylim(0, peak + label_space)
         ax.set_xticks(x, actions, fontsize=10)
-        ax.set_ylabel("Recommendations (count)", fontsize=9)
+        ax.set_ylabel("Action counts", fontsize=9)
         ax.set_title(
             f"{scope.title()} · {participants} participants",
             fontsize=11, loc="left", pad=12, color="#254257"
         )
+        if provisional_notes:
+            # Keep the note outside the plotting area; never disguise
+            # unverified raw actions as final recommendations.
+            ax.text(
+                .5, -.25, "\n".join(provisional_notes),
+                ha="center", va="top", transform=ax.transAxes,
+                color="#875d3e", fontsize=9,
+            )
         ax.spines[["top", "right"]].set_visible(False)
         ax.spines[["left", "bottom"]].set_color("#d7e1e8")
         ax.tick_params(length=0, colors="#526777")
@@ -853,8 +899,7 @@ def plot_recommendation_distribution(
     handles, labels = axes[0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", bbox_to_anchor=(.5, .94),
                frameon=False, ncol=2)
-    # Use independent y-scales so the smaller held-out panel remains legible.
-    fig.subplots_adjust(left=.08, right=.98, bottom=.13, top=.80, wspace=.25)
+    fig.subplots_adjust(left=.08, right=.98, bottom=.26, top=.80, wspace=.25)
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_file, dpi=170, facecolor="white")
     plt.close(fig)
