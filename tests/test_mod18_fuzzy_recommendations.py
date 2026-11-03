@@ -194,6 +194,25 @@ class TestPipeline(unittest.TestCase):
             "D0_BASELINE_NOT_YET_OBSERVED").all())
         self.assertTrue(bad["final_action"].eq("Review").all())
 
+    def test_missing_trial_order_blocks_cognitive_later_without_erasing_raw_actions(self):
+        # Chronology cannot be inferred from ordinal difficulty-stage numbers.
+        no_order = self.dev.drop(columns="trial_order")
+        recs, _, _ = MOD18.evaluate_model(
+            "cognitive_later", no_order, self.refs, self.registry
+        )
+        self.assertEqual(len(recs), 26 * 3 * len(MOD18.THRESHOLDS))
+        self.assertTrue(recs["baseline_status"].eq("unknown_trial_order").all())
+        self.assertTrue(recs["review_flags"].str.contains(
+            "UNVERIFIED_D0_BASELINE_ORDER"
+        ).all())
+        self.assertTrue(recs["final_action"].eq("Review").all())
+        self.assertTrue(recs["raw_action"].isin(
+            {"Increase", "Decrease", "Maintain", "Review"}
+        ).all())
+        table = MOD18.recommendation_distribution_table(recs, recs)
+        self.assertEqual(set(table["basis"]), {"provisional"})
+        self.assertEqual(set(table["review_count"]), {26 * 3})
+
     def test_output_exports_and_one_compact_plot(self):
         with TemporaryDirectory() as temp:
             folder = Path(temp) / "mod18"
