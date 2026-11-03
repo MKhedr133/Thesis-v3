@@ -287,7 +287,7 @@ class TestPipeline(unittest.TestCase):
         self.assertEqual(one("test", .1, "Increase")["denominator"], 2)
         self.assertEqual(one("test", .1, "Increase")["percentage"], 100)
         self.assertEqual(one("test", .2, "Increase")["denominator"], 0)
-        self.assertEqual(one("test", .2, "Increase")["percentage"], 0)
+        self.assertTrue(math.isnan(one("test", .2, "Increase")["percentage"]))
         with TemporaryDirectory() as temp:
             image = Path(temp) / "distribution.png"
             MOD18.plot_recommendation_distribution("visual", dev, test, image)
