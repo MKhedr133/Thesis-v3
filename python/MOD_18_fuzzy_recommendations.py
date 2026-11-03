@@ -599,7 +599,7 @@ def plot_development_summaries(
     activations: pd.DataFrame, output_dir: Path,
     plot_threshold: float,
 ) -> None:
-    """Five aggregate development plots; no participant-level figures."""
+    """Two aggregate development plots; no participant-level figures."""
     output_dir.mkdir(parents=True, exist_ok=True)
     model_label = model.replace("_", " ").title()
     levels = sorted(recommendations["difficulty_level"].unique())
@@ -635,7 +635,7 @@ def plot_development_summaries(
                 )
     fig.colorbar(image, ax=ax, label="Mean activation", shrink=.8)
     fig.tight_layout()
-    fig.savefig(output_dir / "rule_activation_heatmap.png", dpi=165)
+    fig.savefig(output_dir / f"{model}_rule_activation_heatmap.png", dpi=165)
     plt.close(fig)
 
     # Threshold comparison: final action counts, identical denominator.
@@ -657,78 +657,103 @@ def plot_development_summaries(
     ax.set_title(f"{model_label} · Threshold comparison")
     ax.legend(frameon=False, ncol=4, loc="upper center", fontsize=8)
     fig.tight_layout()
-    fig.savefig(output_dir / "threshold_comparison.png", dpi=165)
+    fig.savefig(output_dir / f"{model}_threshold_comparison.png", dpi=165)
     plt.close(fig)
 
-    selected = recommendations.loc[
-        np.isclose(recommendations["threshold"], plot_threshold)
-    ].copy()
-    stage_counts = pd.crosstab(
-        selected["difficulty_level"], selected["final_action"]
-    ).reindex(index=levels, columns=actions, fill_value=0)
-    fig, ax = plt.subplots(figsize=(7.4, 4.3))
-    bottom = np.zeros(len(levels), dtype=float)
-    for action in actions:
-        values = stage_counts[action].to_numpy(dtype=float)
-        ax.bar(
-            range(len(levels)), values, bottom=bottom,
-            width=.68, label=action, color=colors[action],
-        )
-        bottom += values
-    ax.set_xticks(range(len(levels)), [f"D{n}" for n in levels])
-    ax.set_xlabel("Assigned stage")
-    ax.set_ylabel("Development trials")
-    ax.set_title(f"{model_label} · Recommendations (τ={plot_threshold:.2f})")
-    ax.legend(frameon=False, ncol=4, loc="upper center", fontsize=8)
-    fig.tight_layout()
-    fig.savefig(output_dir / "recommendation_distribution.png", dpi=165)
-    plt.close(fig)
 
-    # Review reasons are counted separately; one case may have several flags.
-    review = selected.loc[selected["final_action"].eq("Review"), "review_flags"]
-    flags = [
-        item for value in review.fillna("")
-        for item in str(value).split("|") if item
-    ]
-    counts = pd.Series(flags, dtype="string").value_counts()
-    fig, ax = plt.subplots(
-        figsize=(8.0, max(3.0, 1.4 + .34 * max(len(counts), 1)))
-    )
-    if counts.empty:
-        ax.text(.5, .5, "No review flags", ha="center", va="center",
-                transform=ax.transAxes, fontsize=11)
-        ax.set_axis_off()
-    else:
-        ax.barh(
-            np.arange(len(counts)), counts.to_numpy(),
-            color=colors["Review"], height=.68,
-        )
-        ax.set_yticks(range(len(counts)), counts.index.to_list(), fontsize=8)
-        ax.invert_yaxis()
-        ax.set_xlabel("Occurrences")
-    ax.set_title(f"{model_label} · Review flags (τ={plot_threshold:.2f})")
-    fig.tight_layout()
-    fig.savefig(output_dir / "review_flag_summary.png", dpi=165)
-    plt.close(fig)
 
-    # Both supports are rule compatibilities, not confidence probabilities.
-    fig, ax = plt.subplots(figsize=(6.3, 5.2))
-    for action in actions:
-        rows = selected.loc[selected["final_action"].eq(action)]
-        ax.scatter(
-            rows["increase_support"], rows["decrease_support"],
-            s=23, alpha=.75, color=colors[action], label=action,
-            edgecolors="none",
+def write_figure_set(
+    destination: Path,
+    development_results: dict,
+    test_results: dict,
+    plot_threshold: float,
+) -> int:
+    """Export exactly the requested 8 development and 90 held-out PNGs.
+
+    The output root contains *only* images, with development/ and test/
+    directories. This method never calibrates, tunes or writes analysis CSVs.
+    """
+    if destination.exists():
+        if not destination.is_dir() or any(destination.iterdir()):
+            raise RecommendationError(
+                f"Refusing to overwrite an existing output: {destination}"
+            )
+    if plot_threshold not in THRESHOLDS:
+        raise RecommendationError("Unknown plot threshold")
+    registry = MOD14.build_model_registry()
+    if set(development_results) != set(registry) or set(test_results) != set(registry):
+        raise RecommendationError("Figure-set models must match the frozen registry")
+
+    # Preflight counts and participant boundaries before creating any files.
+    expected_test = {}
+    for model, spec in registry.items():
+        dev_recs, _, dev_rules = development_results[model]
+        test_recs, test_members, test_rules = test_results[model]
+        dev_ids = set(dev_recs["participant_id"].astype(str))
+        test_ids = set(test_recs["participant_id"].astype(str))
+        if dev_ids & test_ids or len(dev_ids) != 26 or len(test_ids) != 6:
+            raise RecommendationError(f"{model}: invalid 26/6 participant boundary")
+        if not np.all(np.isin(THRESHOLDS, dev_recs["threshold"].unique())):
+            raise RecommendationError(f"{model}: missing development thresholds")
+        selected = test_recs.loc[
+            np.isclose(test_recs["threshold"], plot_threshold)
+        ]
+        expected_rows = len(spec.allowed_stages) * 6
+        if len(selected) != expected_rows or selected.duplicated(
+            ["participant_id", "difficulty_level"]
+        ).any():
+            raise RecommendationError(
+                f"{model}: expected {expected_rows} unique held-out trials"
+            )
+        for stage in spec.allowed_stages:
+            stage_rows = selected.loc[selected["assigned_stage"].eq(stage)]
+            if set(stage_rows["participant_id"].astype(str)) != test_ids:
+                raise RecommendationError(
+                    f"{model}/D{LEVELS[stage]}: incomplete held-out coverage"
+                )
+        if not test_members["participant_id"].isin(test_ids).all():
+            raise RecommendationError(f"{model}: invalid membership participant")
+        if not test_rules["participant_id"].isin(test_ids).all():
+            raise RecommendationError(f"{model}: invalid activation participant")
+        expected_test[model] = selected
+
+    destination.mkdir(parents=True, exist_ok=True)
+    dev_dir = destination / "development"
+    test_dir = destination / "test"
+    for model in registry:
+        dev_recs, _, dev_activations = development_results[model]
+        plot_development_summaries(
+            model, dev_recs, dev_activations, dev_dir, plot_threshold
         )
-    ax.axvline(plot_threshold, color="#56616d", linestyle="--", linewidth=1)
-    ax.axhline(plot_threshold, color="#56616d", linestyle="--", linewidth=1)
-    ax.set(xlim=(-.015, 1.015), ylim=(-.015, 1.015),
-           xlabel="Increase support", ylabel="Decrease support")
-    ax.set_title(f"{model_label} · Action support")
-    ax.legend(frameon=False, fontsize=8)
-    fig.tight_layout()
-    fig.savefig(output_dir / "action_support_scatter.png", dpi=165)
-    plt.close(fig)
+        _, members, activations = test_results[model]
+        for _, row in expected_test[model].iterrows():
+            person = str(row["participant_id"])
+            level = int(row["difficulty_level"])
+            # IDs are written as filenames, never interpreted as subpaths.
+            if not person or any(c in person for c in r'\/:*?"<>|'):
+                raise RecommendationError("Invalid participant ID for filename")
+            same_member = members.loc[
+                members["participant_id"].astype(str).eq(person)
+                & members["difficulty_level"].eq(level)
+            ]
+            same_rules = activations.loc[
+                activations["participant_id"].astype(str).eq(person)
+                & activations["difficulty_level"].eq(level)
+            ]
+            if len(same_member) != len(registry[model].predictors) or len(same_rules) != 10:
+                raise RecommendationError(
+                    f"{model}/{person}/D{level}: incomplete rule explanation"
+                )
+            target = test_dir / model / f"participant_{person}_D{level}.png"
+            plot_trial(row, same_member, same_rules, target)
+
+    actual = list(destination.rglob("*.png"))
+    if len(actual) != 98 or len(list(destination.rglob("*.*"))) != 98:
+        raise RecommendationError(
+            f"Figure set incomplete: expected 98 PNGs, got {len(actual)}"
+        )
+    return len(actual)
+
 
 
 def write_outputs(destination: Path, scope: str, calibration: pd.DataFrame,
@@ -849,7 +874,11 @@ def parser():
     )
     p.add_argument(
         "--render-summary-plots", action="store_true",
-        help="Five aggregate research plots per model (development scope only)",
+        help="Two aggregate plots per model (development scope only)",
+    )
+    p.add_argument(
+        "--render-figure-set", action="store_true",
+        help="One PNG-only folder: 8 development charts and 90 held-out trial figures",
     )
     p.add_argument("--plot-threshold", type=float, choices=THRESHOLDS, default=.20)
     return p
@@ -857,6 +886,17 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    if args.render_figure_set:
+        if args.render_plots or args.render_summary_plots:
+            raise RecommendationError(
+                "--render-figure-set cannot be combined with other plot switches")
+        if args.scope != "development":
+            raise RecommendationError(
+                "--render-figure-set includes both scopes; omit --scope test")
+        if not args.enable_locked_test_evaluation or not args.frozen_policy_id:
+            raise RecommendationError(
+                "Combined figures require --enable-locked-test-evaluation and "
+                "--frozen-policy-id after actual policy approval and freeze")
     if args.render_plots and args.scope != "test":
         raise RecommendationError(
             "--render-plots requires --scope test")
@@ -883,6 +923,20 @@ def main(argv=None):
     results = {}
     for model in registry:
         results[model] = evaluate_model(model, chosen, refs, registry)
+    if args.render_figure_set:
+        development_results = {
+            model: evaluate_model(model, development, refs, registry)
+            for model in registry
+        }
+        test_results = {
+            model: evaluate_model(model, test, refs, registry)
+            for model in registry
+        }
+        count = write_figure_set(
+            args.output_dir, development_results, test_results, args.plot_threshold
+        )
+        print(f"MOD-18 figure set: {count} PNGs in {args.output_dir}")
+        return
     write_outputs(args.output_dir, args.scope, calibration,
                   rule_registry_table(), results, args.render_plots,
                   args.plot_threshold, args.frozen_policy_id,
