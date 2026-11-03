@@ -16,38 +16,34 @@ Maintain is the fallback only if the evidence is valid. Missing/non-finite input
 ## Output files
 The shared directory contains `fuzzy_calibration.csv`, `rule_registry.csv`, `cross_model_summary.csv`, `routed_recommendations.csv`, `validation_report.json` and `manifest.json`. Each of four model directories contains `recommendations.csv`, `memberships.csv`, `rule_activations.csv`, `rule_coverage.csv`, `threshold_comparison.csv`, `review_flags.csv` and `model_summary.csv`.
 
-The plotting modes are separate:
-- **Development:** `--render-summary-plots` creates **20 aggregate figures** (five per model) in `<model>/summary_figures/`: `rule_activation_heatmap.png`, `threshold_comparison.png`, `recommendation_distribution.png`, `review_flag_summary.png`, `action_support_scatter.png`. There are **no individual development plots**.
-- **Locked test:** `--render-plots` creates one compact plot per participant and assigned stage under `<model>/figures/D<level>/participant_<ID>_D<level>.png`, with **90 expected figures**: 24 Visual, 24 Auditory, 24 Cognitive primary and 18 Cognitive later. Each shows observed values and medians, L/M/H memberships, ten rule scores, action supports and a brief reason or Review status, without redundant text or a standalone limitations section.
+Three output modes:
 
-Plot modes reject the wrong scope and cannot be combined. Omitting both flags produces numerical exports only. `--plot-threshold` controls the displayed individual decision and selected aggregate charts; both thresholds remain in the CSV analyses.
+- `--render-figure-set`: **one PNG-only folder** with eight development plots (four heatmaps, four threshold comparisons) in `development/` and 90 held-out recommendation plots in `test/<model>/`. Expected test counts: Visual 24, Auditory 24, Cognitive primary 24, Cognitive later 18. Files are `participant_<ID>_D<level>.png`.
+- `--scope development --render-summary-plots`: eight aggregate figures plus numerical CSV/JSON exports, no individual development plots.
+- `--scope test --render-plots`: held-out individual figures plus numerical CSV/JSON exports.
+
+Individual figures retain concise headings, values versus stage medians, L/M/H memberships, ten rule scores and one-line decision rationale. No separate *Limitations and review* section. Plot modes enforce their scope; `--plot-threshold` controls test figures while development threshold plots compare both gates.
 
 The compact presentation takes inspiration from Martínez et al. (2023), Martínez-Cid et al. (2024), Lee et al. (2020), Schoonderwoerd et al. (2021) and Liao et al. (2020), as considered within the 21-paper literature review. These studies support therapist-facing explanations, not our particular rule consequents or thresholds.
 
 ## Running the analysis
-Development-only exports:
 
-```bash
-python python/MOD_18_fuzzy_recommendations.py \
-  --modeling-data data/modeling_data.csv \
-  --holdout-split data/participant_holdout_split.csv \
-  --output-dir outputs/MOD_18_development \
-  --scope development --render-summary-plots --plot-threshold 0.20
+Once the proposed policy is documented and **frozen**, generate the single PNG folder:
+
+```powershell
+& $Python .\python\MOD_18_fuzzy_recommendations.py `
+  --modeling-data $ModelingData `
+  --holdout-split $HoldoutSplit `
+  --output-dir ".\outputs\MOD_18_png_figures" `
+  --render-figure-set `
+  --enable-locked-test-evaluation `
+  --frozen-policy-id "ACTUAL_FROZEN_POLICY_ID" `
+  --plot-threshold 0.20
 ```
 
-**Do not run held-out evaluation before policy approval and freeze.** After a recorded freeze, it can generate individual test-stage figures:
+The CLI requires a nonempty policy identifier but does **not** verify external approval. Do not use a placeholder to bypass the independent-test safeguard. Output directory must be absent or empty.
 
-```bash
-python python/MOD_18_fuzzy_recommendations.py \
-  --modeling-data data/modeling_data.csv \
-  --holdout-split data/participant_holdout_split.csv \
-  --output-dir outputs/MOD_18_locked_test \
-  --scope test --enable-locked-test-evaluation \
-  --frozen-policy-id approved-version \
-  --render-plots --plot-threshold 0.20
-```
-
-Replace `approved-version` with an actually approved and documented identifier. Outputs cannot overwrite a nonempty directory.
-
+For development-only numerical exports and eight summary figures, use `--scope development --render-summary-plots` instead, with a separate output directory.
+ 
 ## Verification and scientific limits
-Synthetic tests are included for predictor restrictions, membership endpoints and ties, min/max inference, threshold endpoints, boundary cases, missing values, D0 baseline ordering, output counts, summary-plot generation and plot-mode guards. The official private-data pipeline must be executed separately. Rule counts and stage comparisons describe behaviour, not clinical recommendation accuracy. Repeated observations from the same participant are not independent people. The 5+5 libraries and the Review policy require therapist approval before clinical use; do not change them using held-out outcomes. The MOD-18 branch must not be merged without explicit approval and verified checks.
+Synthetic tests are included for predictor restrictions, membership endpoints and ties, min/max inference, threshold endpoints, boundary cases, missing values, D0 baseline ordering, output counts, consolidated PNG-only export and plot-mode safeguards. The official private-data pipeline must be executed separately. Rule counts and stage comparisons describe behaviour, not clinical recommendation accuracy. Repeated observations from the same participant are not independent people. The 5+5 libraries and the Review policy require therapist approval before clinical use; do not change them using held-out outcomes. The MOD-18 branch must not be merged without explicit approval and verified checks.
