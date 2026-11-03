@@ -739,7 +739,7 @@ def recommendation_distribution_table(
                 rows.append({
                     "scope": scope, "threshold": threshold, "action": action,
                     "count": count, "denominator": denominator,
-                    "percentage": 100 * count / denominator if denominator else 0.,
+                    "percentage": 100 * count / denominator if denominator else math.nan,
                 })
     return pd.DataFrame(rows)
 
@@ -776,8 +776,9 @@ def plot_recommendation_distribution(
             ax.bar(coordinates, values, width=width * .92,
                    label=f"τ {threshold:.2f}", color=colors[idx])
             for px, count, percent in zip(coordinates, values, percents):
-                ax.text(px, count + label_space * .14,
-                        f"{count} · {percent:.0f}%",
+                annotation = (f"{count} · {percent:.0f}%" if math.isfinite(percent)
+                              else f"{count} · n/a")
+                ax.text(px, count + label_space * .14, annotation,
                         fontsize=8.8, ha="center", color="#254257")
         ax.set_ylim(0, peak + label_space)
         ax.set_xticks(x, actions, fontsize=10)
