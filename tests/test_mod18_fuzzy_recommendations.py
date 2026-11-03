@@ -228,17 +228,14 @@ class TestPipeline(unittest.TestCase):
                 render_plots=False, plot_threshold=.2, policy_id=None,
                 render_summary_plots=True,
             )
-            expected = {
-                "rule_activation_heatmap.png",
-                "threshold_comparison.png",
-                "recommendation_distribution.png",
-                "review_flag_summary.png",
-                "action_support_scatter.png",
-            }
             images = list(destination.rglob("*.png"))
-            self.assertEqual(len(images), 20)
+            self.assertEqual(len(images), 8)
             for model in self.registry:
                 folder = destination / model / "summary_figures"
+                expected = {
+                    f"{model}_rule_activation_heatmap.png",
+                    f"{model}_threshold_comparison.png",
+                }
                 self.assertEqual({path.name for path in folder.glob("*.png")},
                                  expected)
                 self.assertFalse((destination / model / "figures").exists())
@@ -249,6 +246,94 @@ class TestPipeline(unittest.TestCase):
                 import json
                 manifest = json.load(file)
             self.assertEqual(manifest["plot_mode"], "aggregate_development")
+
+
+    def test_combined_figure_set_contains_only_98_pngs(self):
+        from unittest.mock import patch
+
+        dev_results = {
+            model: MOD18.evaluate_model(model, self.dev, self.refs, self.registry)
+            for model in self.registry
+        }
+        test_results = {
+            model: MOD18.evaluate_model(model, self.test, self.refs, self.registry)
+            for model in self.registry
+        }
+        def cheap_trial_renderer(row, members, activations, target):
+            # The real trial renderer has its own visual smoke test above.
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(b"PNG-TEST-SENTINEL")
+
+        with TemporaryDirectory() as temp:
+            destination = Path(temp) / "MOD_18_png_figures"
+            with patch.object(MOD18, "plot_trial", side_effect=cheap_trial_renderer):
+                produced = MOD18.write_figure_set(
+                    destination, dev_results, test_results, plot_threshold=.20
+                )
+            self.assertEqual(produced, 98)
+            self.assertEqual(len(list((destination / "development").glob("*.png"))), 8)
+            self.assertEqual(len(list((destination / "test").rglob("*.png"))), 90)
+            self.assertEqual(len(list(destination.rglob("*.png"))), 98)
+            self.assertEqual(len(list(destination.rglob("*.csv"))), 0)
+            self.assertEqual(len(list(destination.rglob("*.json"))), 0)
+            self.assertTrue(
+                (destination / "development"
+                 / "visual_rule_activation_heatmap.png").exists()
+            )
+            self.assertTrue(
+                (destination / "test" / "cognitive_later"
+                 / "participant_Y01_D10.png").exists()
+            )
+            with self.assertRaises(MOD18.RecommendationError):
+                MOD18.write_figure_set(
+                    destination, dev_results, test_results, plot_threshold=.20
+                )
+
+    def test_combined_figure_set_rejects_split_contamination(self):
+        dev_results = {
+            model: MOD18.evaluate_model(model, self.dev, self.refs, self.registry)
+            for model in self.registry
+        }
+        test_results = {
+            model: MOD18.evaluate_model(model, self.test, self.refs, self.registry)
+            for model in self.registry
+        }
+        # Introduce a development ID in a held-out recommendation table.
+        recommendations, memberships, activations = test_results["visual"]
+        tampered = recommendations.copy()
+        tampered.loc[tampered.index[0], "participant_id"] = (
+            dev_results["visual"][0]["participant_id"].iloc[0]
+        )
+        test_results["visual"] = (tampered, memberships, activations)
+        with TemporaryDirectory() as temp:
+            destination = Path(temp) / "figures"
+            with self.assertRaisesRegex(
+                MOD18.RecommendationError, "participant boundary"
+            ):
+                MOD18.write_figure_set(
+                    destination, dev_results, test_results, plot_threshold=.20
+                )
+            self.assertFalse(destination.exists())
+
+    def test_combined_cli_requires_policy_freeze(self):
+        with TemporaryDirectory() as temp:
+            base = Path(temp)
+            args = [
+                "--modeling-data", str(base / "unread.csv"),
+                "--holdout-split", str(base / "unread_split.csv"),
+                "--output-dir", str(base / "output"),
+                "--render-figure-set",
+            ]
+            with self.assertRaisesRegex(
+                MOD18.RecommendationError, "actual policy approval"
+            ):
+                MOD18.main(args)
+            self.assertFalse((base / "output").exists())
+            flags = MOD18.parser().parse_args([
+                *args, "--enable-locked-test-evaluation",
+                "--frozen-policy-id", "approved-and-frozen-version"
+            ])
+            self.assertTrue(flags.render_figure_set)
 
     def test_plot_modes_reject_wrong_scope_without_writing_files(self):
         results = {
