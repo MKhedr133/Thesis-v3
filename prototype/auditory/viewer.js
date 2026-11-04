@@ -250,7 +250,7 @@ function makeWaterfall(regression) {
   const svg = svgNode("svg", {
     viewBox: "0 0 860 392", role: "img",
     "aria-label": "SHAP waterfall. Baseline " + format(baseline) +
-      ", final estimate " + format(prediction) + ". " +
+      ", final prediction " + format(prediction) + ". " +
       features.map(f => featureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
   });
   const title = svgNode("title", {}, "Stage-specific SHAP waterfall");
@@ -261,8 +261,8 @@ function makeWaterfall(regression) {
     svg.append(svgNode("line", {x1:xpos,y1:38,x2:xpos,y2:axisY,stroke:"currentColor","stroke-opacity":".09"}));
     svg.append(svgNode("text",{x:xpos,y:axisY+19,"text-anchor":"middle",class:"axis-label"},format(val,2)));
   }
-  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name"},"Stage-specific baseline"));
-  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name"},"prediction"));
+  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name"},"Stage prediction"));
+  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name"},"baseline"));
   svg.append(svgNode("circle",{cx:x(baseline),cy:top,r:6,fill:"#64748b"}));
   svg.append(svgNode("text",{x:790,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
   features.forEach((f,i) => {
@@ -293,7 +293,7 @@ function makeWaterfall(regression) {
   });
   const finalY = top + 5*step;
   svg.append(svgNode("line",{x1:x(prediction),y1:top+4*step+12,x2:x(prediction),y2:finalY-8,stroke:"#94a3b8","stroke-dasharray":"4 4"}));
-  svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Estimated difficulty"));
+  svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Predicted difficulty"));
   svg.append(svgNode("circle",{cx:x(prediction),cy:finalY,r:6,fill:"#334155"}));
   svg.append(svgNode("text",{x:790,y:finalY+5,"text-anchor":"end",class:"row-value final-name"},format(prediction)));
   svg.append(svgNode("text",{x:490,y:axisY+45,"text-anchor":"middle",class:"axis-label"},"Difficulty prediction scale"));
