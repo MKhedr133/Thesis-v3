@@ -261,8 +261,8 @@ function makeWaterfall(regression) {
     svg.append(svgNode("line", {x1:xpos,y1:38,x2:xpos,y2:axisY,stroke:"currentColor","stroke-opacity":".09"}));
     svg.append(svgNode("text",{x:xpos,y:axisY+19,"text-anchor":"middle",class:"axis-label"},format(val,2)));
   }
-  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name"},"Stage prediction"));
-  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name"},"baseline"));
+  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Stage prediction"));
+  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name","font-weight":"700"},"baseline"));
   svg.append(svgNode("circle",{cx:x(baseline),cy:top,r:6,fill:"#64748b"}));
   svg.append(svgNode("text",{x:790,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
   features.forEach((f,i) => {
