@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; object-src 'none'">
+  <title>Auditory difficulty review — local prototype</title>
+  <link rel="stylesheet" href="./viewer.css">
+  <script defer src="./viewer.js"></script>
+</head>
+<body>
+<main class="shell">
+  <header class="header">
+    <div>
+      <p class="eyebrow">VR supermarket · Auditory</p>
+      <h1>Therapist difficulty review</h1>
+      <p class="subtle">Read-only research prototype · candidate decision support</p>
+    </div>
+    <span class="mark">Stage 4.5</span>
+  </header>
+
+  <section class="panel load" aria-labelledby="load-title">
+    <h2 id="load-title">Load local explanation data</h2>
+    <p>Select the verified <code>auditory_cases_interface_viewer.json</code> file. The file stays in this browser; nothing is uploaded.</p>
+    <input id="data-file" type="file" accept=".json,application/json" aria-describedby="load-help">
+    <p id="load-help" class="hint">Use the local PowerShell preparation command in this prototype's README to include the participant IDs P06/P07 without committing a private mapping.</p>
+    <p id="load-status" role="status" aria-live="polite">No data loaded.</p>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="panel selectors">
+      <label>Participant
+        <select id="participant"></select>
+      </label>
+      <label>Completed difficulty stage
+        <select id="stage">
+          <option value="0">Stage 0 (D0)</option>
+          <option value="2">Stage 1 (D2)</option>
+          <option value="6">Stage 2 (D6)</option>
+          <option value="10">Stage 3 (D10)</option>
+        </select>
+      </label>
+      <p id="selection-context" class="hint span2"></p>
+    </div>
+
+    <nav class="tabs" aria-label="Explanation method">
+      <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">Regression (SHAP)</button>
+      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy recommendation</button>
+    </nav>
+
+    <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
+      <h2>Why did the model give this estimate?</h2>
+      <div class="estimate"><span>Estimated difficulty</span><strong id="prediction">—</strong><small>For the completed session</small></div>
+      <div class="chart-head">
+        <h3>Feature contributions</h3>
+        <details class="help"><summary>How to read the chart</summary>
+          <p>The stage-specific baseline prediction is calculated from the 26 development participants' observations at the same completed difficulty stage. The four SHAP contributions move this baseline to the prediction. They are not causal effects or treatment advice.</p>
+        </details>
+      </div>
+      <figure>
+        <div id="waterfall" class="chart" aria-live="polite"></div>
+        <figcaption>The bars explain the model's numerical estimate. Positive values raise the estimate; negative values lower it.</figcaption>
+      </figure>
+      <details>
+        <summary>Recorded measurements and exact values</summary>
+        <table>
+          <thead><tr><th>Measurement</th><th>Observed value</th><th>SHAP contribution</th></tr></thead>
+          <tbody id="measurement-rows"></tbody>
+        </table>
+      </details>
+      <p class="notice">SHAP explains this retrospective prediction. It does not establish which changes would improve a future session.</p>
+    </section>
+
+    <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
+      <h2>What adjustment does the rule system suggest?</h2>
+      <p class="subtle">Independent candidate rule policy for the next session; not a clinical prescription.</p>
+      <p id="threshold-message" class="notice"></p>
+      <div id="threshold-cards" class="threshold-grid"></div>
+      <div id="warnings" role="status" aria-live="polite"></div>
+      <details>
+        <summary>All ten Auditory rules</summary>
+        <table>
+          <thead><tr><th>Rule</th><th>Action</th><th>Activation</th><th>Status</th></tr></thead>
+          <tbody id="rule-rows"></tbody>
+        </table>
+      </details>
+      <details>
+        <summary>Feature memberships and calibration</summary>
+        <table>
+          <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th><th>Calibration</th></tr></thead>
+          <tbody id="membership-rows"></tbody>
+        </table>
+      </details>
+      <p class="notice">Rule activation indicates fuzzy support, not the probability that an adjustment is clinically correct.</p>
+    </section>
+
+    <section class="panel" aria-labelledby="therapist-title">
+      <h2 id="therapist-title">Therapist review</h2>
+      <p class="subtle">An independent judgement. Changing the selected observation clears these unsaved fields.</p>
+      <div class="decision-grid">
+        <label>Next-session difficulty
+          <select id="next-stage">
+            <option value="">Not selected</option>
+            <option value="0">Stage 0 (D0)</option>
+            <option value="2">Stage 1 (D2)</option>
+            <option value="6">Stage 2 (D6)</option>
+            <option value="10">Stage 3 (D10)</option>
+            <option value="defer">Defer decision</option>
+          </select>
+        </label>
+        <label>Reasoning / additional observations
+          <textarea id="rationale" rows="3" placeholder="Optional clinical rationale"></textarea>
+        </label>
+      </div>
+      <p class="hint">Demonstration only. Entries are not saved, submitted or applied to the VR environment.</p>
+    </section>
+  </section>
+
+  <footer>
+    <p>Research walkthrough · six reserved-test participants remain outside model and interface selection. Reusing their results to refine the interface makes subsequent evaluation on those cases exploratory.</p>
+  </footer>
+</main>
+</body>
+</html>
