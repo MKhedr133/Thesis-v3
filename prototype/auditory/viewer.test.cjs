@@ -162,6 +162,10 @@ test("preserve boundary Review and missing-data Unavailable in rule summary",()=
   const boundary=sampleDataset()[0];
   boundary.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
   boundary.Fuzzy.Rules.find(r=>r.Rule==="D1").Activation=.8;
+  assert.equal(ruleSummary(boundary).suggestion,"Boundary indication");
+  boundary.Fuzzy.Recommendations[0].Status="boundary_review";
+  boundary.Fuzzy.Recommendations[0].FinalAction="Review";
+  boundary.Fuzzy.Recommendations[0].ProposedLevel="";
   assert.equal(ruleSummary(boundary).suggestion,"Review");
   const unavailable=sampleDataset()[3];
   unavailable.Fuzzy.Recommendations[1].Status="data_unavailable";
