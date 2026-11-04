@@ -1,0 +1,45 @@
+:root{font-family:Arial,Helvetica,sans-serif;color:#172436;background:#f5f7fa;font-synthesis:none}
+*{box-sizing:border-box}body{margin:0}.shell{max-width:1120px;margin:0 auto;padding:28px 22px 40px}
+.header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;margin-bottom:20px}
+.header h1{margin:4px 0 8px;font-size:clamp(23px,3vw,31px);line-height:1.18}
+.eyebrow{font-weight:700;letter-spacing:.075em;text-transform:uppercase;font-size:12px;color:#356282;margin:0}
+.mark{background:#e4edf6;color:#27516d;border-radius:30px;padding:7px 12px;font-size:12px;white-space:nowrap}
+.subtle,.hint,figcaption{color:#566777}p{line-height:1.52}h2{font-size:19px;margin:0 0 12px}h3{font-size:15px;margin:12px 0}
+.panel{background:#fff;border:1px solid #dce3ea;border-radius:12px;padding:22px;margin-bottom:16px;box-shadow:0 2px 10px #162b3e09}
+.load p{margin:5px 0 12px}.load input{max-width:100%;padding:10px;border:1px dashed #7089a3;border-radius:6px}
+#load-status{font-weight:600;color:#315b78}.selectors{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+label{display:flex;flex-direction:column;gap:7px;font-size:13px;font-weight:700}
+select,textarea{font:inherit;color:inherit;background:#fff;border:1px solid #aebbc8;border-radius:7px;padding:10px;min-height:40px}
+textarea{min-height:95px;resize:vertical}.span2{grid-column:1/-1;margin:0}
+.tabs{display:flex;gap:8px;margin-bottom:15px}.tabs button{background:#e6edf4;border:1px solid #ccd6df;border-radius:8px;padding:11px 17px;font-weight:700;color:#24445c;cursor:pointer}
+.tabs button[aria-selected=true]{background:#193f5c;color:#fff;border-color:#193f5c}
+button:focus-visible,select:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:3px solid #2c89b2;outline-offset:3px}
+.estimate{display:flex;flex-wrap:wrap;gap:9px 18px;align-items:baseline;padding:17px 21px;background:#edf4fa;border-radius:9px;margin:14px 0}
+.estimate span{font-size:14px;font-weight:600}.estimate strong{font-size:31px}.estimate small{font-size:12px;color:#546779}
+.chart-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.chart-head h3{margin:12px 0 5px}.help{font-size:12px;max-width:340px}
+figure{margin:10px 0 18px}.chart{width:100%;overflow-x:auto}.chart svg{display:block;width:100%;min-width:680px;max-height:430px}
+.chart .axis-label{font-size:12px;fill:#546779}.chart .row-name{font-size:13px;fill:#263d50}.chart .row-value{font-size:13px;fill:#324a5a;font-weight:600}.chart .final-name{font-weight:700}
+figcaption{font-size:12px;margin-top:6px}
+details{border:1px solid #d9e2ea;border-radius:7px;padding:11px 13px;margin-top:12px}
+details[open] summary{margin-bottom:10px}summary{font-weight:700;font-size:13px;cursor:pointer}
+table{border-collapse:collapse;width:100%;margin-top:8px;font-size:13px}
+th,td{text-align:left;padding:10px 9px;border-bottom:1px solid #e4eaf0;vertical-align:top}
+th{color:#38576d;background:#f4f7fa;font-weight:700}
+.notice{margin-top:16px;border-left:3px solid #6488a5;background:#f3f7fb;padding:11px 13px;font-size:13px}
+.rule-summary{background:#edf4fa;border-radius:9px;padding:17px 20px;margin:12px 0 20px}
+.rule-summary .eyebrow{margin-bottom:6px;font-size:11px}
+.rule-summary strong{font-size:28px;color:#193f5c}
+.rule-summary .hint{margin:7px 0 0;font-size:13px}
+.rule-list{display:grid;gap:9px}
+.rule-item{display:grid;grid-template-columns:40px minmax(0,1fr);align-items:center;gap:14px;
+  border:1px solid #d9e2ea;background:#fafcfe;border-radius:8px;padding:12px 14px}
+.rule-item p{font-size:13px;margin:0;line-height:1.55}
+.rule-id{font-size:12px;color:#456078;font-weight:700}
+figcaption{display:flex;gap:20px;flex-wrap:wrap}
+.legend-up,.legend-down{font-size:13px;font-weight:600}
+.legend-up{color:#23678f}.legend-down{color:#a8513b}
+.decision-grid{display:grid;grid-template-columns:1fr 2fr;gap:15px}
+footer{font-size:12px;color:#647383;margin:16px 3px}
+[hidden]{display:none!important}
+@media(max-width:720px){.shell{padding:15px 10px}.panel{padding:16px}.selectors,.decision-grid{grid-template-columns:1fr}.rule-item{grid-template-columns:36px minmax(0,1fr)}.span2{grid-column:auto}.header{align-items:center}.mark{display:none}.tabs button{flex:1;padding:10px 7px;font-size:12px}}

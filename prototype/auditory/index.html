@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; form-action 'none'; object-src 'none'">
+  <title>Auditory difficulty review — local prototype</title>
+  <link rel="stylesheet" href="./viewer.css">
+  <script defer src="./viewer.js"></script>
+</head>
+<body>
+<main class="shell">
+  <header class="header">
+    <div>
+      <p class="eyebrow">VR supermarket</p>
+      <h1>Therapist difficulty review</h1>
+    </div>
+  </header>
+
+  <section class="panel load" aria-labelledby="load-title">
+    <h2 id="load-title">Load local explanation data</h2>
+    <input id="data-file" type="file" accept=".json,application/json">
+    <p id="load-status" role="status" aria-live="polite">No data loaded.</p>
+  </section>
+
+  <section id="workspace" hidden>
+    <div class="panel selectors">
+      <label>Participant
+        <select id="participant"></select>
+      </label>
+      <label>Completed difficulty stage
+        <select id="stage">
+          <option value="0">Stage 0</option>
+          <option value="2">Stage 1</option>
+          <option value="6">Stage 2</option>
+          <option value="10">Stage 3</option>
+        </select>
+      </label>
+    </div>
+
+    <nav class="tabs" role="tablist" aria-label="Explanation method">
+      <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
+      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
+    </nav>
+
+    <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
+      <div class="estimate"><span>Predicted difficulty</span><strong id="prediction">—</strong></div>
+      <div class="chart-head">
+        <h3>Feature contributions</h3>
+
+      </div>
+      <figure>
+        <div id="waterfall" class="chart" aria-live="polite"></div>
+        <figcaption><span class="legend-up">↑ Raises the prediction</span><span class="legend-down">↓ Lowers the prediction</span></figcaption>
+      </figure>
+      <details>
+        <summary>Recorded measurements</summary>
+        <table>
+          <thead><tr><th>Measurement</th><th>Measured value</th><th>SHAP contribution</th></tr></thead>
+          <tbody id="measurement-rows"></tbody>
+        </table>
+      </details>
+    </section>
+
+    <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
+      <div class="rule-summary">
+        <div class="rule-summary-main">
+          <p class="eyebrow">Suggested action</p>
+          <strong id="rule-indication">—</strong>
+          <p id="rule-context" class="hint"></p>
+        </div>
+      </div>
+      <div id="active-rule-section">
+        <h3>Activated rule(s)</h3>
+        <div id="main-rules" class="rule-list"></div>
+      </div>
+      <details>
+        <summary>All rules activations</summary>
+        <table>
+          <thead><tr><th>Rule description</th><th>Action</th><th>Activation scale (0–1)</th></tr></thead>
+          <tbody id="rule-rows"></tbody>
+        </table>
+      </details>
+      <details>
+        <summary>Feature categories activations</summary>
+        <table>
+          <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th></tr></thead>
+          <tbody id="membership-rows"></tbody>
+        </table>
+      </details>
+    </section>
+
+    <section class="panel" aria-label="Next session decision">
+      <div class="decision-grid">
+        <label>Next-session difficulty
+          <select id="next-stage">
+            <option value="">Not selected</option>
+            <option value="0">Stage 0</option>
+            <option value="2">Stage 1</option>
+            <option value="6">Stage 2</option>
+            <option value="10">Stage 3</option>
+          </select>
+        </label>
+        <label>Reasoning / additional observations
+          <textarea id="rationale" rows="3" placeholder="Optional clinical rationale"></textarea>
+        </label>
+      </div>
+    </section>
+  </section>
+
+</main>
+</body>
+</html>
