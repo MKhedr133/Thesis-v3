@@ -48,7 +48,7 @@ test("parse decimal comma safely, never as thousands separator",()=>{
 });
 test("preserve source difficulty coding",()=>{
   assert.equal(stageCode("Difficulty Stage 2 (D6)"),"6");
-  assert.equal(displayStage("10"),"Stage 3 (D10)");
+  assert.equal(displayStage("10"),"Stage 3");
 });
 test("accept eight internally coherent synthetic observations",()=>{
   assert.equal(validateDataset(sampleDataset()).length,8);
@@ -80,7 +80,7 @@ test("accept MOD-18 decimal-encoded stage codes without changing source values",
   for (let i=0;i<4;i++) {
     assert.equal(data[i].Fuzzy.Recommendations[0].ProposedLevel,levels[i]);
   }
-  assert.equal(displayStage("6.0"),"Stage 2 (D6)");
+  assert.equal(displayStage("6.0"),"Stage 2");
   assert.equal(displayStage(""),"Not proposed");
 });
 test("reject invalid fractional or unsupported proposed stage codes",()=>{
@@ -153,16 +153,20 @@ test("show strongest positive rule signal without choosing a policy threshold",(
   assert.equal(summary.other.length,0);
   assert.equal(record.Fuzzy.Recommendations[1].FinalAction,"Maintain");
 });
-test("show no directional suggestion when all rule activations are zero",()=>{
+test("show Maintain when no Increase or Decrease rule is active",()=>{
   const record=sampleDataset()[0];
   record.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
-  assert.equal(ruleSummary(record).suggestion,"No directional suggestion");
+  const result=ruleSummary(record);
+  assert.equal(result.suggestion,"Maintain");
+  assert.equal(result.reason,"No Increase or Decrease rule(s) were active.");
 });
 test("preserve boundary Review and missing-data Unavailable in rule summary",()=>{
   const boundary=sampleDataset()[0];
   boundary.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
   boundary.Fuzzy.Rules.find(r=>r.Rule==="D1").Activation=.8;
-  assert.equal(ruleSummary(boundary).suggestion,"Boundary indication");
+  const initial=ruleSummary(boundary);
+  assert.equal(initial.suggestion,"Review");
+  assert.equal(initial.reason,"The suggested action was Decrease, which exceeds the available difficulty stages (below Stage 0).");
   boundary.Fuzzy.Recommendations[0].Status="boundary_review";
   boundary.Fuzzy.Recommendations[0].FinalAction="Review";
   boundary.Fuzzy.Recommendations[0].ProposedLevel="";
@@ -180,4 +184,33 @@ test("do not hide equally strong opposing rules",()=>{
   const summary=ruleSummary(record);
   assert.equal(summary.suggestion,"Mixed indications");
   assert.equal(summary.main.length,2);
+});
+
+test("use no explanatory sentence for unblocked Increase or Decrease",()=>{
+  const increase=sampleDataset()[1];
+  increase.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
+  increase.Fuzzy.Rules.find(r=>r.Rule==="I5").Activation=.5;
+  assert.equal(ruleSummary(increase).suggestion,"Increase");
+  assert.equal(ruleSummary(increase).reason,"");
+  const decrease=sampleDataset()[1];
+  decrease.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
+  decrease.Fuzzy.Rules.find(r=>r.Rule==="D1").Activation=.4;
+  assert.equal(ruleSummary(decrease).suggestion,"Decrease");
+  assert.equal(ruleSummary(decrease).reason,"");
+});
+test("show dynamic Stage 3 upper boundary reasoning",()=>{
+  const row=sampleDataset()[3];
+  row.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
+  row.Fuzzy.Rules.find(r=>r.Rule==="I1").Activation=.6;
+  const result=ruleSummary(row);
+  assert.equal(result.suggestion,"Review");
+  assert.equal(result.reason,"The suggested action was Increase, which exceeds the available difficulty stages (above Stage 3).");
+});
+test("keep original threshold outcomes unchanged in a display-only rule summary",()=>{
+  const row=sampleDataset()[1];
+  row.Fuzzy.Recommendations[0].FinalAction="Maintain";
+  row.Fuzzy.Recommendations[1].FinalAction="Maintain";
+  const snapshot=JSON.stringify(row.Fuzzy.Recommendations);
+  ruleSummary(row);
+  assert.equal(JSON.stringify(row.Fuzzy.Recommendations),snapshot);
 });
