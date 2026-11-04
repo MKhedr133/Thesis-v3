@@ -10,6 +10,69 @@ const EXPECTED_FEATURES = new Set([
   "Mental demand", "Time between qualifying grabs",
   "Time to locate target", "Head turning"
 ]);
+const FEATURE_LABELS = Object.freeze({
+  "Mental demand": "Subjective mental demand rating",
+  "Time between qualifying grabs": "Time interval between grabs",
+  "Time to locate target": "Duration to locate a target product",
+  "Head turning": "Head rotation while locating a product"
+});
+// Exact Auditory antecedents from MOD-18's frozen RULES registry.
+// Low/Medium/High match the memberships already stored in the local JSON.
+const AUDITORY_RULES = Object.freeze({
+  D1: [["Mental demand","High"],["Time between qualifying grabs","High"]],
+  D2: [["Mental demand","High"],["Time to locate target","High"]],
+  D3: [["Time between qualifying grabs","High"],["Time to locate target","High"]],
+  D4: [["Mental demand","High"],["Head turning","High"]],
+  D5: [["Time between qualifying grabs","High"],["Head turning","High"]],
+  I1: [["Mental demand","Low"],["Time between qualifying grabs","Low"],["Time to locate target","Low"]],
+  I2: [["Mental demand","Low"],["Time between qualifying grabs","Low"],["Head turning","Low"]],
+  I3: [["Mental demand","Low"],["Time to locate target","Low"],["Head turning","Low"]],
+  I4: [["Mental demand","Low"],["Time to locate target","Low"],["Time between qualifying grabs","Medium"]],
+  I5: [["Mental demand","Low"],["Time between qualifying grabs","Low"],["Head turning","Medium"]]
+});
+const RULE_TIE_TOLERANCE = 1e-12;
+function featureLabel(name) {
+  if (!Object.hasOwn(FEATURE_LABELS,name)) throw new Error("Unknown Auditory feature label");
+  return FEATURE_LABELS[name];
+}
+function ruleSentence(id) {
+  const antecedents=AUDITORY_RULES[id];
+  if (!antecedents) throw new Error("Unknown Auditory rule");
+  const text=antecedents.map(([name,category]) =>
+    featureLabel(name).toLowerCase()+" is "+category.toLowerCase()).join(" AND ");
+  return "If "+text+", then "+(id.startsWith("I")?"increase":"decrease")+" difficulty.";
+}
+function ruleSummary(record) {
+  const recs=record.Fuzzy.Recommendations;
+  if (recs.some(rec=>rec.Status==="data_unavailable")) {
+    return {suggestion:"Unavailable",main:[],other:[],reason:"The required rule inputs are unavailable."};
+  }
+  const active=record.Fuzzy.Rules.map(rule=>({
+    ...rule, score:finite(rule.Activation,true)
+  })).filter(rule=>rule.score!==null && rule.score>0)
+    .sort((a,b)=>b.score-a.score || a.Rule.localeCompare(b.Rule));
+  if (!active.length) {
+    return {suggestion:"No directional suggestion",main:[],other:[],reason:"No Increase or Decrease rule has a positive activation."};
+  }
+  const strongest=active[0].score;
+  const main=active.filter(rule=>Math.abs(rule.score-strongest)<=RULE_TIE_TOLERANCE);
+  const other=active.filter(rule=>Math.abs(rule.score-strongest)>RULE_TIE_TOLERANCE);
+  const actions=new Set(main.map(rule=>rule.Action));
+  let suggestion;
+  let reason="Based on the strongest recorded rule activation. The original MOD-18 policy may give a different final action.";
+  if (actions.size>1) {
+    suggestion="Mixed indications";
+    reason="The strongest Increase and Decrease rules have equal support. No single direction is selected.";
+  } else {
+    const action=main[0].Action;
+    const code=stageCode(record.DifficultyStage);
+    if ((action==="Increase"&&code==="10")||(action==="Decrease"&&code==="0")) {
+      suggestion="Review";
+      reason="The strongest rule points beyond the available difficulty stages.";
+    } else suggestion=action;
+  }
+  return {suggestion,main,other,reason};
+}
 const NS = "http://www.w3.org/2000/svg";
 
 function finite(value, optional = false) {
@@ -186,9 +249,9 @@ function makeWaterfall(regression) {
     viewBox: "0 0 860 392", role: "img",
     "aria-label": "SHAP waterfall. Baseline " + format(baseline) +
       ", final estimate " + format(prediction) + ". " +
-      features.map(f => f.Name + " " + sign(finite(f.ShapContribution))).join("; ")
+      features.map(f => featureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
   });
-  const title = svgNode("title", {}, "Auditory stage-specific SHAP waterfall");
+  const title = svgNode("title", {}, "Stage-specific SHAP waterfall");
   svg.append(title);
   const top = 68, step = 56, axisY = 342;
   for (let tick = 0; tick <= 4; tick++) {
@@ -206,13 +269,22 @@ function makeWaterfall(regression) {
     const prevX=x(previous), nextX=x(next);
     const priorY = top + i*step;
     svg.append(svgNode("line",{x1:prevX,y1:priorY+8,x2:prevX,y2:y-12,stroke:"#94a3b8","stroke-dasharray":"4 4"}));
-    svg.append(svgNode("text",{x:14,y:y+5,class:"row-name"},f.Name));
+    const words=featureLabel(f.Name).split(" ");
+    const labelLines=[""];
+    for (const word of words) {
+      const last=labelLines.length-1;
+      if (labelLines[last] && (labelLines[last]+" "+word).length>25) labelLines.push(word);
+      else labelLines[last]+=(labelLines[last]?" ":"")+word;
+    }
+    labelLines.forEach((line,j)=>svg.append(svgNode("text",{
+      x:14,y:y-(labelLines.length-1)*8+j*16+5,class:"row-name"
+    },line)));
     const bar = svgNode("rect",{
       x:Math.min(prevX,nextX), y:y-12,
       width:Math.max(Math.abs(nextX-prevX),2), height:24, rx:3,
       fill: contribution >= 0 ? "#2a719f" : "#b85e46"
     });
-    bar.append(svgNode("title",{},f.Name + ": " + sign(contribution) +
+    bar.append(svgNode("title",{},featureLabel(f.Name) + ": " + sign(contribution) +
       "; observed " + format(finite(f.Observed,true)) + " " + f.Unit));
     svg.append(bar);
     svg.append(svgNode("text",{x:790,y:y+5,"text-anchor":"end",class:"row-value"},sign(contribution)));
@@ -242,72 +314,94 @@ function renderRegression(record) {
   target.replaceChildren(makeWaterfall(reg));
   const tbody = document.getElementById("measurement-rows");
   tbody.replaceChildren(...reg.Measurements.map(m => row([
-    m.Name, format(finite(m.Observed,true)) + " " + m.Unit,
+    featureLabel(m.Name),
+    format(finite(m.Observed,true)) + (m.Name==="Mental demand"?" / 10":" "+m.Unit),
     sign(finite(m.ShapContribution))
   ])));
 }
+function ruleCard(rule) {
+  const node=document.createElement("div");
+  node.className="rule-item";
+  const identifier=document.createElement("span");
+  identifier.className="rule-id";
+  identifier.textContent=rule.Rule;
+  const sentence=document.createElement("p");
+  sentence.textContent=ruleSentence(rule.Rule);
+  const score=document.createElement("span");
+  score.className="rule-score";
+  score.textContent="Activation "+format(rule.score);
+  node.append(identifier,sentence,score);
+  return node;
+}
 function renderFuzzy(record) {
-  const recs = [...record.Fuzzy.Recommendations].sort((a,b) =>
-    finite(a.Threshold) - finite(b.Threshold));
-  const agree = recs[0].FinalAction === recs[1].FinalAction;
-  document.getElementById("threshold-message").textContent = agree ?
-    "Both candidate thresholds produce " + recs[0].FinalAction +
-    ". Agreement is not confidence in clinical correctness." :
-    "The two candidate thresholds produce different outcomes. No preferred threshold has been selected.";
-  const holder = document.getElementById("threshold-cards");
-  holder.replaceChildren(...recs.map(rec => {
-    const card = document.createElement("article");
-    card.className = "threshold-card";
-    const heading = document.createElement("h3");
-    heading.textContent = "Rule threshold " + format(finite(rec.Threshold),2);
-    const action = document.createElement("p");
-    action.className = "action " + (rec.Status === "issued" ? "" : "caution");
-    action.textContent = rec.FinalAction;
-    const detail = document.createElement("p");
-    detail.textContent = "Next stage: " + displayStage(rec.ProposedLevel) +
-      " · Status: " + rec.Status.replaceAll("_"," ");
-    const support = document.createElement("p");
-    support.textContent = "Increase support: " + format(finite(rec.IncreaseSupport,true)) +
-      " · Decrease support: " + format(finite(rec.DecreaseSupport,true));
-    const strongest = document.createElement("p");
-    strongest.textContent = "Strongest rule(s): " + (rec.StrongestRules || "None");
-    card.append(heading,action,detail,support,strongest);
-    return card;
-  }));
-  const notes = [];
-  for (const rec of recs) {
-    if (rec.ReviewFlags) notes.push("Threshold " + rec.Threshold + ": " + rec.ReviewFlags);
-    if (rec.DiagnosticFlags) notes.push("Threshold " + rec.Threshold + ": " + rec.DiagnosticFlags);
-    if (rec.Status !== "issued") notes.push("Threshold " + rec.Threshold + ": " + rec.Status);
+  const summary=ruleSummary(record);
+  document.getElementById("rule-indication").textContent=summary.suggestion;
+  document.getElementById("rule-context").textContent=summary.reason;
+  const main=document.getElementById("main-rules");
+  const other=document.getElementById("other-rules");
+  main.replaceChildren(...summary.main.map(ruleCard));
+  other.replaceChildren(...summary.other.map(ruleCard));
+  if(!summary.main.length){
+    const message=document.createElement("p");
+    message.className="hint";message.textContent="No dominant directional rule to display.";
+    main.append(message);
   }
-  for (const m of record.Regression.Measurements) {
-    if (String(m.OutOfCalibration).toLowerCase() === "true") {
-      notes.push(m.Name + ": outside development calibration range");
-    }
+  if(!summary.other.length){
+    const message=document.createElement("p");
+    message.className="hint";message.textContent="No other rules have positive activation.";
+    other.append(message);
   }
-  const notices = document.getElementById("warnings");
-  notices.replaceChildren();
-  if (notes.length) {
-    const h = document.createElement("h3"); h.textContent = "Warnings and review notes";
-    const list = document.createElement("ul");
-    for(const note of notes){const li = document.createElement("li");li.textContent=note;list.append(li);}
-    notices.append(h,list);
-    notices.className = "warning-list";
-  } else {
-    notices.textContent = "No additional warnings are recorded for this observation.";
-    notices.className = "hint";
+  // Show exceptional conditions, not routine status/threshold language.
+  const notes=[];
+  const reviews=record.Fuzzy.Recommendations;
+  if(reviews.some(rec=>rec.Status==="boundary_review"))
+    notes.push("A recorded recommendation reached a difficulty-stage boundary and requires review.");
+  if(reviews.some(rec=>rec.Status==="data_unavailable"))
+    notes.push("One or more recorded recommendations are unavailable.");
+  for (const m of record.Regression.Measurements){
+    if(String(m.OutOfCalibration).toLowerCase()==="true")
+      notes.push(featureLabel(m.Name)+": outside the development calibration range.");
   }
-  document.getElementById("rule-rows").replaceChildren(
-    ...[...record.Fuzzy.Rules].sort((a,b)=>a.Rule.localeCompare(b.Rule)).map(r =>
-      row([r.Rule + " — " + r.RuleName,r.Action,format(finite(r.Activation,true)),r.Status]))
-  );
+  const warnings=document.getElementById("warnings");
+  warnings.replaceChildren();
+  warnings.className=notes.length?"warning-list":"";
+  if(notes.length){
+    const heading=document.createElement("h3");heading.textContent="Attention";
+    const ul=document.createElement("ul");
+    notes.forEach(text=>{const li=document.createElement("li");li.textContent=text;ul.append(li);});
+    warnings.append(heading,ul);
+  }
+  const rows=[...record.Fuzzy.Rules].sort((a,b)=>a.Rule.localeCompare(b.Rule));
+  document.getElementById("rule-rows").replaceChildren(...rows.map(rule=>
+    row([rule.Rule+": "+ruleSentence(rule.Rule),format(finite(rule.Activation,true))])));
   document.getElementById("membership-rows").replaceChildren(
-    ...record.Regression.Measurements.map(m => row([
-      m.Name, format(finite(m.Membership.Low,true)),format(finite(m.Membership.Medium,true)),
-      format(finite(m.Membership.High,true)),
-      String(m.OutOfCalibration).toLowerCase()==="true" ? "Outside range" : "Within range"
+    ...record.Regression.Measurements.map(m=>row([
+      featureLabel(m.Name),
+      format(finite(m.Membership.Low,true)),
+      format(finite(m.Membership.Medium,true)),
+      format(finite(m.Membership.High,true))
     ]))
   );
+  const details=document.getElementById("policy-details");
+  details.replaceChildren();
+  const table=document.createElement("table");
+  const head=document.createElement("thead");
+  head.append(row(["Threshold","Recorded action","Proposed stage","Increase / Decrease support","Review / diagnostic flags"]));
+  const body=document.createElement("tbody");
+  const recs=[...record.Fuzzy.Recommendations].sort((a,b)=>finite(a.Threshold)-finite(b.Threshold));
+  recs.forEach(rec=>body.append(row([
+    format(finite(rec.Threshold),2),
+    rec.FinalAction,
+    displayStage(rec.ProposedLevel),
+    format(finite(rec.IncreaseSupport,true))+" / "+format(finite(rec.DecreaseSupport,true)),
+    [rec.ReviewFlags,rec.DiagnosticFlags].filter(Boolean).join("; ")||"—"
+  ])));
+  table.append(head,body);details.append(table);
+  const description=document.createElement("p");
+  description.className="hint";
+  description.textContent="Policy version: "+recs[0].PolicyVersion+
+    ". These stored outcomes are unchanged; this page does not select a preferred threshold.";
+  details.append(description);
 }
 function installApp() {
   let records = [], activeTab = "regression";
@@ -324,9 +418,6 @@ function installApp() {
     const selected = records.find(r => r.ParticipantId === participant.value &&
       stageCode(r.DifficultyStage) === stage.value);
     if (!selected) throw new Error("No matching participant-stage observation");
-    document.getElementById("selection-context").textContent =
-      "Participant " + selected.ParticipantId + " · Auditory · " +
-      displayStage(stage.value) + " completed";
     renderRegression(selected);
     renderFuzzy(selected);
   }
@@ -370,5 +461,5 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", installApp);
 }
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = {finite,stageCode,displayStage,validateDataset};
+  module.exports = {finite,stageCode,displayStage,validateDataset,featureLabel,ruleSentence,ruleSummary};
 }
