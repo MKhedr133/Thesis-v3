@@ -12,18 +12,15 @@
 <main class="shell">
   <header class="header">
     <div>
-      <p class="eyebrow">VR supermarket · Auditory</p>
+      <p class="eyebrow">VR supermarket</p>
       <h1>Therapist difficulty review</h1>
-      <p class="subtle">Read-only research prototype · candidate decision support</p>
     </div>
-    <span class="mark">Stage 4.5</span>
   </header>
 
   <section class="panel load" aria-labelledby="load-title">
     <h2 id="load-title">Load local explanation data</h2>
     <p>Select the verified <code>auditory_cases_interface_viewer.json</code> file. The file stays in this browser; nothing is uploaded.</p>
-    <input id="data-file" type="file" accept=".json,application/json" aria-describedby="load-help">
-    <p id="load-help" class="hint">Use the local PowerShell preparation command in this prototype's README to include the participant IDs P06/P07 without committing a private mapping.</p>
+    <input id="data-file" type="file" accept=".json,application/json">
     <p id="load-status" role="status" aria-live="polite">No data loaded.</p>
   </section>
 
@@ -40,63 +37,68 @@
           <option value="10">Stage 3 (D10)</option>
         </select>
       </label>
-      <p id="selection-context" class="hint span2"></p>
     </div>
 
     <nav class="tabs" role="tablist" aria-label="Explanation method">
-      <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">Regression (SHAP)</button>
-      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy recommendation</button>
+      <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
+      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
     </nav>
 
     <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
       <h2>Why did the model give this estimate?</h2>
-      <div class="estimate"><span>Estimated difficulty</span><strong id="prediction">—</strong><small>For the completed session</small></div>
+      <div class="estimate"><span>Estimated difficulty</span><strong id="prediction">—</strong></div>
       <div class="chart-head">
         <h3>Feature contributions</h3>
-        <details class="help"><summary>How to read the chart</summary>
-          <p>The stage-specific baseline prediction is calculated from the 26 development participants' observations at the same completed difficulty stage. The four SHAP contributions move this baseline to the prediction. They are not causal effects or treatment advice.</p>
-        </details>
+
       </div>
       <figure>
         <div id="waterfall" class="chart" aria-live="polite"></div>
-        <figcaption>The bars explain the model's numerical estimate. Positive values raise the estimate; negative values lower it.</figcaption>
+        <figcaption><span class="legend-up">↑ Raises the estimate</span><span class="legend-down">↓ Lowers the estimate</span></figcaption>
       </figure>
       <details>
-        <summary>Recorded measurements and exact values</summary>
+        <summary>Recorded measurements</summary>
         <table>
-          <thead><tr><th>Measurement</th><th>Observed value</th><th>SHAP contribution</th></tr></thead>
+          <thead><tr><th>Measurement</th><th>Measured value</th><th>SHAP contribution</th></tr></thead>
           <tbody id="measurement-rows"></tbody>
         </table>
       </details>
-      <p class="notice">SHAP explains this retrospective prediction. It does not establish which changes would improve a future session.</p>
     </section>
 
     <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
-      <h2>What adjustment does the rule system suggest?</h2>
-      <p class="subtle">Independent candidate rule policy for the next session; not a clinical prescription.</p>
-      <p id="threshold-message" class="notice"></p>
-      <div id="threshold-cards" class="threshold-grid"></div>
+      <div class="rule-summary">
+        <div class="rule-summary-main">
+          <p class="eyebrow">Rule-based suggestion</p>
+          <strong id="rule-indication">—</strong>
+          <p id="rule-context" class="hint"></p>
+        </div>
+      </div>
+      <h3>Most strongly activated rule</h3>
+      <div id="main-rules" class="rule-list"></div>
+      <h3>Other active rules</h3>
+      <div id="other-rules" class="rule-list"></div>
       <div id="warnings" role="status" aria-live="polite"></div>
       <details>
-        <summary>All ten Auditory rules</summary>
+        <summary>All ten rules</summary>
         <table>
-          <thead><tr><th>Rule</th><th>Action</th><th>Activation</th><th>Status</th></tr></thead>
+          <thead><tr><th>Rule description</th><th>Activation</th></tr></thead>
           <tbody id="rule-rows"></tbody>
         </table>
       </details>
       <details>
-        <summary>Feature memberships and calibration</summary>
+        <summary>Feature categories</summary>
         <table>
-          <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th><th>Calibration</th></tr></thead>
+          <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th></tr></thead>
           <tbody id="membership-rows"></tbody>
         </table>
       </details>
-      <p class="notice">Rule activation indicates fuzzy support, not the probability that an adjustment is clinically correct.</p>
+      <details>
+        <summary>Additional policy details</summary>
+        <p class="hint">The stored MOD-18 outputs below are retained for audit. The rule-based suggestion above reflects the strongest recorded rule activation, not a selected threshold policy.</p>
+        <div id="policy-details"></div>
+      </details>
     </section>
 
-    <section class="panel" aria-labelledby="therapist-title">
-      <h2 id="therapist-title">Therapist review</h2>
-      <p class="subtle">An independent judgement. Changing the selected observation clears these unsaved fields.</p>
+    <section class="panel" aria-label="Next session decision">
       <div class="decision-grid">
         <label>Next-session difficulty
           <select id="next-stage">
@@ -105,20 +107,15 @@
             <option value="2">Stage 1 (D2)</option>
             <option value="6">Stage 2 (D6)</option>
             <option value="10">Stage 3 (D10)</option>
-            <option value="defer">Defer decision</option>
           </select>
         </label>
         <label>Reasoning / additional observations
           <textarea id="rationale" rows="3" placeholder="Optional clinical rationale"></textarea>
         </label>
       </div>
-      <p class="hint">Demonstration only. Entries are not saved, submitted or applied to the VR environment.</p>
     </section>
   </section>
 
-  <footer>
-    <p>Research walkthrough · reserved-test observations are shown only for demonstration. Interface decisions informed by these observations make subsequent evaluation on the same cases exploratory.</p>
-  </footer>
 </main>
 </body>
 </html>
