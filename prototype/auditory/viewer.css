@@ -45,4 +45,4 @@ figcaption{display:flex;gap:20px;flex-wrap:wrap}
 .decision-grid{display:grid;grid-template-columns:1fr 2fr;gap:15px}
 footer{font-size:12px;color:#647383;margin:16px 3px}
 [hidden]{display:none!important}
-@media(max-width:720px){.shell{padding:15px 10px}.panel{padding:16px}.selectors,.decision-grid,.rule-item{grid-template-columns:36px minmax(0,1fr)}.rule-score{grid-column:2}.span2{grid-column:auto}.header{align-items:center}.mark{display:none}.tabs button{flex:1;padding:10px 7px;font-size:12px}}
+@media(max-width:720px){.shell{padding:15px 10px}.panel{padding:16px}.selectors,.decision-grid{grid-template-columns:1fr}.rule-item{grid-template-columns:36px minmax(0,1fr)}.rule-score{grid-column:2}.span2{grid-column:auto}.header{align-items:center}.mark{display:none}.tabs button{flex:1;padding:10px 7px;font-size:12px}}
