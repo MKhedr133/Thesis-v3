@@ -67,8 +67,11 @@ function ruleSummary(record) {
     const action=main[0].Action;
     const code=stageCode(record.DifficultyStage);
     if ((action==="Increase"&&code==="10")||(action==="Decrease"&&code==="0")) {
-      suggestion="Review";
-      reason="The strongest rule points beyond the available difficulty stages.";
+      const policyReview=recs.some(rec=>rec.Status==="boundary_review");
+      suggestion=policyReview?"Review":"Boundary indication";
+      reason=policyReview?
+        "The strongest rule points beyond the available stages, and a stored policy outcome requires review.":
+        "The strongest rule points beyond the available stages; this alone does not constitute a policy Review outcome.";
     } else suggestion=action;
   }
   return {suggestion,main,other,reason};
