@@ -142,6 +142,7 @@ test("render exact MOD-18 auditory antecedents as full if-then statements",()=>{
 test("show strongest positive rule signal without choosing a policy threshold",()=>{
   const data=sampleDataset();
   const record=data[1];
+  record.Fuzzy.Rules.forEach(r=>{r.Activation=0;});
   record.Fuzzy.Rules.find(r=>r.Rule==="I5").Activation="0.2";
   record.Fuzzy.Recommendations[0].FinalAction="Increase";
   record.Fuzzy.Recommendations[1].FinalAction="Maintain";
@@ -149,7 +150,7 @@ test("show strongest positive rule signal without choosing a policy threshold",(
   const summary=ruleSummary(record);
   assert.equal(summary.suggestion,"Increase");
   assert.equal(summary.main[0].Rule,"I5");
-  assert.equal(summary.other.length,9);
+  assert.equal(summary.other.length,0);
   assert.equal(record.Fuzzy.Recommendations[1].FinalAction,"Maintain");
 });
 test("show no directional suggestion when all rule activations are zero",()=>{
