@@ -69,6 +69,27 @@ test("reject incorrect SHAP reconstruction",()=>{
   const data=sampleDataset();data[0].Regression.Prediction=2.6;
   assert.throws(()=>validateDataset(data),/reconstruction/);
 });
+test("accept MOD-18 decimal-encoded stage codes without changing source values",()=>{
+  const data=sampleDataset();
+  const levels=["0.0","2.0","6.0","10.0"];
+  for (let i=0;i<4;i++) {
+    data[i].Fuzzy.Recommendations[0].ProposedLevel=levels[i];
+    data[i].Fuzzy.Recommendations[1].ProposedLevel=levels[i];
+  }
+  assert.equal(validateDataset(data).length,8);
+  for (let i=0;i<4;i++) {
+    assert.equal(data[i].Fuzzy.Recommendations[0].ProposedLevel,levels[i]);
+  }
+  assert.equal(displayStage("6.0"),"Stage 2 (D6)");
+  assert.equal(displayStage(""),"Not proposed");
+});
+test("reject invalid fractional or unsupported proposed stage codes",()=>{
+  for (const level of ["2.5","3.0","10.5","NaN","Infinity"]) {
+    const data=sampleDataset();
+    data[0].Fuzzy.Recommendations[0].ProposedLevel=level;
+    assert.throws(()=>validateDataset(data),/Unsupported proposed stage code/);
+  }
+});
 test("reject missing or repeated feature",()=>{
   const data=sampleDataset();data[0].Regression.Measurements[2].Name="Mental demand";
   assert.throws(()=>validateDataset(data),/duplicate Auditory feature/);
