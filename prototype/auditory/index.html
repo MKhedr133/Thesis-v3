@@ -19,7 +19,6 @@
 
   <section class="panel load" aria-labelledby="load-title">
     <h2 id="load-title">Load local explanation data</h2>
-    <p>Select the verified <code>auditory_cases_interface_viewer.json</code> file. The file stays in this browser; nothing is uploaded.</p>
     <input id="data-file" type="file" accept=".json,application/json">
     <p id="load-status" role="status" aria-live="polite">No data loaded.</p>
   </section>
@@ -31,10 +30,10 @@
       </label>
       <label>Completed difficulty stage
         <select id="stage">
-          <option value="0">Stage 0 (D0)</option>
-          <option value="2">Stage 1 (D2)</option>
-          <option value="6">Stage 2 (D6)</option>
-          <option value="10">Stage 3 (D10)</option>
+          <option value="0">Stage 0</option>
+          <option value="2">Stage 1</option>
+          <option value="6">Stage 2</option>
+          <option value="10">Stage 3</option>
         </select>
       </label>
     </div>
@@ -67,34 +66,28 @@
     <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
       <div class="rule-summary">
         <div class="rule-summary-main">
-          <p class="eyebrow">Rule-based suggestion</p>
+          <p class="eyebrow">Suggested action</p>
           <strong id="rule-indication">—</strong>
           <p id="rule-context" class="hint"></p>
         </div>
       </div>
-      <h3>Most strongly activated rule</h3>
-      <div id="main-rules" class="rule-list"></div>
-      <h3>Other active rules</h3>
-      <div id="other-rules" class="rule-list"></div>
-      <div id="warnings" role="status" aria-live="polite"></div>
+      <div id="active-rule-section">
+        <h3>Activated rule(s)</h3>
+        <div id="main-rules" class="rule-list"></div>
+      </div>
       <details>
-        <summary>All ten rules</summary>
+        <summary>All rules activations</summary>
         <table>
-          <thead><tr><th>Rule description</th><th>Activation</th></tr></thead>
+          <thead><tr><th>Rule description</th><th>Action</th><th>Activation scale (0–1)</th></tr></thead>
           <tbody id="rule-rows"></tbody>
         </table>
       </details>
       <details>
-        <summary>Feature categories</summary>
+        <summary>Feature categories activations</summary>
         <table>
           <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th></tr></thead>
           <tbody id="membership-rows"></tbody>
         </table>
-      </details>
-      <details>
-        <summary>Additional policy details</summary>
-        <p class="hint">The stored MOD-18 outputs below are retained for audit. The rule-based suggestion above reflects the strongest recorded rule activation, not a selected threshold policy.</p>
-        <div id="policy-details"></div>
       </details>
     </section>
 
@@ -103,10 +96,10 @@
         <label>Next-session difficulty
           <select id="next-stage">
             <option value="">Not selected</option>
-            <option value="0">Stage 0 (D0)</option>
-            <option value="2">Stage 1 (D2)</option>
-            <option value="6">Stage 2 (D6)</option>
-            <option value="10">Stage 3 (D10)</option>
+            <option value="0">Stage 0</option>
+            <option value="2">Stage 1</option>
+            <option value="6">Stage 2</option>
+            <option value="10">Stage 3</option>
           </select>
         </label>
         <label>Reasoning / additional observations
