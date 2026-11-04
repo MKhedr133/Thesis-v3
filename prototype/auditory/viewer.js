@@ -37,9 +37,26 @@ function stageCode(label) {
   if (!found) throw new Error("Unknown difficulty stage");
   return found[0];
 }
+function proposedStageCode(value) {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  let numeric;
+  try {
+    numeric = finite(value);
+  } catch {
+    throw new Error("Unsupported proposed stage code");
+  }
+  // MOD-18 exports integer stage codes as decimal strings (e.g. "6.0").
+  // Accept equivalent numeric representations, never round an invalid code.
+  const found = STAGES.find(s => Number(s[0]) === numeric);
+  if (!Number.isInteger(numeric) || !found) {
+    throw new Error("Unsupported proposed stage code");
+  }
+  return found[0];
+}
 function displayStage(code) {
-  const found = STAGES.find(s => s[0] === String(code));
-  return found ? found[2] : "Unavailable";
+  const canonical = proposedStageCode(code);
+  if (canonical === null) return "Not proposed";
+  return STAGES.find(s => s[0] === canonical)[2];
 }
 function validateDataset(data) {
   if (!Array.isArray(data) || data.length !== 8) {
@@ -121,11 +138,7 @@ function validateDataset(data) {
           !["Review", "Unavailable"].includes(rec.FinalAction) && rec.Status !== "issued") {
         throw new Error("Inconsistent fuzzy action and status");
       }
-      if (rec.ProposedLevel !== null && rec.ProposedLevel !== undefined &&
-          String(rec.ProposedLevel).trim() !== "" &&
-          !STAGES.some(s => s[0] === String(rec.ProposedLevel))) {
-        throw new Error("Unsupported proposed stage code");
-      }
+      proposedStageCode(rec.ProposedLevel);
       finite(rec.IncreaseSupport, true);
       finite(rec.DecreaseSupport, true);
     }
