@@ -1,10 +1,10 @@
 "use strict";
 
 const STAGES = [
-  ["0", "Difficulty Stage 0 (D0)", "Stage 0 (D0)"],
-  ["2", "Difficulty Stage 1 (D2)", "Stage 1 (D2)"],
-  ["6", "Difficulty Stage 2 (D6)", "Stage 2 (D6)"],
-  ["10", "Difficulty Stage 3 (D10)", "Stage 3 (D10)"]
+  ["0", "Difficulty Stage 0 (D0)", "Stage 0"],
+  ["2", "Difficulty Stage 1 (D2)", "Stage 1"],
+  ["6", "Difficulty Stage 2 (D6)", "Stage 2"],
+  ["10", "Difficulty Stage 3 (D10)", "Stage 3"]
 ];
 const EXPECTED_FEATURES = new Set([
   "Mental demand", "Time between qualifying grabs",
@@ -52,14 +52,14 @@ function ruleSummary(record) {
   })).filter(rule=>rule.score!==null && rule.score>0)
     .sort((a,b)=>b.score-a.score || a.Rule.localeCompare(b.Rule));
   if (!active.length) {
-    return {suggestion:"No directional suggestion",main:[],other:[],reason:"No Increase or Decrease rule has a positive activation."};
+    return {suggestion:"Maintain",main:[],other:[],reason:"No Increase or Decrease rule(s) were active."};
   }
   const strongest=active[0].score;
   const main=active.filter(rule=>Math.abs(rule.score-strongest)<=RULE_TIE_TOLERANCE);
   const other=active.filter(rule=>Math.abs(rule.score-strongest)>RULE_TIE_TOLERANCE);
   const actions=new Set(main.map(rule=>rule.Action));
   let suggestion;
-  let reason="Based on the strongest recorded rule activation. The original MOD-18 policy may give a different final action.";
+  let reason="";
   if (actions.size>1) {
     suggestion="Mixed indications";
     reason="The strongest Increase and Decrease rules have equal support. No single direction is selected.";
@@ -67,11 +67,10 @@ function ruleSummary(record) {
     const action=main[0].Action;
     const code=stageCode(record.DifficultyStage);
     if ((action==="Increase"&&code==="10")||(action==="Decrease"&&code==="0")) {
-      const policyReview=recs.some(rec=>rec.Status==="boundary_review");
-      suggestion=policyReview?"Review":"Boundary indication";
-      reason=policyReview?
-        "The strongest rule points beyond the available stages, and a stored policy outcome requires review.":
-        "The strongest rule points beyond the available stages; this alone does not constitute a policy Review outcome.";
+      suggestion="Review";
+      reason=action==="Increase"?
+        "The suggested action was Increase, which exceeds the available difficulty stages (above Stage 3).":
+        "The suggested action was Decrease, which exceeds the available difficulty stages (below Stage 0).";
     } else suggestion=action;
   }
   return {suggestion,main,other,reason};
@@ -330,53 +329,31 @@ function ruleCard(rule) {
   identifier.textContent=rule.Rule;
   const sentence=document.createElement("p");
   sentence.textContent=ruleSentence(rule.Rule);
-  const score=document.createElement("span");
-  score.className="rule-score";
-  score.textContent="Activation "+format(rule.score);
-  node.append(identifier,sentence,score);
+  node.append(identifier,sentence);
   return node;
 }
 function renderFuzzy(record) {
   const summary=ruleSummary(record);
   document.getElementById("rule-indication").textContent=summary.suggestion;
-  document.getElementById("rule-context").textContent=summary.reason;
+  const context=document.getElementById("rule-context");
+  context.textContent=summary.reason;
+  context.hidden=!summary.reason;
+
   const main=document.getElementById("main-rules");
-  const other=document.getElementById("other-rules");
   main.replaceChildren(...summary.main.map(ruleCard));
-  other.replaceChildren(...summary.other.map(ruleCard));
-  if(!summary.main.length){
-    const message=document.createElement("p");
-    message.className="hint";message.textContent="No dominant directional rule to display.";
-    main.append(message);
-  }
-  if(!summary.other.length){
-    const message=document.createElement("p");
-    message.className="hint";message.textContent="No other rules have positive activation.";
-    other.append(message);
-  }
-  // Show exceptional conditions, not routine status/threshold language.
-  const notes=[];
-  const reviews=record.Fuzzy.Recommendations;
-  if(reviews.some(rec=>rec.Status==="boundary_review"))
-    notes.push("A recorded recommendation reached a difficulty-stage boundary and requires review.");
-  if(reviews.some(rec=>rec.Status==="data_unavailable"))
-    notes.push("One or more recorded recommendations are unavailable.");
-  for (const m of record.Regression.Measurements){
-    if(String(m.OutOfCalibration).toLowerCase()==="true")
-      notes.push(featureLabel(m.Name)+": outside the development calibration range.");
-  }
-  const warnings=document.getElementById("warnings");
-  warnings.replaceChildren();
-  warnings.className=notes.length?"warning-list":"";
-  if(notes.length){
-    const heading=document.createElement("h3");heading.textContent="Attention";
-    const ul=document.createElement("ul");
-    notes.forEach(text=>{const li=document.createElement("li");li.textContent=text;ul.append(li);});
-    warnings.append(heading,ul);
-  }
-  const rows=[...record.Fuzzy.Rules].sort((a,b)=>a.Rule.localeCompare(b.Rule));
-  document.getElementById("rule-rows").replaceChildren(...rows.map(rule=>
-    row([rule.Rule+": "+ruleSentence(rule.Rule),format(finite(rule.Activation,true))])));
+  document.getElementById("active-rule-section").hidden=!summary.main.length;
+
+  // Keep all rule activations and the original policy outcomes in the input
+  // JSON unchanged. This tab displays a threshold-free rule-level indication,
+  // not a replacement for MOD-18's two-threshold candidate decision policy.
+  const rules=[...record.Fuzzy.Rules].sort((a,b)=>a.Rule.localeCompare(b.Rule));
+  document.getElementById("rule-rows").replaceChildren(...rules.map(rule=>
+    row([
+      rule.Rule+": "+ruleSentence(rule.Rule),
+      rule.Action,
+      format(finite(rule.Activation,true))
+    ])
+  ));
   document.getElementById("membership-rows").replaceChildren(
     ...record.Regression.Measurements.map(m=>row([
       featureLabel(m.Name),
@@ -385,26 +362,6 @@ function renderFuzzy(record) {
       format(finite(m.Membership.High,true))
     ]))
   );
-  const details=document.getElementById("policy-details");
-  details.replaceChildren();
-  const table=document.createElement("table");
-  const head=document.createElement("thead");
-  head.append(row(["Threshold","Recorded action","Proposed stage","Increase / Decrease support","Review / diagnostic flags"]));
-  const body=document.createElement("tbody");
-  const recs=[...record.Fuzzy.Recommendations].sort((a,b)=>finite(a.Threshold)-finite(b.Threshold));
-  recs.forEach(rec=>body.append(row([
-    format(finite(rec.Threshold),2),
-    rec.FinalAction,
-    displayStage(rec.ProposedLevel),
-    format(finite(rec.IncreaseSupport,true))+" / "+format(finite(rec.DecreaseSupport,true)),
-    [rec.ReviewFlags,rec.DiagnosticFlags].filter(Boolean).join("; ")||"—"
-  ])));
-  table.append(head,body);details.append(table);
-  const description=document.createElement("p");
-  description.className="hint";
-  description.textContent="Policy version: "+recs[0].PolicyVersion+
-    ". These stored outcomes are unchanged; this page does not select a preferred threshold.";
-  details.append(description);
 }
 function installApp() {
   let records = [], activeTab = "regression";
