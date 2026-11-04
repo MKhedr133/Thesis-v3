@@ -67,7 +67,11 @@ Invoke-Item ".\prototype\auditory\index.html"
 
 In the page, choose `outputs\auditory_cases_interface_viewer.json` using the local file selector. The viewer validates all eight observations, including SHAP numerical reconstruction (absolute tolerance `1e-8`), four feature identities, both thresholds, rule IDs and status/action consistency. It never sends the file to a server.
 
-Select participant and completed stage, then switch between Regression (SHAP) and Fuzzy recommendation. Both threshold outputs are shown; there is no implicitly approved threshold. Therapist choice and rationale fields are unsaved, and selecting another observation clears them.
+Select the participant and completed difficulty stage, then switch between **SHAP** and **Fuzzy rules**. The waterfall uses therapist-facing feature names but retains the original measurement IDs and signed contributions internally.
+
+The Fuzzy rules tab presents the strongest activated rule(s) and every other active rule as complete IF–THEN statements. The rule-based suggestion is **a display summary of activation**, not a new MOD-18 policy decision. For example, a positive Increase-rule activation can appear even when one stored policy outcome is Maintain; the interface does not select or optimise a threshold. Equal strongest Increase/Decrease strengths appear as Mixed indications, and requests beyond the available stage boundaries remain Review. The original two threshold outcomes, flags and support values are preserved under **Additional policy details**, rather than placed in the main view.
+
+The ten antecedent definitions are copied from the maintained Auditory MOD-18 rule registry and are not recalculated from SHAP. Therapist choice and rationale fields are unsaved, and selecting another observation clears them.
 
 ## Focused synthetic checks
 
