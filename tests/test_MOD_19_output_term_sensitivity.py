@@ -111,13 +111,24 @@ class OutputVocabularySensitivityTests(unittest.TestCase):
         _, _, maps, _ = STAGE4.compute_comparison(frame, converted, crisp)
         self.assertEqual(converted["rules"], original_rules)
         by_count = {
-            int(item["configuration"].split("_")[1]): list(
-                item["antecedent_or_groups_json"]
-                for _, item in group.iterrows()
-            )
-            for _, group in maps.groupby("configuration", sort=True)
+            int(name.split("_")[1]): group.sort_values(
+                "source_leaf_ids"
+            ).reset_index(drop=True)
+            for name, group in maps.groupby("configuration", sort=True)
         }
-        self.assertEqual(by_count[3], by_count[5])
+        self.assertEqual(set(by_count), {3, 5})
+        preserved_columns = [
+            "source_leaf_ids", "source_tree_prediction",
+            "development_leaf_rows", "antecedent_or_groups_json",
+        ]
+        pd.testing.assert_frame_equal(
+            by_count[3][preserved_columns],
+            by_count[5][preserved_columns],
+        )
+        self.assertNotEqual(
+            by_count[3]["output_consequent"].tolist(),
+            by_count[5]["output_consequent"].tolist(),
+        )
         self.assertTrue((maps.groupby("configuration").size() == 3).all())
 
     def test_original_stage3_predictions_must_match(self):
