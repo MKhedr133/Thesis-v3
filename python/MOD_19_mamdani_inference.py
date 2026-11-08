@@ -251,6 +251,33 @@ def evaluate_fixed_rules(frame: pd.DataFrame, converted: dict) -> tuple[
     return predictions, pd.DataFrame(activations), pd.DataFrame(metrics), illustration
 
 
+def saved_knots_match(serialized: str, expected: tuple) -> bool:
+    """Compare ragged (position, membership-vector) knots without 2-D coercion."""
+    try:
+        recorded = json.loads(serialized)
+        if not isinstance(recorded, list) or len(recorded) != len(expected):
+            return False
+        for recorded_knot, (position, degrees) in zip(recorded, expected):
+            if (not isinstance(recorded_knot, list)
+                    or len(recorded_knot) != 2
+                    or not isinstance(recorded_knot[1], list)
+                    or len(recorded_knot[1]) != len(degrees)):
+                return False
+            if not np.isclose(
+                float(recorded_knot[0]), position, atol=1e-9, rtol=0
+            ):
+                return False
+            if not np.allclose(
+                np.asarray(recorded_knot[1], dtype=float),
+                np.asarray(degrees, dtype=float),
+                atol=1e-9, rtol=0,
+            ):
+                return False
+        return True
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def verify_sources(
     *,
     stage1_dir: Path, stage2b_dir: Path,
@@ -306,10 +333,10 @@ def verify_sources(
         if (list(subset["term"]) != list(partition.labels)
                 or not all(json.loads(item) == list(partition.thresholds)
                            for item in subset["split_thresholds_json"])
-                or not all(np.allclose(
-                    json.loads(item), np.array(partition.knots, dtype=float),
-                    atol=1e-9, rtol=0
-                ) for item in subset["knots_json"])):
+                or not all(
+                    saved_knots_match(item, partition.knots)
+                    for item in subset["knots_json"]
+                )):
             raise BASE.ConversionError(f"Saved membership differs: {feature}")
     if stage2b_manifest["input_terms"] != {
         feature: list(partition.labels)
