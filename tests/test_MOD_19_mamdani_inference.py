@@ -190,6 +190,52 @@ class FixedMamdaniTests(unittest.TestCase):
         )
         return frame, raw, original, stage1, stage2b, manifest
 
+    def test_ragged_membership_knots_compare_without_coercion(self):
+        expected = (
+            (0.0, (1.0, 0.0, 0.0)),
+            (1.5, (0.5, 0.5, 0.0)),
+            (2.5, (0.0, 1.0, 0.0)),
+        )
+        self.assertTrue(
+            MAMDANI.saved_knots_match(json.dumps(expected), expected)
+        )
+        corrupted = json.loads(json.dumps(expected))
+        corrupted[1][1][1] = 0.7
+        self.assertFalse(
+            MAMDANI.saved_knots_match(json.dumps(corrupted), expected)
+        )
+        self.assertFalse(
+            MAMDANI.saved_knots_match(json.dumps(expected[:-1]), expected)
+        )
+        malformed = json.loads(json.dumps(expected))
+        malformed[0][1] = [1.0, 0.0]
+        self.assertFalse(
+            MAMDANI.saved_knots_match(json.dumps(malformed), expected)
+        )
+
+    def test_changed_stage2b_membership_is_rejected(self):
+        with tempfile.TemporaryDirectory() as temp:
+            frame, raw, original, stage1, stage2b, manifest = self.sources(
+                Path(temp)
+            )
+            filename = stage2b / "tree_aligned_membership_partitions.csv"
+            saved = pd.read_csv(filename)
+            knots = json.loads(saved.loc[0, "knots_json"])
+            knots[0][1][0] = 0.75
+            saved.loc[0, "knots_json"] = json.dumps(knots)
+            saved.to_csv(filename, index=False)
+            with self.assertRaisesRegex(
+                BASE.ConversionError, "Saved membership differs"
+            ):
+                MAMDANI.verify_sources(
+                    stage1_dir=stage1, stage2b_dir=stage2b,
+                    stage1_manifest=json.loads(
+                        (stage1 / "manifest.json").read_text()
+                    ),
+                    stage2b_manifest=manifest,
+                    raw_rules=raw, stage1_predictions=original, frame=frame,
+                )
+
     def test_stage2b_sources_and_full_inference(self):
         with tempfile.TemporaryDirectory() as temp:
             frame, raw, original, stage1, stage2b, manifest = self.sources(
