@@ -43,11 +43,11 @@ def verify_development_frame(frame: pd.DataFrame) -> tuple[str, ...]:
     count = frame.groupby("participant_id", dropna=False).size()
     if len(count) != 26 or not count.eq(4).all():
         raise BASE.ConversionError("Expected 26 independent participants with four trials each")
+    if frame.duplicated(["participant_id", "difficulty_level"]).any():
+        raise BASE.ConversionError("Repeated participant-stage observation")
     pairs = set(zip(frame["difficulty_level"], frame["difficulty_stage"]))
     if pairs != STAGES:
         raise BASE.ConversionError("Auditory D0/D2/D6/D10 stage coding differs")
-    if frame.duplicated(["participant_id", "difficulty_level"]).any():
-        raise BASE.ConversionError("Repeated participant-stage observation")
     if not np.isfinite(
         frame[["frozen_mlr_prediction", *MOD14.AUDITORY_PREDICTORS]]
         .to_numpy(dtype=float)
