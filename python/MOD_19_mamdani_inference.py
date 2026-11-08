@@ -323,7 +323,7 @@ def write_outputs(
     output_dir: Path,
     predictions: pd.DataFrame, activation_table: pd.DataFrame,
     metrics: pd.DataFrame, illustration: dict,
-    *, frame: pd.DataFrame,
+    *, frame: pd.DataFrame, rule_count: int,
     stage1_dir: Path, stage2b_dir: Path, mod14_dir: Path,
 ) -> None:
     output_dir = Path(output_dir)
@@ -331,8 +331,11 @@ def write_outputs(
         not output_dir.is_dir() or any(output_dir.iterdir())
     ):
         raise BASE.ConversionError(f"Output directory is not empty: {output_dir}")
-    if (len(predictions) != len(frame)
-            or len(activation_table) != len(frame) * 8):
+    if (rule_count < 1 or len(predictions) != len(frame)
+            or len(activation_table) != len(frame) * rule_count
+            or not activation_table.groupby(
+                ["participant_id", "difficulty_level"], dropna=False
+            ).size().eq(rule_count).all()):
         raise BASE.ConversionError("Incomplete Mamdani development results")
     output_dir.mkdir(parents=True, exist_ok=True)
     predictions.to_csv(output_dir / "mamdani_predictions.csv", index=False)
@@ -375,7 +378,7 @@ def write_outputs(
         "research_status": "provisional development-only, in-sample descriptive fidelity",
         "development_participants": int(frame["participant_id"].nunique()),
         "development_rows": len(frame), "test_participants_used": 0,
-        "rule_count": 8,
+        "rule_count": rule_count,
         "inference": {
             "antecedent_or": "MAX within one input's alternatives",
             "antecedent_and": "MIN across inputs",
@@ -470,18 +473,23 @@ def main() -> None:
             "n_available": len(valid),
             "n_unavailable": len(predictions) - len(valid),
             "development_participants": valid["participant_id"].nunique(),
-            "participant_balanced_mae": participant_balanced_mae(
-                valid, reference=ref, prediction=target
+            "participant_balanced_mae": (
+                participant_balanced_mae(valid, reference=ref, prediction=target)
+                if not valid.empty else float("nan")
             ),
-            "pooled_r2": pooled_r2(valid, reference=ref, prediction=target),
-            "maximum_absolute_error": float(
-                (valid[ref] - valid[target]).abs().max()
+            "pooled_r2": (
+                pooled_r2(valid, reference=ref, prediction=target)
+                if not valid.empty else float("nan")
+            ),
+            "maximum_absolute_error": (
+                float((valid[ref] - valid[target]).abs().max())
+                if not valid.empty else float("nan")
             ),
             "evaluation": "development, in-sample surrogate fidelity only",
         }
     write_outputs(
         args.output_dir, predictions, activations, metrics, illustration,
-        frame=frame,
+        frame=frame, rule_count=len(converted["rules"]),
         stage1_dir=args.stage1_output_dir,
         stage2b_dir=args.stage2b_output_dir,
         mod14_dir=args.mod14_output_dir,
