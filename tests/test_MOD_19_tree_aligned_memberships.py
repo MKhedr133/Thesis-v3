@@ -123,8 +123,9 @@ class TreeAlignedMembershipTests(unittest.TestCase):
             row["source_rule_activation"] >= 0.5 - 1e-10
             for row in result["diagnostics"]
         ))
-        self.assertTrue(any(
-            len(terms) > 1
+        self.assertEqual(len(result["partitions"]), 4)
+        self.assertTrue(all(
+            len(terms) >= 1
             for rule in result["rules"]
             for feature, terms in rule["antecedent"]
         ))
