@@ -24,7 +24,7 @@ class OutputVocabularySensitivityTests(unittest.TestCase):
         part = ALIGNED.make_partition("mental", 0.0, 8.0, (1.5, 3.5))
         rules = [
             {"source_leaf_ids": [1], "sample_count": 4,
-             "tree_output": 0.8, "consequent": "Low",
+             "tree_output": 0.8, "consequent": "Medium",
              "antecedent": (("mental", ("Low",)),)},
             {"source_leaf_ids": [2], "sample_count": 4,
              "tree_output": 1.4, "consequent": "Medium",
