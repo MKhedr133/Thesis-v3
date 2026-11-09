@@ -1,10 +1,10 @@
 "use strict";
 
 const STAGES = [
-  ["0", "Difficulty Stage 0 (D0)", "Stage 0"],
-  ["2", "Difficulty Stage 1 (D2)", "Stage 1"],
-  ["6", "Difficulty Stage 2 (D6)", "Stage 2"],
-  ["10", "Difficulty Stage 3 (D10)", "Stage 3"]
+  ["0", "Difficulty Stage 0 (D0)", "Level 0"],
+  ["2", "Difficulty Stage 1 (D2)", "Level 1"],
+  ["6", "Difficulty Stage 2 (D6)", "Level 2"],
+  ["10", "Difficulty Stage 3 (D10)", "Level 3"]
 ];
 const EXPECTED_FEATURES = new Set([
   "Mental demand", "Time between qualifying grabs",
@@ -39,7 +39,7 @@ function ruleSentence(id) {
   const antecedents=AUDITORY_RULES[id];
   if (!antecedents) throw new Error("Unknown Auditory rule");
   const text=antecedents.map(([name,category]) =>
-    featureLabel(name).toLowerCase()+" is "+category.toLowerCase()).join(" AND ");
+    featureLabel(name).toLowerCase()+" is "+(category==="Medium"?"intermediate":category.toLowerCase())).join(" AND ");
   return "If "+text+", then "+(id.startsWith("I")?"increase":"decrease")+" difficulty.";
 }
 function ruleSummary(record) {
@@ -69,8 +69,8 @@ function ruleSummary(record) {
     if ((action==="Increase"&&code==="10")||(action==="Decrease"&&code==="0")) {
       suggestion="Review";
       reason=action==="Increase"?
-        "The suggested action was Increase, which exceeds the available difficulty stages (above Stage 3).":
-        "The suggested action was Decrease, which exceeds the available difficulty stages (below Stage 0).";
+        "The suggested action was Increase, which exceeds the available difficulty stages (above Level 3).":
+        "The suggested action was Decrease, which exceeds the available difficulty stages (below Level 0).";
     } else suggestion=action;
   }
   return {suggestion,main,other,reason};
@@ -253,7 +253,7 @@ function makeWaterfall(regression) {
       ", final prediction " + format(prediction) + ". " +
       features.map(f => featureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
   });
-  const title = svgNode("title", {}, "Stage-specific SHAP waterfall");
+  const title = svgNode("title", {}, "Level-specific SHAP waterfall");
   svg.append(title);
   const top = 68, step = 56, axisY = 342;
   for (let tick = 0; tick <= 4; tick++) {
@@ -261,7 +261,7 @@ function makeWaterfall(regression) {
     svg.append(svgNode("line", {x1:xpos,y1:38,x2:xpos,y2:axisY,stroke:"currentColor","stroke-opacity":".09"}));
     svg.append(svgNode("text",{x:xpos,y:axisY+19,"text-anchor":"middle",class:"axis-label"},format(val,2)));
   }
-  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Stage prediction"));
+  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Level prediction"));
   svg.append(svgNode("text",{x:14,y:top+11,class:"row-name","font-weight":"700"},"baseline"));
   svg.append(svgNode("circle",{cx:x(baseline),cy:top,r:6,fill:"#64748b"}));
   svg.append(svgNode("text",{x:790,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
@@ -413,7 +413,6 @@ function installApp() {
   const stage=document.getElementById("stage");
   const status=document.getElementById("load-status");
   const workspace=document.getElementById("workspace");
-  const banner=document.getElementById("scientific-banner");
   const CD=window.AuditoryCD;
   if(!CD)throw new Error("C/D numerical explanation module missing");
   const isCD=()=>activeTab==="mamdani"||activeTab==="sugeno";
@@ -438,12 +437,16 @@ function installApp() {
     if(!["regression","fuzzy","mamdani","sugeno"].includes(name))
       throw new Error("Unknown explanation method");
     if((name==="mamdani"||name==="sugeno")&&!cd){
+      status.hidden=false;
       status.textContent="This file has A/B only. Load the unified A–D JSON for C/D.";
       return;
     }
-    if(!records.length){status.textContent="Load a local explanation file first.";return;}
+    if(!records.length){
+      status.hidden=false;
+      status.textContent="Load a local explanation file first.";
+      return;
+    }
     activeTab=name;
-    document.getElementById("cd-case-caption").hidden=!isCD();
     for(const method of ["regression","fuzzy","mamdani","sugeno"]){
       const selected=method===name;
       document.getElementById(method+"-view").hidden=!selected;
@@ -452,7 +455,7 @@ function installApp() {
     clearDecision();render();
   }
   file.addEventListener("change",async()=>{
-    workspace.hidden=true;records=[];cd=null;banner.hidden=true;
+    workspace.hidden=true;records=[];cd=null;status.hidden=false;
     try{
       if(!file.files||file.files.length!==1)throw new Error("Select one local JSON file");
       if(file.files[0].size>12_000_000)throw new Error("File exceeds local 12 MB limit");
@@ -469,14 +472,12 @@ function installApp() {
         option.value=name;option.textContent=name;return option;
       }));
       stage.value="0";
-      banner.hidden=!cd;
       workspace.hidden=false;
-      status.textContent=cd?
-        "One unified file validated: P06/P07, four stages, all four explanation methods. Exploratory demonstration.":
-        "Original A/B-only file validated. Load a unified A–D JSON to view C/D.";
+      status.textContent="";
+      status.hidden=true;
       setTab("regression");
     }catch(error){
-      records=[];cd=null;workspace.hidden=true;banner.hidden=true;
+      records=[];cd=null;workspace.hidden=true;status.hidden=false;
       status.textContent="Cannot display file: "+error.message;
     }
   });
@@ -484,6 +485,9 @@ function installApp() {
   stage.addEventListener("change",()=>{clearDecision();render();});
   for(const name of ["regression","fuzzy","mamdani","sugeno"])
     document.getElementById("tab-"+name).addEventListener("click",()=>setTab(name));
+  for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"]])
+    document.getElementById("cd-tree-zoom-"+suffix)
+      .addEventListener("click",()=>CD.zoomTree(action));
 }
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", installApp);
