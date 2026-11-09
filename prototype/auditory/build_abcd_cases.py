@@ -12,6 +12,7 @@ import argparse
 import copy
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -39,6 +40,21 @@ STAGE_TEXT = {
     "6": "Difficulty Stage 2 (D6)",
     "10": "Difficulty Stage 3 (D10)",
 }
+
+
+def numeric(value: object, label: str) -> float:
+    """Match the legacy JS parser: comma OR dot decimal, never thousands."""
+    if isinstance(value, (float, int)) and not isinstance(value, bool):
+        result = float(value)
+    elif isinstance(value, str) and re.fullmatch(
+        r"[+-]?(?:\d+(?:[.,]\d*)?|[.,]\d+)(?:e[+-]?\d+)?",
+        value.strip(), flags=re.IGNORECASE,
+    ):
+        result = float(value.strip().replace(",", "."))
+    else:
+        raise ExportError("Invalid original A/B number: " + label)
+    require(np.isfinite(result), "Nonfinite original A/B number: " + label)
+    return result
 
 
 def source_hash(path: Path) -> str:
@@ -74,13 +90,13 @@ def load_legacy(path: Path) -> list[dict]:
         names = [v.get("Name") for v in regression["Measurements"]]
         require(set(names) == set(NAME_BY_FEATURE.values()) and len(set(names)) == 4,
                 "Unexpected regression input names")
-        observed = {item["Name"]: float(item["Observed"])
+        observed = {item["Name"]: numeric(item["Observed"], "measured value")
                     for item in regression["Measurements"]}
         require(all(np.isfinite(v) for v in observed.values()),
                 "Nonfinite original measured value")
-        contrib = [float(item["ShapContribution"]) for item in regression["Measurements"]]
-        reference = float(regression["ReferencePrediction"])
-        predicted = float(regression["Prediction"])
+        contrib = [numeric(item["ShapContribution"], "SHAP contribution") for item in regression["Measurements"]]
+        reference = numeric(regression["ReferencePrediction"], "stage reference")
+        predicted = numeric(regression["Prediction"], "original prediction")
         require(all(np.isfinite(v) for v in [*contrib,reference,predicted]) and
                 np.isclose(reference+sum(contrib),predicted,atol=1e-8,rtol=0),
                 "Original SHAP attributions do not reconstruct")
@@ -233,7 +249,7 @@ def combined_payload(args: argparse.Namespace) -> dict:
         require(key in raw_original,"No matching original A/B observation")
         original=raw_original[key]
         observed=original["Regression"]["Measurements"]
-        obs_by_name={r["Name"]:float(r["Observed"]) for r in observed}
+        obs_by_name={r["Name"]:numeric(r["Observed"], "measurement") for r in observed}
         measured=np.asarray([record[feature] for feature in FEATURES],dtype=float)
         for j,feature in enumerate(FEATURES):
             require(np.isclose(measured[j],obs_by_name[NAME_BY_FEATURE[feature]],
@@ -241,7 +257,7 @@ def combined_payload(args: argparse.Namespace) -> dict:
                     "A/B feature differs from canonical P06/P07 Auditory test data")
         mlr=regression["Intercept"]+sum(regression[k]*measured[i]
                                       for i,k in enumerate(FEATURES))
-        require(np.isclose(mlr,float(original["Regression"]["Prediction"]),
+        require(np.isclose(mlr,numeric(original["Regression"]["Prediction"], "original regression prediction"),
                            atol=1e-6,rtol=0),
                 "A/B original prediction differs from frozen Auditory MLR")
         leaf=tree_leaf(prior["tree"],measured)
