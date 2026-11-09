@@ -69,8 +69,8 @@ function ruleSummary(record) {
     if ((action==="Increase"&&code==="10")||(action==="Decrease"&&code==="0")) {
       suggestion="Review";
       reason=action==="Increase"?
-        "The suggested action was Increase, which exceeds the available difficulty stages (above Level 3).":
-        "The suggested action was Decrease, which exceeds the available difficulty stages (below Level 0).";
+        "The suggested action was Increase, which exceeds the available difficulty levels (above Level 3).":
+        "The suggested action was Decrease, which exceeds the available difficulty levels (below Level 0).";
     } else suggestion=action;
   }
   return {suggestion,main,other,reason};
