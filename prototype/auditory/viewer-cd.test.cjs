@@ -226,3 +226,27 @@ test("Mamdani chart preserves unavailable without plotting fabricated markers",(
     assert.match(result.textContent,/Unavailable/);
   });
 });
+
+test("decision tree zoom controls change SVG width and reset scroll position",()=>{
+  const old=global.document;
+  const drawing={style:{}};
+  const viewport={clientWidth:720,scrollLeft:55,scrollTop:38,
+    querySelector:(name)=>name==="svg"?drawing:null};
+  const percentage={textContent:""};
+  global.document={getElementById:(id)=>{
+    if(id==="cd-tree")return viewport;
+    if(id==="cd-tree-zoom-value")return percentage;
+    throw new Error("Unexpected DOM ID "+id);
+  }};
+  try{
+    CD.zoomTree("reset");
+    assert.equal(percentage.textContent,"100%");
+    assert.equal(viewport.scrollLeft,0);
+    const before=parseFloat(drawing.style.width);
+    CD.zoomTree("in");
+    assert.equal(percentage.textContent,"125%");
+    assert.ok(parseFloat(drawing.style.width)>before);
+    CD.zoomTree("reset");
+    assert.equal(parseFloat(drawing.style.width),before);
+  }finally{global.document=old;}
+});
