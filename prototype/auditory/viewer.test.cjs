@@ -48,7 +48,7 @@ test("parse decimal comma safely, never as thousands separator",()=>{
 });
 test("preserve source difficulty coding",()=>{
   assert.equal(stageCode("Difficulty Stage 2 (D6)"),"6");
-  assert.equal(displayStage("10"),"Stage 3");
+  assert.equal(displayStage("10"),"Level 3");
 });
 test("accept eight internally coherent synthetic observations",()=>{
   assert.equal(validateDataset(sampleDataset()).length,8);
@@ -80,7 +80,7 @@ test("accept MOD-18 decimal-encoded stage codes without changing source values",
   for (let i=0;i<4;i++) {
     assert.equal(data[i].Fuzzy.Recommendations[0].ProposedLevel,levels[i]);
   }
-  assert.equal(displayStage("6.0"),"Stage 2");
+  assert.equal(displayStage("6.0"),"Level 2");
   assert.equal(displayStage(""),"Not proposed");
 });
 test("reject invalid fractional or unsupported proposed stage codes",()=>{
@@ -134,9 +134,9 @@ test("render exact MOD-18 auditory antecedents as full if-then statements",()=>{
   assert.equal(ruleSentence("D1"),
     "If subjective mental demand rating is high AND time interval between grabs is high, then decrease difficulty.");
   assert.equal(ruleSentence("I5"),
-    "If subjective mental demand rating is low AND time interval between grabs is low AND head rotation while locating a product is medium, then increase difficulty.");
+    "If subjective mental demand rating is low AND time interval between grabs is low AND head rotation while locating a product is intermediate, then increase difficulty.");
   assert.equal(ruleSentence("I4"),
-    "If subjective mental demand rating is low AND duration to locate a target product is low AND time interval between grabs is medium, then increase difficulty.");
+    "If subjective mental demand rating is low AND duration to locate a target product is low AND time interval between grabs is intermediate, then increase difficulty.");
   assert.throws(()=>ruleSentence("V1"),/Unknown Auditory rule/);
 });
 test("show strongest positive rule signal without choosing a policy threshold",()=>{
@@ -166,7 +166,7 @@ test("preserve boundary Review and missing-data Unavailable in rule summary",()=
   boundary.Fuzzy.Rules.find(r=>r.Rule==="D1").Activation=.8;
   const initial=ruleSummary(boundary);
   assert.equal(initial.suggestion,"Review");
-  assert.equal(initial.reason,"The suggested action was Decrease, which exceeds the available difficulty stages (below Stage 0).");
+  assert.equal(initial.reason,"The suggested action was Decrease, which exceeds the available difficulty levels (below Level 0).");
   boundary.Fuzzy.Recommendations[0].Status="boundary_review";
   boundary.Fuzzy.Recommendations[0].FinalAction="Review";
   boundary.Fuzzy.Recommendations[0].ProposedLevel="";
@@ -204,7 +204,7 @@ test("show dynamic Stage 3 upper boundary reasoning",()=>{
   row.Fuzzy.Rules.find(r=>r.Rule==="I1").Activation=.6;
   const result=ruleSummary(row);
   assert.equal(result.suggestion,"Review");
-  assert.equal(result.reason,"The suggested action was Increase, which exceeds the available difficulty stages (above Stage 3).");
+  assert.equal(result.reason,"The suggested action was Increase, which exceeds the available difficulty levels (above Level 3).");
 });
 test("keep original threshold outcomes unchanged in a display-only rule summary",()=>{
   const row=sampleDataset()[1];
