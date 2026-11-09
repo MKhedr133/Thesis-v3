@@ -43,3 +43,51 @@ figcaption{display:flex;gap:20px;flex-wrap:wrap}
 footer{font-size:12px;color:#647383;margin:16px 3px}
 [hidden]{display:none!important}
 @media(max-width:720px){.shell{padding:15px 10px}.panel{padding:16px}.selectors,.decision-grid{grid-template-columns:1fr}.rule-item{grid-template-columns:36px minmax(0,1fr)}.span2{grid-column:auto}.header{align-items:center}.mark{display:none}.tabs button{flex:1;padding:10px 7px;font-size:12px}}
+
+/* Numerical explanation tabs C/D; A/B selectors and styles remain unchanged. */
+.cd-load{border-top:1px solid #dde6ee;margin-top:18px;padding-top:16px}
+.cd-load label{font-size:14px;margin-bottom:8px}
+.cd-load input{max-width:100%;padding:10px;border:1px dashed #7089a3;border-radius:6px}
+#cd-load-status{color:#315b78;font-weight:600;margin:9px 0}
+.cd-note{font-size:12px;color:#52687c;line-height:1.45;margin:7px 0 12px}
+.cd-case-caption{font-size:13px;font-weight:700;color:#42627f;margin:0 0 12px}
+.tabs{flex-wrap:wrap}
+.tabs button{min-width:142px}
+.cd-top{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px}
+.cd-top h2{margin:0}
+.cd-method{font-size:12px;color:#5d7183;border-radius:15px;background:#edf3fa;padding:7px 11px}
+.cd-scores{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:16px 0}
+.cd-score{display:flex;flex-direction:column;gap:7px;background:#f1f5fa;border:1px solid #dce5ef;border-radius:9px;padding:15px}
+.cd-score small{font-size:12px;color:#4b6277;font-weight:700}
+.cd-score strong{font-size:27px;color:#193f5c;font-variant-numeric:tabular-nums}
+.cd-grid{display:grid;grid-template-columns:minmax(0,2.1fr) minmax(285px,.9fr);gap:14px;align-items:start}
+.cd-hero,.cd-sidebar,.cd-bottom{border:1px solid #dce3ea;background:#fbfdff;border-radius:10px;padding:15px;min-width:0}
+.cd-hero h3,.cd-sidebar h3,.cd-bottom h3{margin:0 0 10px;font-size:16px}
+.cd-sidebar{max-height:620px;overflow:auto}
+.cd-graphic{overflow:auto;width:100%;background:#fff;border:1px solid #ecf0f5;border-radius:8px;padding:8px}
+.cd-graphic svg{display:block;width:100%;min-width:620px;max-height:none}
+#cd-scatter svg{min-width:500px}
+#cd-curve svg{min-width:400px;max-height:280px}
+.cd-bottom{margin-top:14px}
+.cd-rule{margin-top:8px;background:#fff;border:1px solid #e1e8f0;padding:11px}
+.cd-rule summary{display:flex;justify-content:space-between;gap:10px;color:#263d57;font-size:13px}
+.cd-rule-text{font-size:12px;color:#596a7b;line-height:1.5;margin:12px 0 2px}
+.cd-track{display:block;width:100%;height:10px;background:#e6ecf3;border-radius:30px;overflow:hidden;margin-top:9px}
+.cd-fill{height:100%;display:block;background:#7755bd;border-radius:30px}
+.cd-memberships{display:grid;gap:8px}
+.cd-membership{width:100%;padding:12px;text-align:left;border:1px solid #d9e2eb;border-radius:8px;background:#fff;color:#203852;cursor:pointer}
+.cd-membership[aria-pressed=true]{border-color:#366fa5;background:#eef6ff;box-shadow:0 0 0 1px #366fa5}
+.cd-membership-head{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13px}
+.cd-feature{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:6px;margin:12px 0}
+.cd-feature>span{font-size:12px;color:#536578}
+.cd-feature strong{font-size:11px;font-variant-numeric:tabular-nums}
+.cd-feature-track{position:relative;grid-column:1/-1;height:9px;background:#e5ebf2;border-radius:30px}
+.cd-feature-dot{position:absolute;top:-4px;transform:translateX(-50%);width:15px;height:15px;border-radius:50%;background:#2d719d;border:2px solid #fff;box-shadow:0 0 0 1px #2d719d}
+.cd-feature-dot.cd-feature-centre{background:#fff;border:3px solid #9469be;box-shadow:none}
+.cd-key{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:#556b7e;margin-top:10px}
+.cd-calculation{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.cd-term{background:#f3f6fb;border-radius:8px;padding:13px;display:flex;flex-direction:column;gap:6px;font-size:13px}
+.cd-term strong{font-size:14px;color:#203f61;font-variant-numeric:tabular-nums}
+.cd-total{grid-column:1/-1;text-align:center;padding:14px;background:#eaf2fc;color:#203f61;font-weight:700;border-radius:8px}
+@media(max-width:880px){.cd-grid{grid-template-columns:1fr}.cd-scores{grid-template-columns:repeat(3,minmax(0,1fr))}.cd-sidebar{max-height:none}}
+@media(max-width:620px){.cd-scores,.cd-calculation{grid-template-columns:1fr}.tabs button{min-width:0;flex:1 1 45%}.cd-graphic svg{min-width:550px}.cd-total{grid-column:1}}

@@ -7,6 +7,7 @@
   <title>Auditory difficulty review — local prototype</title>
   <link rel="stylesheet" href="./viewer.css">
   <script defer src="./viewer.js"></script>
+  <script defer src="./viewer-cd.js"></script>
 </head>
 <body>
 <main class="shell">
@@ -20,11 +21,17 @@
   <section class="panel load" aria-labelledby="load-title">
     <h2 id="load-title">Load local explanation data</h2>
     <input id="data-file" type="file" accept=".json,application/json">
-    <p id="load-status" role="status" aria-live="polite">No data loaded.</p>
+    <p id="load-status" role="status" aria-live="polite">No A/B explanation data loaded.</p>
+    <div class="cd-load">
+      <label for="cd-file">C/D development examples (separate local JSON)</label>
+      <input id="cd-file" type="file" accept=".json,application/json">
+      <p id="cd-load-status" role="status" aria-live="polite">No development examples loaded.</p>
+      <p class="cd-note">The existing A/B file contains reserved-test demonstration cases. C/D uses separate development observations; no test-case inference is performed.</p>
+    </div>
   </section>
 
   <section id="workspace" hidden>
-    <div class="panel selectors">
+    <div id="legacy-selectors" class="panel selectors">
       <label>Participant
         <select id="participant"></select>
       </label>
@@ -38,9 +45,26 @@
       </label>
     </div>
 
+    <div id="development-selectors" class="panel selectors" hidden>
+      <label>Development example
+        <select id="cd-participant"></select>
+      </label>
+      <label>Completed difficulty stage
+        <select id="cd-stage">
+          <option value="0">Stage 0</option>
+          <option value="2">Stage 1</option>
+          <option value="6">Stage 2</option>
+          <option value="10">Stage 3</option>
+        </select>
+      </label>
+    </div>
+    <p id="cd-case-caption" class="cd-case-caption" hidden></p>
+
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
       <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
+      <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">C · Decision tree–Mamdani</button>
+      <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">D · FCM–Sugeno</button>
     </nav>
 
     <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
@@ -88,6 +112,54 @@
           <tbody id="membership-rows"></tbody>
         </table>
       </details>
+    </section>
+
+
+    <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
+      <div class="cd-top"><h2>C · Decision Tree–Mamdani</h2><span class="cd-method">Five output terms · development fit</span></div>
+      <div id="cd-mamdani-scores" class="cd-scores"></div>
+      <div class="cd-grid">
+        <div class="cd-hero">
+          <h3>Learned decision tree</h3>
+          <p class="cd-note">Purple shows this session's crisp tree route; fuzzy rule activations are calculated separately.</p>
+          <div id="cd-tree" class="cd-graphic" aria-live="polite"></div>
+        </div>
+        <aside class="cd-sidebar">
+          <h3>Fuzzy rule activations</h3>
+          <p class="cd-note">Rules ordered by activation strength; select one to inspect its conditions.</p>
+          <div id="cd-rule-list"></div>
+        </aside>
+      </div>
+      <div class="cd-bottom">
+        <h3>Combined fuzzy output · numerical centroid</h3>
+        <div id="cd-curve" class="cd-graphic"></div>
+        <details><summary>How was this prediction produced?</summary><p>Active rules clip their output membership functions (MIN), combine by MAX, and give a numerical difficulty score through centroid defuzzification. The highlighted crisp path is not the entire fuzzy explanation.</p></details>
+      </div>
+      <p class="cd-note">Numerical score, not a proposed change to the next session. Unavailable results remain unavailable.</p>
+    </section>
+
+    <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
+      <div class="cd-top"><h2>D · Fuzzy C-Means–Sugeno</h2><span class="cd-method">Three learned measurement profiles · development fit</span></div>
+      <div id="cd-sugeno-scores" class="cd-scores"></div>
+      <div class="cd-grid">
+        <div class="cd-hero">
+          <h3>Learned clusters and this session</h3>
+          <p class="cd-note">The marked session is shown among 104 development observations. This 2D PCA overview is not the four-dimensional distance used to calculate membership.</p>
+          <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
+          <div class="cd-key"><span>● Selected session</span><span>◯ Cluster centre 1–3</span><span>· Other development observations</span></div>
+        </div>
+        <aside class="cd-sidebar">
+          <h3>How much does it belong to each cluster?</h3>
+          <div id="cd-memberships" class="cd-memberships"></div>
+          <div id="cd-profile-detail"></div>
+        </aside>
+      </div>
+      <div class="cd-bottom">
+        <h3>Weighted numerical calculation</h3>
+        <div id="cd-calculation" class="cd-calculation"></div>
+        <details><summary>What do these percentages mean?</summary><p>Fuzzy membership describes relative similarity to three learned four-measurement profiles. It is not a probability of clinical difficulty and does not suggest an adaptation.</p></details>
+      </div>
+      <p class="cd-note">The model combines the three constant outputs using memberships calculated in the original, scaled four-feature space.</p>
     </section>
 
     <section class="panel" aria-label="Next session decision">
