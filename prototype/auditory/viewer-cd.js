@@ -183,7 +183,7 @@
       chart.append(svg("circle",{cx:X(current.x),cy:Y(current.y),r:13,fill:"#172d56",
         stroke:"#ffffff","stroke-width":4}));
       chart.append(svg("text",{x:X(current.x)+14,y:Y(current.y)-11,
-        fill:"#172d56","font-weight":700,"font-size":14},"P06/P07 test case"));
+        fill:"#172d56","font-weight":700,"font-size":14},obs.example+" · exploratory test case"));
     }
     map.centres.forEach((p,i)=>{
       chart.append(svg("circle",{cx:X(p.x),cy:Y(p.y),r:14,fill:"#fff",stroke:COLORS[i],"stroke-width":3}),
