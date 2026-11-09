@@ -124,3 +124,42 @@ test("reject made-up display PCA coordinates",()=>{
   const d=fixture();d.clusterMap.points[0].x=Infinity;
   assert.throws(()=>CD.validate(d),/projected point/);
 });
+
+function exploratoryFixture() {
+  const d=fixture();
+  d.schema="auditory-cd-exploratory-v1";
+  d.population="reserved_test_exploratory";
+  d.testParticipantsDisplayed=2;
+  d.testParticipantsUsedForFitting=0;
+  d.clusterMap.selectedPoints=d.clusterMap.points.slice(0,8).map(p=>structuredClone(p));
+  d.cases.forEach((c,i)=>{
+    c.example=i<4?"P06":"P07";
+    c.mapPointIndex=i;
+  });
+  return d;
+}
+test("accept explicitly exploratory P06/P07 cases without changing the 104 development cloud",()=>{
+  const d=exploratoryFixture();
+  assert.equal(CD.validate(d).clusterMap.points.length,104);
+  assert.equal(CD.validate(d).clusterMap.selectedPoints.length,8);
+});
+test("reject claiming P06/P07 were used to fit the development model",()=>{
+  const d=exploratoryFixture();d.testParticipantsUsedForFitting=2;
+  assert.throws(()=>CD.validate(d),/exploratory P06\/P07 provenance/);
+});
+test("reject passing development-example labels as test participant identities",()=>{
+  const d=exploratoryFixture();d.cases[0].example="Development example 1";
+  assert.throws(()=>CD.validate(d),/invalid case/);
+});
+test("reject using another test participant in exploratory display",()=>{
+  const d=exploratoryFixture();d.cases[0].example="P08";
+  assert.throws(()=>CD.validate(d),/invalid case/);
+});
+test("reject mixing a selected test point with a different membership",()=>{
+  const d=exploratoryFixture();d.clusterMap.selectedPoints[0].memberships=[.1,.2,.7];
+  assert.throws(()=>CD.validate(d),/membership\/contribution mismatch/);
+});
+test("reject including test points in the 104-observation development cloud",()=>{
+  const d=exploratoryFixture();d.clusterMap.points.push(d.clusterMap.selectedPoints[0]);
+  assert.throws(()=>CD.validate(d),/invalid PCA map/);
+});
