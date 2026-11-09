@@ -363,115 +363,131 @@ function renderFuzzy(record) {
     ]))
   );
 }
+function validateUnifiedDataset(bundle, validateCD) {
+  if (!bundle || bundle.schema!=="auditory-abcd-unified-exploratory-v1" ||
+      bundle.scientificStatus!=="exploratory_previously_inspected_reserved_test_cases" ||
+      !Array.isArray(bundle.participants) ||
+      bundle.participants.slice().sort().join(",")!=="P06,P07") {
+    throw new Error("Unified file must be the labelled P06/P07 exploratory bundle");
+  }
+  if (typeof validateCD!=="function") throw new Error("C/D model validator unavailable");
+  const records=validateDataset(bundle.records);
+  const cd=validateCD(bundle.cd);
+  if (cd.population!=="reserved_test_exploratory" ||
+      cd.testParticipantsDisplayed!==2 ||
+      cd.testParticipantsUsedForFitting!==0) {
+    throw new Error("C/D must use frozen development-fitted models and explicit exploratory status");
+  }
+  const featureNames=[
+    "Mental demand","Time between qualifying grabs","Time to locate target","Head turning"
+  ];
+  const seen=new Set();
+  for (const legacy of records) {
+    const who=legacy.ParticipantId, stage=stageCode(legacy.DifficultyStage);
+    if (!["P06","P07"].includes(who)) throw new Error("Unexpected unified participant ID");
+    const selected=cd.cases.find(item=>item.example===who&&item.stage===stage);
+    if (!selected) throw new Error("Missing C/D result for "+who+" stage "+stage);
+    const key=who+"|"+stage;
+    if (seen.has(key)) throw new Error("Duplicate unified participant-stage case");
+    seen.add(key);
+    if (Math.abs(finite(legacy.Regression.Prediction)-selected.originalPrediction)>1e-7) {
+      throw new Error("A/B and C/D original regression predictions differ");
+    }
+    const measurements=new Map(legacy.Regression.Measurements.map(
+      item=>[item.Name,finite(item.Observed)]
+    ));
+    featureNames.forEach((name,index)=>{
+      if (!measurements.has(name) ||
+          Math.abs(measurements.get(name)-selected.measurements[index])>1e-7) {
+        throw new Error("A/B and C/D measured inputs differ: "+name);
+      }
+    });
+  }
+  if (seen.size!==8) throw new Error("Incomplete P06/P07 unified case coverage");
+  return {records,cd};
+}
 function installApp() {
-  let records = [], development = null, activeTab = "regression";
-  const file = document.getElementById("data-file");
-  const cdFile = document.getElementById("cd-file");
-  const participant = document.getElementById("participant");
-  const stage = document.getElementById("stage");
-  const cdParticipant = document.getElementById("cd-participant");
-  const cdStage = document.getElementById("cd-stage");
-  const status = document.getElementById("load-status");
-  const cdStatus = document.getElementById("cd-load-status");
-  const workspace = document.getElementById("workspace");
-  const CD = window.AuditoryCD;
-  if (!CD) throw new Error("Local C/D viewer module is missing");
-  const clearDecision = () => {
-    document.getElementById("next-stage").value = "";
-    document.getElementById("rationale").value = "";
+  let records=[], cd=null, activeTab="regression";
+  const file=document.getElementById("data-file");
+  const participant=document.getElementById("participant");
+  const stage=document.getElementById("stage");
+  const status=document.getElementById("load-status");
+  const workspace=document.getElementById("workspace");
+  const banner=document.getElementById("scientific-banner");
+  const CD=window.AuditoryCD;
+  if(!CD)throw new Error("C/D numerical explanation module missing");
+  const isCD=()=>activeTab==="mamdani"||activeTab==="sugeno";
+  const clearDecision=()=>{
+    document.getElementById("next-stage").value="";
+    document.getElementById("rationale").value="";
   };
-  const isCD = () => activeTab === "mamdani" || activeTab === "sugeno";
-  function render() {
-    if (isCD()) {
-      if (development) CD.show(development,cdParticipant.value,cdStage.value,activeTab);
-      return;
+  function render(){
+    if(!records.length)return;
+    const chosen=records.find(r=>r.ParticipantId===participant.value &&
+      stageCode(r.DifficultyStage)===stage.value);
+    if(!chosen)throw new Error("Selected participant-stage record missing");
+    if(isCD()){
+      if(!cd)throw new Error("Unified P06/P07 file required for C/D");
+      CD.show(cd,participant.value,stage.value,activeTab);
+    }else{
+      renderRegression(chosen);
+      renderFuzzy(chosen);
     }
-    if (!records.length) return;
-    const selected = records.find(r => r.ParticipantId === participant.value &&
-      stageCode(r.DifficultyStage) === stage.value);
-    if (!selected) throw new Error("No matching participant-stage observation");
-    renderRegression(selected);
-    renderFuzzy(selected);
   }
-  function setTab(tab) {
-    if (!["regression","fuzzy","mamdani","sugeno"].includes(tab)) {
-      throw new Error("Unknown explanation tab");
-    }
-    if (["mamdani","sugeno"].includes(tab) && !development) {
-      cdStatus.textContent = "Load a development-only C/D JSON file first.";
+  function setTab(name){
+    if(!["regression","fuzzy","mamdani","sugeno"].includes(name))
+      throw new Error("Unknown explanation method");
+    if((name==="mamdani"||name==="sugeno")&&!cd){
+      status.textContent="This file has A/B only. Load the unified A–D JSON for C/D.";
       return;
     }
-    if (["regression","fuzzy"].includes(tab) && !records.length) {
-      status.textContent = "Load the original A/B JSON file first.";
-      return;
+    if(!records.length){status.textContent="Load a local explanation file first.";return;}
+    activeTab=name;
+    document.getElementById("cd-case-caption").hidden=!isCD();
+    for(const method of ["regression","fuzzy","mamdani","sugeno"]){
+      const selected=method===name;
+      document.getElementById(method+"-view").hidden=!selected;
+      document.getElementById("tab-"+method).setAttribute("aria-selected",String(selected));
     }
-    activeTab = tab;
-    const useDevelopment = isCD();
-    document.getElementById("legacy-selectors").hidden = useDevelopment;
-    document.getElementById("development-selectors").hidden = !useDevelopment;
-    document.getElementById("cd-case-caption").hidden = !useDevelopment;
-    for (const name of ["regression","fuzzy","mamdani","sugeno"]) {
-      const selected = activeTab === name;
-      document.getElementById(name+"-view").hidden = !selected;
-      document.getElementById("tab-"+name).setAttribute("aria-selected",String(selected));
-    }
-    clearDecision();
-    render();
+    clearDecision();render();
   }
-  file.addEventListener("change", async () => {
-    records = [];
-    try {
-      if (!file.files || file.files.length !== 1) throw new Error("Select one JSON file");
-      if (file.files[0].size > 3_000_000) throw new Error("File exceeds the 3 MB local limit");
-      const parsed = JSON.parse(await file.files[0].text());
-      records = validateDataset(parsed);
-      const labels = [...new Set(records.map(r => r.ParticipantId))].sort();
-      participant.replaceChildren(...labels.map(label=>{
-        const option=document.createElement("option");option.value=label;option.textContent=label;
-        return option;
+  file.addEventListener("change",async()=>{
+    workspace.hidden=true;records=[];cd=null;banner.hidden=true;
+    try{
+      if(!file.files||file.files.length!==1)throw new Error("Select one local JSON file");
+      if(file.files[0].size>12_000_000)throw new Error("File exceeds local 12 MB limit");
+      const parsed=JSON.parse(await file.files[0].text());
+      if(Array.isArray(parsed)){
+        records=validateDataset(parsed);
+      }else{
+        const unified=validateUnifiedDataset(parsed,CD.validate);
+        records=unified.records;cd=unified.cd;
+      }
+      const labels=[...new Set(records.map(r=>r.ParticipantId))].sort();
+      participant.replaceChildren(...labels.map(name=>{
+        const option=document.createElement("option");
+        option.value=name;option.textContent=name;return option;
       }));
-      stage.value = "0";
-      workspace.hidden = false;
-      status.textContent = "A/B file validated: eight observations; two participants; four stages each.";
+      stage.value="0";
+      banner.hidden=!cd;
+      workspace.hidden=false;
+      status.textContent=cd?
+        "One unified file validated: P06/P07, four stages, all four explanation methods. Exploratory demonstration.":
+        "Original A/B-only file validated. Load a unified A–D JSON to view C/D.";
       setTab("regression");
-    } catch (error) {
-      status.textContent = "Cannot display A/B file: " + error.message;
-      workspace.hidden = !development;
-      if (development) setTab("mamdani");
-    }
-  });
-  cdFile.addEventListener("change", async () => {
-    development = null;
-    try {
-      if (!cdFile.files || cdFile.files.length !== 1) throw new Error("Select one development JSON");
-      if (cdFile.files[0].size > 12_000_000) throw new Error("File exceeds the 12 MB local limit");
-      development = CD.validate(JSON.parse(await cdFile.files[0].text()));
-      const labels = [...new Set(development.cases.map(r=>r.example))].sort();
-      cdParticipant.replaceChildren(...labels.map(label=>{
-        const option=document.createElement("option");option.value=label;option.textContent=label;
-        return option;
-      }));
-      cdStage.value = "0";
-      workspace.hidden = false;
-      cdStatus.textContent = "C/D development data verified: 26 participants, 104 observations, eight selected examples.";
-      setTab("mamdani");
-    } catch(error) {
-      cdStatus.textContent = "Cannot display C/D file: " + error.message;
-      workspace.hidden = !records.length;
-      if (records.length) setTab("regression");
+    }catch(error){
+      records=[];cd=null;workspace.hidden=true;banner.hidden=true;
+      status.textContent="Cannot display file: "+error.message;
     }
   });
   participant.addEventListener("change",()=>{clearDecision();render();});
   stage.addEventListener("change",()=>{clearDecision();render();});
-  cdParticipant.addEventListener("change",()=>{clearDecision();render();});
-  cdStage.addEventListener("change",()=>{clearDecision();render();});
-  for(const name of ["regression","fuzzy","mamdani","sugeno"]) {
+  for(const name of ["regression","fuzzy","mamdani","sugeno"])
     document.getElementById("tab-"+name).addEventListener("click",()=>setTab(name));
-  }
 }
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", installApp);
 }
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = {finite,stageCode,displayStage,validateDataset,featureLabel,ruleSentence,ruleSummary};
+  module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,featureLabel,ruleSentence,ruleSummary};
 }
