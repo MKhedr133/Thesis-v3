@@ -131,8 +131,10 @@ class AuditoryFuzzyMetricsTests(unittest.TestCase):
         values = E.record_metrics(table, method="example", subset="training",
                                   prediction="example")
         actual = next(x for x in values if x["reference"] == "observed_difficulty_stage")
+        # Errors are 0.25 and 0.50. Strict thresholds exclude equality:
+        # neither is <0.25, only 0.25 is <0.50, and both are <0.75.
         self.assertEqual(actual["accuracy_within_0p25_percent"], 0)
-        self.assertEqual(actual["accuracy_within_0p50_percent"], 0)
+        self.assertEqual(actual["accuracy_within_0p50_percent"], 50)
         self.assertEqual(actual["accuracy_within_0p75_percent"], 100)
 
     def test_accuracy_is_absolute_units_not_fraction_of_stage_range(self):
