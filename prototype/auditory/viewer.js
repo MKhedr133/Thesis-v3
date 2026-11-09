@@ -447,6 +447,7 @@ function installApp() {
       return;
     }
     activeTab=name;
+    status.hidden=true;
     for(const method of ["regression","fuzzy","mamdani","sugeno"]){
       const selected=method===name;
       document.getElementById(method+"-view").hidden=!selected;
