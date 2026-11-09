@@ -163,3 +163,90 @@ test("reject including test points in the 104-observation development cloud",()=
   const d=exploratoryFixture();d.clusterMap.points.push(d.clusterMap.selectedPoints[0]);
   assert.throws(()=>CD.validate(d),/invalid PCA map/);
 });
+
+function withMockSvgDom(callback){
+  const previous=global.document;
+  const node=(tag)=>({
+    tag,attributes:{},children:[],textContent:"",
+    setAttribute(key,value){this.attributes[key]=String(value);},
+    append(...children){this.children.push(...children);}
+  });
+  global.document={createElementNS:(_namespace,tag)=>node(tag),
+    createElement:(tag)=>node(tag)};
+  try{return callback();}finally{global.document=previous;}
+}
+function walkSvg(root){return [root,...root.children.flatMap(walkSvg)];}
+test("tree zoom increases and resets without changing the tree source",()=>{
+  assert.equal(CD.zoomStep(1,"in"),1.25);
+  assert.equal(CD.zoomStep(1.25,"out"),1);
+  assert.equal(CD.zoomStep(3.2,"in"),3.2);
+  assert.equal(CD.zoomStep(.75,"out"),.75);
+  assert.equal(CD.zoomStep(2.1,"reset"),1);
+});
+test("replace Medium only in therapist-visible wording",()=>{
+  assert.equal(CD.linguisticLabel("Very low, Medium or High"),"Very low, Intermediate or High");
+  assert.equal(CD.linguisticLabel("Mental demand is medium"),
+    "Mental demand is intermediate");
+  assert.equal(CD.linguisticLabel("Medium"),"Intermediate");
+});
+test("shared prediction axis contains both original MLR and centroid even if regression exceeds output universe",()=>{
+  const bounds=CD.plotBounds([.46,.9,1.4,3.23],3.7,1.389);
+  assert.ok(bounds.lower<.46);
+  assert.ok(bounds.upper>3.7);
+});
+test("Mamdani SVG overlays original regression and centroid on one axis with shaded difference",()=>{
+  const obs={
+    originalPrediction:1.29,
+    mamdani:{status:"OK",prediction:1.389,outputCurve:{
+      x:[.46,.9,1.5,2,2.5,3.23],y:[0,.69,.69,.25,.25,0]
+    }}
+  };
+  withMockSvgDom(()=>{
+    const figure=CD.outputChart(obs),nodes=walkSvg(figure);
+    assert.equal(figure.tag,"svg");
+    assert.match(figure.attributes["aria-label"],/Regression prediction/i);
+    assert.match(figure.attributes["aria-label"],/1.389/);
+    assert.ok(nodes.some(n=>n.tag==="polygon"&&n.attributes.fill==="#7850c8"));
+    assert.ok(nodes.some(n=>n.tag==="polyline"&&n.attributes.stroke==="#7147bf"));
+    const orig=nodes.find(n=>n.tag==="line"&&n.attributes.stroke==="#687a90");
+    const centroid=nodes.find(n=>n.tag==="line"&&n.attributes.stroke==="#173f6c");
+    assert.ok(orig&&centroid);
+    assert.ok(Number(orig.attributes.x1)<Number(centroid.attributes.x1));
+    assert.ok(nodes.some(n=>n.tag==="rect"&&n.attributes.fill==="#c7d8f5"));
+    assert.ok(nodes.some(n=>n.textContent==="Predicted difficulty level"));
+    assert.ok(nodes.some(n=>n.textContent==="Regression 1.29"));
+    assert.ok(nodes.some(n=>n.textContent==="Centroid 1.389"));
+  });
+});
+test("Mamdani chart preserves unavailable without plotting fabricated markers",()=>{
+  withMockSvgDom(()=>{
+    const result=CD.outputChart({originalPrediction:1.29,
+      mamdani:{status:"Unavailable",prediction:null,outputCurve:null}});
+    assert.equal(result.tag,"p");
+    assert.match(result.textContent,/Unavailable/);
+  });
+});
+
+test("decision tree zoom controls change SVG width and reset scroll position",()=>{
+  const old=global.document;
+  const drawing={style:{}};
+  const viewport={clientWidth:720,scrollLeft:55,scrollTop:38,
+    querySelector:(name)=>name==="svg"?drawing:null};
+  const percentage={textContent:""};
+  global.document={getElementById:(id)=>{
+    if(id==="cd-tree")return viewport;
+    if(id==="cd-tree-zoom-value")return percentage;
+    throw new Error("Unexpected DOM ID "+id);
+  }};
+  try{
+    CD.zoomTree("reset");
+    assert.equal(percentage.textContent,"100%");
+    assert.equal(viewport.scrollLeft,0);
+    const before=parseFloat(drawing.style.width);
+    CD.zoomTree("in");
+    assert.equal(percentage.textContent,"125%");
+    assert.ok(parseFloat(drawing.style.width)>before);
+    CD.zoomTree("reset");
+    assert.equal(parseFloat(drawing.style.width),before);
+  }finally{global.document=old;}
+});

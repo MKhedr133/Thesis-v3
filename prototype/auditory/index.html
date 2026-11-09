@@ -23,7 +23,6 @@
     <label for="data-file">Select unified A–D JSON (or an older A/B-only JSON)</label>
     <input id="data-file" type="file" accept=".json,application/json">
     <p id="load-status" role="status" aria-live="polite">No explanation data loaded.</p>
-    <p class="cd-note">Files are read locally in your browser. The unified P06/P07 file contains previously inspected reserved-test examples and is for exploratory interface review only.</p>
   </section>
 
   <section id="workspace" hidden>
@@ -31,20 +30,16 @@
       <label>Participant
         <select id="participant"></select>
       </label>
-      <label>Completed difficulty stage
+      <label>Completed difficulty level
         <select id="stage">
-          <option value="0">Stage 0</option>
-          <option value="2">Stage 1</option>
-          <option value="6">Stage 2</option>
-          <option value="10">Stage 3</option>
+          <option value="0">Level 0</option>
+          <option value="2">Level 1</option>
+          <option value="6">Level 2</option>
+          <option value="10">Level 3</option>
         </select>
       </label>
     </div>
 
-    <div id="scientific-banner" class="notice" role="status" aria-live="polite" hidden>
-      Exploratory demonstration: P06/P07 were previously inspected reserved-test participants. No model was fitted or selected using their outcomes.
-    </div>
-    <p id="cd-case-caption" class="cd-case-caption" hidden></p>
 
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
@@ -94,7 +89,7 @@
       <details>
         <summary>Feature categories activations</summary>
         <table>
-          <thead><tr><th>Feature</th><th>Low</th><th>Medium</th><th>High</th></tr></thead>
+          <thead><tr><th>Feature</th><th>Low</th><th>Intermediate</th><th>High</th></tr></thead>
           <tbody id="membership-rows"></tbody>
         </table>
       </details>
@@ -102,13 +97,24 @@
 
 
     <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
-      <div class="cd-top"><h2>C · Decision Tree–Mamdani</h2><span class="cd-method">Five output terms · development-fitted model</span></div>
+      <div class="cd-top"><span class="cd-method">Five output terms · development-fitted model</span></div>
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
-          <h3>Learned decision tree</h3>
-          <p class="cd-note">Purple shows this session's crisp tree route; fuzzy rule activations are calculated separately.</p>
-          <div id="cd-tree" class="cd-graphic" aria-live="polite"></div>
+          <details class="cd-recorded">
+            <summary>Recorded measurements</summary>
+            <table aria-label="Four recorded Auditory measurements">
+              <thead><tr><th>Measurement</th><th>Recorded value</th></tr></thead>
+              <tbody id="cd-recorded-rows"></tbody>
+            </table>
+          </details>
+          <div class="cd-tree-toolbar" role="group" aria-label="Decision tree zoom controls">
+            <button id="cd-tree-zoom-out" type="button" aria-label="Zoom out of decision tree">−</button>
+            <output id="cd-tree-zoom-value" aria-live="polite">100%</output>
+            <button id="cd-tree-zoom-in" type="button" aria-label="Zoom in on decision tree">+</button>
+            <button id="cd-tree-zoom-reset" type="button">Reset</button>
+          </div>
+          <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
         </div>
         <aside class="cd-sidebar">
           <h3>Fuzzy rule activations</h3>
@@ -117,11 +123,15 @@
         </aside>
       </div>
       <div class="cd-bottom">
-        <h3>Combined fuzzy output · numerical centroid</h3>
+        <h3>Mamdani approximation of predicted difficulty level</h3>
         <div id="cd-curve" class="cd-graphic"></div>
-        <details><summary>How was this prediction produced?</summary><p>Active rules clip their output membership functions (MIN), combine by MAX, and give a numerical difficulty score through centroid defuzzification. The highlighted crisp path is not the entire fuzzy explanation.</p></details>
+        <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
+          <span class="cd-legend-shape">Combined fuzzy output</span>
+          <span class="cd-legend-regression">Regression model prediction</span>
+          <span class="cd-legend-centroid">Mamdani centroid</span>
+          <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
+        </div>
       </div>
-      <p class="cd-note">Numerical score, not a proposed change to the next session. Unavailable results remain unavailable.</p>
     </section>
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
@@ -150,13 +160,13 @@
 
     <section class="panel" aria-label="Next session decision">
       <div class="decision-grid">
-        <label>Next-session difficulty
+        <label>Next-session difficulty level
           <select id="next-stage">
             <option value="">Not selected</option>
-            <option value="0">Stage 0</option>
-            <option value="2">Stage 1</option>
-            <option value="6">Stage 2</option>
-            <option value="10">Stage 3</option>
+            <option value="0">Level 0</option>
+            <option value="2">Level 1</option>
+            <option value="6">Level 2</option>
+            <option value="10">Level 3</option>
           </select>
         </label>
         <label>Reasoning / additional observations

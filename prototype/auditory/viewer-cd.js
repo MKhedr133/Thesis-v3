@@ -6,6 +6,33 @@
   const LABELS = ["Mental demand","Grab interval","Time to target","Head turning"];
   const UNITS = ["/10","s","s","°"];
   const COLORS = ["#3576a5","#228d85","#ae7c35"];
+  const linguisticLabel = value => String(value).replace(/\bMedium\b/g,"Intermediate")
+    .replace(/\bmedium\b/g,"intermediate");
+  function plotBounds(grid, regression, prediction) {
+    insist(grid.length>=3 && finite(regression) && finite(prediction),
+      "incomplete prediction-axis inputs");
+    const lower=Math.min(grid[0],regression,prediction);
+    const upper=Math.max(grid[grid.length-1],regression,prediction);
+    const pad=Math.max((upper-lower)*.04,.015);
+    return {lower:lower-pad,upper:upper+pad};
+  }
+  const zoomStep = (value,action) => action==="reset"?1:
+    Math.max(.75,Math.min(3.2,value*(action==="in"?1.25:action==="out"?.8:1)));
+  let currentTreeZoom=1;
+  function zoomTree(action) {
+    currentTreeZoom=zoomStep(currentTreeZoom,action);
+    const viewport=document.getElementById("cd-tree");
+    const drawing=viewport.querySelector("svg");
+    if(drawing){
+      drawing.style.width=Math.round(Math.max(440,viewport.clientWidth-16)*currentTreeZoom)+"px";
+      drawing.style.minWidth="0";
+      drawing.style.maxWidth="none";
+    }
+    document.getElementById("cd-tree-zoom-value").textContent=
+      Math.round(currentTreeZoom*100)+"%";
+    if(action==="reset"){viewport.scrollLeft=0;viewport.scrollTop=0;}
+    return currentTreeZoom;
+  }
   const finite = v => typeof v === "number" && Number.isFinite(v);
   const near = (a,b,t=1e-8) => Math.abs(a-b)<=t;
   function insist(v,msg){if(!v)throw new Error("C/D development data: "+msg);}
@@ -94,7 +121,8 @@
     return data;
   }
   function cards(id,obs,method){
-    const x=obs[method],labels=["Original regression",method==="mamdani"?"Mamdani score":"Sugeno score","Difference"];
+    const x=obs[method],labels=["Regression model predicted difficulty level",
+      "Surrogate model predicted difficulty level","Difference"];
     const values=[f(obs.originalPrediction),x.status==="OK"?f(x.prediction):"Unavailable",
       x.status==="OK"?(x.prediction<obs.originalPrediction?"−":"+")+f(Math.abs(x.prediction-obs.originalPrediction)):"—"];
     document.getElementById(id).replaceChildren(...labels.map((label,i)=>{
@@ -134,30 +162,72 @@
     if(!rules.length)return [html("p","hint","No activated rules. Mamdani result unavailable.")];
     return rules.map(rule=>{
       const item=html("details","cd-rule"),head=html("summary");
-      head.append(html("span",null,"Leaf "+rule.leaf+" · "+rule.consequent),
+      head.append(html("span",null,"Leaf "+rule.leaf+" · "+linguisticLabel(rule.consequent)),
         html("strong",null,f(rule.activation,2)));
       const track=html("div","cd-track"),fill=html("div","cd-fill");
       fill.style.width=(rule.activation*100)+"%";track.append(fill);
-      item.append(head,track,html("p","cd-rule-text",rule.antecedent));
+      item.append(head,track,html("p","cd-rule-text",linguisticLabel(rule.antecedent)));
       return item;
     });
   }
   function outputChart(obs){
-    if(obs.mamdani.status!=="OK")return html("p","hint","Unavailable: no valid aggregated fuzzy output.");
-    const curve=obs.mamdani.outputCurve,x=curve.x,y=curve.y,lo=x[0],hi=x[x.length-1];
-    const X=v=>40+700*(v-lo)/(hi-lo),Y=v=>170-135*v;
-    const chart=svg("svg",{viewBox:"0 0 790 205",role:"img",
-      "aria-label":"Aggregated fuzzy output and centroid"});
-    chart.append(svg("line",{x1:40,y1:170,x2:740,y2:170,stroke:"#9baabb"}));
-    const step=Math.max(1,Math.floor(x.length/350)),points=[];
-    for(let i=0;i<x.length;i+=step)points.push(X(x[i]).toFixed(1)+","+Y(y[i]).toFixed(1));
-    points.push(X(x[x.length-1]).toFixed(1)+","+Y(y[y.length-1]).toFixed(1));
-    chart.append(svg("polyline",{points:points.join(" "),fill:"none",stroke:"#7048bd","stroke-width":3}));
-    const cp=X(obs.mamdani.prediction);
-    chart.append(svg("line",{x1:cp,y1:27,x2:cp,y2:170,stroke:"#223f65","stroke-width":2,"stroke-dasharray":"6 4"}),
-      svg("text",{x:cp+6,y:24,fill:"#223f65","font-weight":700,"font-size":16},f(obs.mamdani.prediction)),
-      svg("text",{x:40,y:195,"font-size":12,fill:"#617589"},f(lo,2)),
-      svg("text",{x:740,y:195,"text-anchor":"end","font-size":12,fill:"#617589"},f(hi,2)));
+    if(obs.mamdani.status!=="OK")
+      return html("p","hint","Unavailable: no valid aggregated fuzzy output.");
+    const curve=obs.mamdani.outputCurve,x=curve.x,y=curve.y;
+    const original=obs.originalPrediction,centroidScore=obs.mamdani.prediction;
+    const bounds=plotBounds(x,original,centroidScore);
+    const X=v=>48+694*(v-bounds.lower)/(bounds.upper-bounds.lower);
+    const Y=v=>202-137*v;
+    const xa=X(original),xb=X(centroidScore);
+    const chart=svg("svg",{viewBox:"0 0 790 273",role:"img",
+      "aria-label":"Combined fuzzy membership shape with original regression prediction "+
+        f(original)+" and Mamdani centroid "+f(centroidScore)+
+        ". Approximation difference "+(centroidScore>=original?"+":"−")+
+        f(Math.abs(centroidScore-original))+" predicted difficulty level points."});
+    chart.append(svg("title",{},
+      "Mamdani aggregation (purple), original regression (grey) and centroid (blue)"));
+    chart.append(svg("line",{x1:48,y1:202,x2:742,y2:202,stroke:"#94a5b8","stroke-width":1.5}));
+    chart.append(svg("text",{x:28,y:76,"text-anchor":"middle",fill:"#63788b","font-size":11},"1"));
+    chart.append(svg("text",{x:28,y:204,"text-anchor":"middle",fill:"#63788b","font-size":11},"0"));
+    // A light band makes the magnitude and direction of surrogate disagreement visible.
+    const gap=Math.abs(xb-xa);
+    if(gap>0.25)chart.append(svg("rect",{
+      x:Math.min(xa,xb),y:57,width:gap,height:145,
+      fill:"#c7d8f5",opacity:".42"
+    }));
+    const stride=Math.max(1,Math.floor((x.length-1)/350)),coords=[];
+    for(let i=0;i<x.length;i+=stride)
+      coords.push([X(x[i]),Y(y[i])]);
+    if((x.length-1)%stride!==0)
+      coords.push([X(x[x.length-1]),Y(y[y.length-1])]);
+    const raw=coords.map(p=>p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ");
+    chart.append(svg("polygon",{
+      points:X(x[0]).toFixed(2)+",202 "+raw+" "+
+        X(x[x.length-1]).toFixed(2)+",202",
+      fill:"#7850c8","fill-opacity":".13"
+    }));
+    chart.append(svg("polyline",{points:raw,fill:"none",stroke:"#7147bf",
+      "stroke-width":3,"stroke-linejoin":"round"}));
+    // Labels intentionally use different vertical lanes for nearby predictions.
+    chart.append(svg("line",{x1:xa,y1:31,x2:xa,y2:202,stroke:"#687a90",
+      "stroke-width":2,"stroke-dasharray":"5 5"}));
+    chart.append(svg("line",{x1:xb,y1:51,x2:xb,y2:202,stroke:"#173f6c",
+      "stroke-width":2.5,"stroke-dasharray":"7 4"}));
+    chart.append(svg("text",{x:Math.max(98,Math.min(690,xa)),
+      y:23,"text-anchor":"middle",fill:"#586a80","font-size":14,
+      "font-weight":600},"Regression "+f(original)));
+    chart.append(svg("text",{x:Math.max(98,Math.min(690,xb)),
+      y:48,"text-anchor":"middle",fill:"#173f6c","font-size":14,
+      "font-weight":700},"Centroid "+f(centroidScore)));
+    for(let i=0;i<=4;i++){
+      const value=bounds.lower+(bounds.upper-bounds.lower)*i/4;
+      const px=X(value);
+      chart.append(svg("line",{x1:px,y1:202,x2:px,y2:208,stroke:"#94a5b8"}));
+      chart.append(svg("text",{x:px,y:228,"text-anchor":"middle",fill:"#63788b",
+        "font-size":12},f(value,2)));
+    }
+    chart.append(svg("text",{x:395,y:257,"text-anchor":"middle",
+      fill:"#425e77","font-size":14,"font-weight":600},"Predicted difficulty level"));
     return chart;
   }
   function scatter(map,obs){
@@ -214,22 +284,30 @@
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);
     insist(obs,"observation not found");
     const which=obs[method];
-    const title=method==="mamdani"?"Mamdani score":"Sugeno score";
-    const fields=[["Original regression",f(obs.originalPrediction)],[title,which.status==="OK"?f(which.prediction):"Unavailable"],
+    const fields=[["Regression model predicted difficulty level",f(obs.originalPrediction)],
+      ["Surrogate model predicted difficulty level",which.status==="OK"?f(which.prediction):"Unavailable"],
       ["Difference",which.status==="OK"?(which.prediction>=obs.originalPrediction?"+":"−")+
         f(Math.abs(which.prediction-obs.originalPrediction)):"—"]];
     const scores=document.getElementById("cd-"+method+"-scores");
     scores.replaceChildren(...fields.map(([name,value])=>{
       const card=html("div","cd-score");card.append(html("small",null,name),html("strong",null,value));return card;
     }));
-    document.getElementById("cd-case-caption").textContent=example+" · Stage "+["0","2","6","10"].indexOf(stage)+
-      " (D"+stage+") · "+(data.population==="reserved_test_exploratory"?
-        "Exploratory: previously inspected test case; frozen development-fitted models":
-        "Development fit, Auditory");
     if(method==="mamdani"){
       document.getElementById("cd-tree").replaceChildren(treeChart(data.tree,obs));
+      currentTreeZoom=1;
+      zoomTree("reset");
+      const recorded=document.getElementById("cd-recorded-rows");
+      recorded.replaceChildren(...obs.measurements.map((value,i)=>{
+        const row=html("tr");
+        row.append(html("td",null,LABELS[i]),html("td",null,f(value)+" "+UNITS[i]));
+        return row;
+      }));
       document.getElementById("cd-rule-list").replaceChildren(...ruleList(obs));
       document.getElementById("cd-curve").replaceChildren(outputChart(obs));
+      const diff=document.getElementById("cd-curve-difference");
+      diff.textContent=obs.mamdani.status==="OK"?
+        "Approximation difference: "+(obs.mamdani.prediction>=obs.originalPrediction?"+":"−")+
+        f(Math.abs(obs.mamdani.prediction-obs.originalPrediction)):"Difference unavailable";
     } else {
       document.getElementById("cd-scatter").replaceChildren(scatter(data.clusterMap,obs));
       const list=document.getElementById("cd-memberships"),detail=document.getElementById("cd-profile-detail");
@@ -257,7 +335,7 @@
       }),html("div","cd-total","Combined prediction = "+f(obs.sugeno.prediction)));
     }
   }
-  const API={validate,route,centroid,show};
+  const API={validate,route,centroid,show,zoomTree,zoomStep,plotBounds,linguisticLabel,outputChart};
   if(typeof module!=="undefined"&&module.exports)module.exports=API;
   if(root)root.AuditoryCD=API;
 })(typeof window!=="undefined"?window:null);

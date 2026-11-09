@@ -91,3 +91,28 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .cd-total{grid-column:1/-1;text-align:center;padding:14px;background:#eaf2fc;color:#203f61;font-weight:700;border-radius:8px}
 @media(max-width:880px){.cd-grid{grid-template-columns:1fr}.cd-scores{grid-template-columns:repeat(3,minmax(0,1fr))}.cd-sidebar{max-height:none}}
 @media(max-width:620px){.cd-scores,.cd-calculation{grid-template-columns:1fr}.tabs button{min-width:0;flex:1 1 45%}.cd-graphic svg{min-width:550px}.cd-total{grid-column:1}}
+
+/* Supervisor-facing Mamdani refinement: zoomable tree, compact inputs and shared-axis legend. */
+#mamdani-view .cd-top{justify-content:flex-end}
+.cd-recorded{margin:0 0 12px}
+.cd-recorded table{font-variant-numeric:tabular-nums}
+.cd-tree-toolbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:4px 0 10px}
+.cd-tree-toolbar button{min-width:36px;min-height:34px;border:1px solid #c4d2e0;border-radius:6px;
+  background:#fff;color:#254767;font-weight:700;cursor:pointer;padding:6px 10px}
+.cd-tree-toolbar button:hover{background:#edf3fb}
+.cd-tree-toolbar output{font-size:12px;min-width:42px;text-align:center;color:#405c73;
+  font-variant-numeric:tabular-nums}
+.cd-tree-viewport{max-height:520px;overflow:auto;scrollbar-gutter:stable}
+.cd-tree-viewport svg{min-width:0;max-width:none;height:auto}
+#cd-curve svg{min-width:400px;max-height:none}
+.cd-curve-legend{display:flex;flex-wrap:wrap;align-items:center;gap:10px 19px;
+  font-size:12px;color:#526b82;margin-top:12px}
+.cd-curve-legend span{display:inline-flex;align-items:center;gap:7px}
+.cd-curve-legend span::before{content:"";display:inline-block;width:23px}
+.cd-legend-shape::before{border-top:3px solid #7147bf}
+.cd-legend-regression::before{border-top:2px dashed #687a90}
+.cd-legend-centroid::before{border-top:2px dashed #173f6c}
+.cd-legend-difference{font-size:12px;color:#214a75;margin-left:auto;
+  font-variant-numeric:tabular-nums}
+@media(max-width:620px){.cd-curve-legend{gap:10px}.cd-legend-difference{margin-left:0;width:100%}
+  .cd-tree-viewport{max-height:420px}}
