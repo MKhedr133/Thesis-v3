@@ -1,6 +1,60 @@
 # Auditory therapist walkthrough (read-only prototype)
 
-This local browser viewer displays the eight precomputed Auditory observations prepared in thesis Stage 3.6. It does **not** run MOD-14 regression, MOD-16 SHAP or MOD-18 fuzzy inference. It cannot save a therapist decision or change VR settings.
+This local viewer supports four Auditory explanations: SHAP (A), manual fuzzy rules (B), Decision Tree–Mamdani (C), and Fuzzy C-Means–Sugeno (D). Model inference for C/D is prepared locally, not fitted in the browser. The viewer cannot save therapist decisions or change VR settings.
+
+## Current: one local file for all four methods (P06/P07)
+
+The unified viewer uses **one JSON upload** and one shared participant/stage selector for A–D. P06 and P07 were originally reserved for testing, but their observations have **already been inspected** during earlier A/B interface development. Therefore these are **exploratory interface examples**, not untouched independent validation. The frozen Mamdani/Sugeno models stay fitted on 26 development participants; no model selection, modification, or test-performance metrics are performed.
+
+The A/B source remains unchanged. The new exporter reads the existing local A/B JSON, checks it against canonical P06/P07 Auditory measurements and the original regression coefficients, and performs numerical C/D inference with the saved CART, fuzzy-rule partitions, five-term Mamdani output and three-cluster Sugeno constants. The PCA cloud still contains **104 development observations**; P06/P07 are separately projected onto it, without refitting the PCA or fuzzy model.
+
+### Generate the unified file
+
+If necessary, first prepare the original file by following **Legacy A/B-only preparation** below. Then execute in PowerShell from the thesis repository root:
+
+    function Find-One($name) {
+        $matches = @(Get-ChildItem outputs -Recurse -File -Filter $name)
+        if ($matches.Count -ne 1) { throw "Expected one $name, found $($matches.Count)" }
+        return $matches[0]
+    }
+    $modeling = Find-One "modeling_data.csv"
+    $split = Find-One "participant_holdout_split.csv"
+    $tree = Find-One "numerical_rules.csv"
+    $mamdani = Find-One "output_term_manifest.json"
+    $activations = Find-One "mamdani_manifest.json"
+    $fuzzyRules = Find-One "tree_aligned_fuzzy_rules.csv"
+    $fcm = Find-One "cluster_manifest.json"
+    $sugeno = Find-One "zero_order_manifest.json"
+    $argsList = @(
+        "prototype/auditory/build_abcd_cases.py",
+        "--legacy-json", "outputs/auditory_cases_interface_viewer.json",
+        "--modeling-data", $modeling.FullName,
+        "--holdout-split", $split.FullName,
+        "--mod14-output-dir", "outputs/MOD_14_direct_linear_regression_evaluation",
+        "--mamdani-tree-dir", $tree.DirectoryName,
+        "--mamdani-dir", $mamdani.DirectoryName,
+        "--mamdani-activation-dir", $activations.DirectoryName,
+        "--mamdani-fuzzy-dir", $fuzzyRules.DirectoryName,
+        "--fcm-stage1-dir", $fcm.DirectoryName,
+        "--sugeno-dir", $sugeno.DirectoryName,
+        "--output", "outputs/auditory_abcd_p06_p07_exploratory.json"
+    )
+    python @argsList
+    if ($LASTEXITCODE -ne 0) { throw "Unified A–D export failed." }
+
+The exporter refuses to overwrite an existing file. Keep the resulting participant-level JSON private under the Git-ignored outputs directory; do not commit it.
+
+Open prototype/auditory/index.html and choose outputs/auditory_abcd_p06_p07_exploratory.json in the **single** file picker. Select P06 or P07 and the completed stage once; tabs A–D show matched observations. An older A/B-only JSON is still accepted for A/B, but will not populate C/D.
+
+**A:** original stage-specific SHAP waterfall. **B:** original manually specified rules. **C:** full eight-leaf CART with highlighted crisp path, activated overlapping fuzzy rules and five-term Mamdani centroid. **D:** three FCM centres and the selected session on a development-only PCA overview, membership bars, original-unit feature comparisons and weighted Sugeno score. C/D numerical scores are not adaptation recommendations.
+
+### Verification
+
+Run the three viewer JavaScript test files using Node, and both Python export test files using unittest. Then generate the actual JSON and inspect all four browser tabs. The independent therapist-judgement fields remain unsaved.
+
+---
+
+## Legacy A/B-only preparation (optional)
 
 ## Prepare participant labels locally
 
@@ -87,71 +141,3 @@ No `npm install` is required. The browser viewer itself needs only a modern brow
 
 Scoped issue: #40. This implementation is deliberately separate from the MOD-16 and MOD-18 model branches and contains no changes to regression or fuzzy coefficients, features, splitting, thresholds or rule definitions.
 
-## Screens C/D: numerical fuzzy explanations, using development data
-
-The same browser page now includes C (Decision Tree–Mamdani) and D (Fuzzy C-Means–Sugeno). Original SHAP (A) and manual fuzzy rules (B) remain unchanged. **C/D do not produce Increase, Decrease or Maintain actions.**
-
-### Study boundary
-
-A/B currently uses two reserved-test cases, which were already examined. C/D uses two different participants from the frozen 26-person development cohort. The selectors and local JSON files are separate. Therefore, the four tabs are **not yet a matched-case comparison**. An eventual controlled therapist comparison should use development observations for all four approaches; do not use reserved-test cases to redesign the methods.
-
-### Local data export
-
-From the repository root in PowerShell, run the existing virtual environment and locate each original output directory by its unique file:
-
-~~~powershell
-function Find-One($name) {
-    $matches = @(Get-ChildItem outputs -Recurse -File -Filter $name)
-    if ($matches.Count -ne 1) {
-        throw "Expected one $name; found $($matches.Count)"
-    }
-    return $matches[0]
-}
-
-$modelling = Find-One "modeling_data.csv"
-$split = Find-One "participant_holdout_split.csv"
-$tree = Find-One "numerical_rules.csv"
-$mamdani = Find-One "output_term_manifest.json"
-$activations = Find-One "mamdani_manifest.json"
-$fuzzyRules = Find-One "tree_aligned_fuzzy_rules.csv"
-$fcm = Find-One "cluster_manifest.json"
-$sugeno = Find-One "zero_order_manifest.json"
-
-$arguments = @(
-    "prototype/auditory/build_cd_examples.py",
-    "--modeling-data", $modelling.FullName,
-    "--holdout-split", $split.FullName,
-    "--mamdani-tree-dir", $tree.DirectoryName,
-    "--mamdani-dir", $mamdani.DirectoryName,
-    "--mamdani-activation-dir", $activations.DirectoryName,
-    "--mamdani-fuzzy-dir", $fuzzyRules.DirectoryName,
-    "--fcm-stage1-dir", $fcm.DirectoryName,
-    "--sugeno-dir", $sugeno.DirectoryName,
-    "--output", "outputs/auditory_cd_development_viewer.json"
-)
-python @arguments
-if ($LASTEXITCODE -ne 0) { throw "C/D export failed." }
-~~~
-
-This local-only exporter uses MOD-14 to validate the 26/6 frozen split, then combines saved development tree rules, five-term Mamdani outputs and three-cluster Sugeno outputs. It validates participant-stage joins, crisp routes, eight Mamdani rule activations, centroid reconstruction, original-unit cluster centres and Sugeno memberships and numerical contributions. A two-dimensional PCA plot is computed **only for display** from the four training-scaled development features. PCA is not used to calculate fuzzy memberships. No reserved-test data are emitted or used for the projection.
-
-The exporter refuses to overwrite an existing file, and writes a private, anonymised example JSON into the Git-ignored outputs directory. Do not commit that JSON.
-
-Open prototype/auditory/index.html in the browser and select outputs/auditory_cd_development_viewer.json in the **C/D development examples** chooser. A/B continues to use its separate original JSON selector.
-
-### Reading the visuals
-
-**C** places the full decision tree in the main panel, with the session's crisp route highlighted. A second panel ranks the fuzzy rules that activate (including rules outside that crisp path), and a bottom plot shows the numerical Mamdani output centroid. The selected five-term vocabulary is provisional and must be labelled. Unavailable remains Unavailable.
-
-**D** shows the 104 development points and three learned centres in a labelled PCA plot, highlights the current session, and displays all three fuzzy membership percentages. Selecting a cluster reveals the original-unit four-feature comparison. The bottom calculation lists each membership-times-constant contribution and the resulting Sugeno score. Membership is similarity to a multivariable profile, not a clinical category probability.
-
-Both screens preserve the independent therapist judgement controls. The fuzzy model score is not an automatic treatment recommendation.
-
-### Focused checks
-
-~~~powershell
-node --test ".\prototype\auditory\viewer.test.cjs"
-node --test ".\prototype\auditory\viewer-cd.test.cjs"
-~~~
-
-The new C/D validation has 19 synthetic contract tests. It uses native browser SVG and requires no extra frontend dependencies. The real-data export and browser display must still be checked in the local thesis environment. Because the two fuzzy methods were fitted on development data and imitate the original regression, the displays are not independent clinical performance evidence.

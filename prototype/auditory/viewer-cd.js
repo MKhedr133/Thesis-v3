@@ -1,5 +1,5 @@
 "use strict";
-/* Development-only C/D viewer. No fitting, browser upload or test-person inference. */
+/* Browser-only renderer: frozen development-fitted C/D, with optional explicitly exploratory reserved-test display. Never fits models. */
 (function (root) {
   const NS = "http://www.w3.org/2000/svg";
   const KEYS = ["mental_demand_score_0_to_10","median_time_between_qualifying_grabs_seconds","median_time_to_target_seconds","median_head_turning_degrees"];
@@ -34,8 +34,14 @@
     }return a>1e-12?m/a:null;
   }
   function validate(data){
-    insist(data&&data.schema==="auditory-cd-development-v1"&&data.population==="development"&&
-      data.reservedTestParticipantsUsed===0&&data.participants===26&&data.observations===104,"incorrect development provenance");
+    const exploratory = !!data && data.schema==="auditory-cd-exploratory-v1";
+    if(exploratory)insist(data.population==="reserved_test_exploratory"&&
+      data.testParticipantsDisplayed===2&&data.testParticipantsUsedForFitting===0&&
+      data.participants===26&&data.observations===104,
+      "exploratory P06/P07 provenance is incorrect");
+    else insist(data&&data.schema==="auditory-cd-development-v1"&&data.population==="development"&&
+      data.reservedTestParticipantsUsed===0&&data.participants===26&&data.observations===104,
+      "incorrect development provenance");
     insist(Array.isArray(data.features)&&data.features.length===4&&
       data.features.every((v,i)=>v.key===KEYS[i]&&finite(v.maximum)&&v.maximum>0),"wrong four Auditory features");
     const ids=leavesOf(data.tree);insist(ids.size===8,"expected eight CART leaves");
@@ -47,17 +53,25 @@
       Array.isArray(map.centres)&&map.centres.length===3&&
       Array.isArray(map.explainedVariance)&&map.explainedVariance.length===2&&
       map.explainedVariance.every(v=>finite(v)&&v>=0&&v<=1),"invalid PCA map");
-    for(const point of [...map.points,...map.centres])insist(finite(point.x)&&finite(point.y),"invalid projected point");
-    for(const point of map.points)insist(Array.isArray(point.memberships)&&point.memberships.length===3&&
-      point.memberships.every(v=>finite(v)&&v>=0&&v<=1)&&near(point.memberships.reduce((a,b)=>a+b,0),1),"invalid membership");
-    insist(Array.isArray(data.cases)&&data.cases.length===8,"expected eight development example stages");
+    const selectedPoints = exploratory ? map.selectedPoints : map.points;
+    if(exploratory)insist(Array.isArray(selectedPoints)&&selectedPoints.length===8,
+      "expected eight projected exploratory cases apart from the development cloud");
+    for(const point of [...map.points,...map.centres,...selectedPoints])
+      insist(finite(point.x)&&finite(point.y),"invalid projected point");
+    for(const point of [...map.points,...selectedPoints])
+      insist(Array.isArray(point.memberships)&&point.memberships.length===3&&
+        point.memberships.every(v=>finite(v)&&v>=0&&v<=1)&&
+        near(point.memberships.reduce((a,b)=>a+b,0),1),"invalid membership");
+    insist(Array.isArray(data.cases)&&data.cases.length===8,"expected eight development example stages or exploratory test cases");
     const pairs=new Set();
     for(const obs of data.cases){
-      insist(/^Development example [12]$/.test(obs.example)&&["0","2","6","10"].includes(obs.stage),"invalid case");
+      insist((exploratory ? ["P06","P07"].includes(obs.example) :
+        /^Development example [12]$/.test(obs.example))&&["0","2","6","10"].includes(obs.stage),"invalid case");
       const pair=obs.example+"|"+obs.stage;insist(!pairs.has(pair),"duplicate case");pairs.add(pair);
       insist(finite(obs.originalPrediction)&&Array.isArray(obs.measurements)&&obs.measurements.length===4&&
         obs.measurements.every(finite),"missing measurements");
-      insist(Number.isInteger(obs.mapPointIndex)&&obs.mapPointIndex>=0&&obs.mapPointIndex<104,"invalid selected point");
+      insist(Number.isInteger(obs.mapPointIndex)&&obs.mapPointIndex>=0&&
+        obs.mapPointIndex<selectedPoints.length,"invalid selected point");
       const m=obs.mamdani,s=obs.sugeno;
       insist(m&&["OK","Unavailable"].includes(m.status)&&m.outputTerms===5&&
         route(data.tree,obs.measurements).leaf===m.crispLeaf&&
@@ -70,12 +84,12 @@
       insist(s&&s.status==="OK"&&finite(s.prediction)&&Array.isArray(s.memberships)&&
         s.memberships.length===3&&Array.isArray(s.contributions)&&s.contributions.length===3,"invalid Sugeno case");
       s.memberships.forEach((u,i)=>insist(finite(u)&&u>=0&&u<=1&&
-        near(u,map.points[obs.mapPointIndex].memberships[i])&&
+        near(u,selectedPoints[obs.mapPointIndex].memberships[i])&&
         near(s.contributions[i],u*data.profiles[i].constant),"Sugeno membership/contribution mismatch"));
       insist(near(s.memberships.reduce((a,b)=>a+b,0),1)&&
         near(s.contributions.reduce((a,b)=>a+b,0),s.prediction),"Sugeno weighted sum mismatch");
     }
-    for(const label of ["Development example 1","Development example 2"])
+    for(const label of (exploratory?["P06","P07"]:["Development example 1","Development example 2"]))
       for(const stage of ["0","2","6","10"])insist(pairs.has(label+"|"+stage),"missing stage in development case");
     return data;
   }
@@ -147,21 +161,30 @@
     return chart;
   }
   function scatter(map,obs){
-    const all=[...map.points,...map.centres],xmin=Math.min(...all.map(p=>p.x)),xmax=Math.max(...all.map(p=>p.x)),
+    const current=map.selectedPoints?map.selectedPoints[obs.mapPointIndex]:map.points[obs.mapPointIndex];
+    const all=[...map.points,...map.centres,current],xmin=Math.min(...all.map(p=>p.x)),xmax=Math.max(...all.map(p=>p.x)),
       ymin=Math.min(...all.map(p=>p.y)),ymax=Math.max(...all.map(p=>p.y));
     const X=v=>60+670*(v-xmin)/Math.max(xmax-xmin,1e-8);
     const Y=v=>420-360*(v-ymin)/Math.max(ymax-ymin,1e-8);
     const chart=svg("svg",{viewBox:"0 0 790 475",role:"img",
-      "aria-label":"Development-only PCA overview of 104 Auditory observations and three cluster centres"});
+      "aria-label":"PCA overview fitted on 104 development Auditory observations, three training cluster centres and the selected session"});
     chart.append(svg("line",{x1:60,y1:420,x2:730,y2:420,stroke:"#9baabb"}),
       svg("line",{x1:60,y1:60,x2:60,y2:420,stroke:"#9baabb"}));
     map.points.forEach((p,i)=>{
-      const dominant=p.memberships.indexOf(Math.max(...p.memberships)),current=i===obs.mapPointIndex;
-      const dot=svg("circle",{cx:X(p.x),cy:Y(p.y),r:current?10:5,fill:current?"#172d56":COLORS[dominant],
-        opacity:current?1:.52,stroke:current?"white":"none","stroke-width":current?3:0});
-      dot.append(svg("title",{},current?"Selected development session":"Anonymised development observation"));
+      const dominant=p.memberships.indexOf(Math.max(...p.memberships));
+      const isSelected=!map.selectedPoints&&i===obs.mapPointIndex;
+      const dot=svg("circle",{cx:X(p.x),cy:Y(p.y),r:isSelected?10:5,
+        fill:isSelected?"#172d56":COLORS[dominant],opacity:isSelected?1:.52,
+        stroke:isSelected?"#ffffff":"none","stroke-width":isSelected?3:0});
+      dot.append(svg("title",{},isSelected?"Selected development session":"Anonymised development observation"));
       chart.append(dot);
     });
+    if(map.selectedPoints){
+      chart.append(svg("circle",{cx:X(current.x),cy:Y(current.y),r:13,fill:"#172d56",
+        stroke:"#ffffff","stroke-width":4}));
+      chart.append(svg("text",{x:X(current.x)+14,y:Y(current.y)-11,
+        fill:"#172d56","font-weight":700,"font-size":14},obs.example+" · exploratory test case"));
+    }
     map.centres.forEach((p,i)=>{
       chart.append(svg("circle",{cx:X(p.x),cy:Y(p.y),r:14,fill:"#fff",stroke:COLORS[i],"stroke-width":3}),
         svg("text",{x:X(p.x),y:Y(p.y)+5,"text-anchor":"middle","font-weight":700,"font-size":15,fill:COLORS[i]},String(i+1)));
@@ -200,7 +223,9 @@
       const card=html("div","cd-score");card.append(html("small",null,name),html("strong",null,value));return card;
     }));
     document.getElementById("cd-case-caption").textContent=example+" · Stage "+["0","2","6","10"].indexOf(stage)+
-      " (D"+stage+") · Development fit, Auditory";
+      " (D"+stage+") · "+(data.population==="reserved_test_exploratory"?
+        "Exploratory: previously inspected test case; frozen development-fitted models":
+        "Development fit, Auditory");
     if(method==="mamdani"){
       document.getElementById("cd-tree").replaceChildren(treeChart(data.tree,obs));
       document.getElementById("cd-rule-list").replaceChildren(...ruleList(obs));
