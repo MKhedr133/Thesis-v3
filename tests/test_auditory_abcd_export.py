@@ -16,7 +16,7 @@ import pandas as pd
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/"prototype"/"auditory"))
 from build_abcd_cases import (
     FEATURES, IDS, STAGE_TEXT, ExportError, frozen_regression_coefficients,
-    infer_fuzzy_rules, infer_rule_strength, load_legacy, load_saved_partitions,
+    infer_fuzzy_rules, infer_rule_strength, load_legacy, load_saved_partitions, numeric,
 )
 
 
@@ -44,6 +44,22 @@ class UnifiedExporterTests(unittest.TestCase):
             p=Path(temp)/"ab.json"
             p.write_text(json.dumps(synthetic_legacy()[::-1]),encoding="utf-8")
             self.assertEqual(len(load_legacy(p)),8)
+
+    def test_accept_dutch_decimal_comma_not_thousands_separator(self):
+        self.assertAlmostEqual(numeric("4,39999999999997", "measurement"),
+                               4.39999999999997)
+        with self.assertRaisesRegex(ExportError, "Invalid original A/B number"):
+            numeric("4.123,4", "measurement")
+
+    def test_legacy_json_decimal_comma_roundtrips(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "ab.json"
+            rows = synthetic_legacy()
+            rows[0]["Regression"]["Measurements"][0]["Observed"] = "5,0"
+            rows[0]["Regression"]["Measurements"][0]["ShapContribution"] = "0,4"
+            rows[0]["Regression"]["Prediction"] = "1,8"
+            p.write_text(json.dumps(rows), encoding="utf-8")
+            self.assertEqual(len(load_legacy(p)), 8)
 
     def test_reject_substituted_test_person(self):
         with tempfile.TemporaryDirectory() as temp:
