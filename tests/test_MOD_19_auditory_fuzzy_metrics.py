@@ -5,6 +5,7 @@ No private participants or reserved-test outcomes are included.
 
 import sys
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,13 +20,26 @@ def synthetic_frame():
     rows = []
     for participant in range(26):
         for stage, level in enumerate((0, 2, 6, 10)):
+            # Three clearly separated synthetic input profiles. The earlier
+            # highly overlapping fixture required >500 FCM iterations in
+            # fold 1; do not relax the scientifically fixed convergence
+            # settings to accommodate an artificial test fixture.
+            profile = (participant + 2 * stage) % 3
             row = {
                 "participant_id": f"synthetic-{participant:02d}",
                 "difficulty_level": level, "difficulty_stage": stage,
-                E.FEATURES[0]: 1.0 + (participant + stage) % 7,
-                E.FEATURES[1]: 2.0 + (participant * 3 + stage) % 12,
-                E.FEATURES[2]: 0.1 + (participant + 3 * stage) % 9,
-                E.FEATURES[3]: 30.0 + (participant * 7 + stage) % 28,
+                E.FEATURES[0]: (
+                    1.0 + 3.0 * profile + 0.08 * ((participant + 2 * stage) % 5)
+                ),
+                E.FEATURES[1]: (
+                    3.0 + 1.8 * profile + 0.07 * ((participant * 3 + stage) % 7)
+                ),
+                E.FEATURES[2]: (
+                    0.5 + 0.7 * profile + 0.025 * ((participant + 3 * stage) % 8)
+                ),
+                E.FEATURES[3]: (
+                    55.0 + 50.0 * profile + 0.9 * ((2 * participant + stage) % 10)
+                ),
             }
             row["frozen_mlr_prediction"] = (
                 .3 + row[E.FEATURES[0]] * .1 + row[E.FEATURES[1]] * .04
@@ -97,6 +111,15 @@ class AuditoryFuzzyMetricsTests(unittest.TestCase):
             self.sugeno_grouped["zero_order_sugeno_prediction"]).all())
         self.assertEqual(len(self.sugeno_grouped[list(E.KEYS)].drop_duplicates()), 104)
         self.assertTrue(self.folds["fcm_iterations"].between(1, 500).all())
+
+    def test_nonconverged_fold_is_rejected_without_relaxing_tolerance(self):
+        with patch.object(
+            E.FCM, "fit_fcm", return_value=SimpleNamespace(converged=False),
+        ):
+            with self.assertRaisesRegex(
+                E.ComparisonError, "FCM did not converge for fold 1",
+            ):
+                E.grouped_sugeno(self.frame)
 
     def test_strict_accuracy_boundary_is_not_inclusive(self):
         table = pd.DataFrame({
