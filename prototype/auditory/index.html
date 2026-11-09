@@ -19,15 +19,11 @@
   </header>
 
   <section class="panel load" aria-labelledby="load-title">
-    <h2 id="load-title">Load local explanation data</h2>
+    <h2 id="load-title">Load one local explanation file</h2>
+    <label for="data-file">Select unified A–D JSON (or an older A/B-only JSON)</label>
     <input id="data-file" type="file" accept=".json,application/json">
-    <p id="load-status" role="status" aria-live="polite">No A/B explanation data loaded.</p>
-    <div class="cd-load">
-      <label for="cd-file">C/D development examples (separate local JSON)</label>
-      <input id="cd-file" type="file" accept=".json,application/json">
-      <p id="cd-load-status" role="status" aria-live="polite">No development examples loaded.</p>
-      <p class="cd-note">The existing A/B file contains reserved-test demonstration cases. C/D uses separate development observations; no test-case inference is performed.</p>
-    </div>
+    <p id="load-status" role="status" aria-live="polite">No explanation data loaded.</p>
+    <p class="cd-note">Files are read locally in your browser. The unified P06/P07 file contains previously inspected reserved-test examples and is for exploratory interface review only.</p>
   </section>
 
   <section id="workspace" hidden>
@@ -45,18 +41,8 @@
       </label>
     </div>
 
-    <div id="development-selectors" class="panel selectors" hidden>
-      <label>Development example
-        <select id="cd-participant"></select>
-      </label>
-      <label>Completed difficulty stage
-        <select id="cd-stage">
-          <option value="0">Stage 0</option>
-          <option value="2">Stage 1</option>
-          <option value="6">Stage 2</option>
-          <option value="10">Stage 3</option>
-        </select>
-      </label>
+    <div id="scientific-banner" class="notice" role="status" aria-live="polite" hidden>
+      Exploratory demonstration: P06/P07 were previously inspected reserved-test participants. No model was fitted or selected using their outcomes.
     </div>
     <p id="cd-case-caption" class="cd-case-caption" hidden></p>
 
@@ -116,7 +102,7 @@
 
 
     <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
-      <div class="cd-top"><h2>C · Decision Tree–Mamdani</h2><span class="cd-method">Five output terms · development fit</span></div>
+      <div class="cd-top"><h2>C · Decision Tree–Mamdani</h2><span class="cd-method">Five output terms · development-fitted model</span></div>
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
@@ -139,12 +125,12 @@
     </section>
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
-      <div class="cd-top"><h2>D · Fuzzy C-Means–Sugeno</h2><span class="cd-method">Three learned measurement profiles · development fit</span></div>
+      <div class="cd-top"><h2>D · Fuzzy C-Means–Sugeno</h2><span class="cd-method">Three learned measurement profiles · development-fitted model</span></div>
       <div id="cd-sugeno-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
           <h3>Learned clusters and this session</h3>
-          <p class="cd-note">The marked session is shown among 104 development observations. This 2D PCA overview is not the four-dimensional distance used to calculate membership.</p>
+          <p class="cd-note">The selected session is shown over a 104-observation development PCA map. Projection does not determine its four-dimensional FCM membership.</p>
           <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
           <div class="cd-key"><span>● Selected session</span><span>◯ Cluster centre 1–3</span><span>· Other development observations</span></div>
         </div>
