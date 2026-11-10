@@ -186,7 +186,7 @@ test("tree zoom increases and resets without changing the tree source",()=>{
 test("replace Medium only in therapist-visible wording",()=>{
   assert.equal(CD.linguisticLabel("Very low, Medium or High"),"Very low, Intermediate or High");
   assert.equal(CD.linguisticLabel("Mental demand is medium"),
-    "Mental demand is intermediate");
+    "Subjective mental demand rating is intermediate");
   assert.equal(CD.linguisticLabel("Medium"),"Intermediate");
 });
 test("shared prediction axis contains both original MLR and centroid even if regression exceeds output universe",()=>{
@@ -260,7 +260,7 @@ test("decision tree zoom controls change SVG width and reset scroll position",()
 test("display rename changes rule prose without altering saved Medium consequent",()=>{
   assert.equal(
     CD.linguisticLabel("IF Mental demand is Medium THEN difficulty term Medium"),
-    "IF Mental demand is Intermediate THEN difficulty level prediction is Intermediate"
+    "IF Subjective mental demand rating is Intermediate THEN difficulty level prediction is Intermediate"
   );
 });
 test("five output categories exactly reproduce original triangular and shoulder knots",()=>{
@@ -332,13 +332,26 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     assert.equal(points.filter(x=>x.tag==="circle").length,108);
     assert.ok(points.some(x=>x.tag==="title"&&x.textContent==="Current session"));
     assert.ok(!points.some(x=>x.tag==="text"&&x.textContent.includes("exploratory test case")));
-    assert.ok(points.some(x=>x.tag==="text"&&x.textContent.startsWith("PC1")));
-    assert.ok(points.some(x=>x.tag==="text"&&x.textContent.startsWith("PC2")));
+    assert.ok(!points.some(x=>x.tag==="text"&&/^PC[12]/.test(x.textContent)));
+    assert.ok(points.filter(x=>x.tag==="line").length>=2);
 
     const membershipTexts=all(elements.get("cd-memberships")).map(n=>n.textContent);
     for(const cluster of ["Cluster 1","Cluster 2","Cluster 3"])
       assert.ok(membershipTexts.includes(cluster));
     assert.ok(!membershipTexts.some(t=>t.includes("Profile")));
+
+    const table=elements.get("cd-sugeno-recorded-rows");
+    const tableNodes=all(table);
+    assert.equal(tableNodes.filter(x=>x.tag==="tr").length,4);
+    assert.equal(tableNodes.filter(x=>x.tag==="td").length,20);
+    const row1=all(table.children[0]).filter(x=>x.tag==="td").map(x=>x.textContent);
+    assert.deepEqual(row1,[
+      "Subjective mental demand rating","4 /10","2 /10","3 /10","4 /10"
+    ]);
+    const row4=all(table.children[3]).filter(x=>x.tag==="td").map(x=>x.textContent);
+    assert.deepEqual(row4,[
+      "Total Head rotation while locating a product","40 °","40 °","50 °","60 °"
+    ]);
 
     const comparison=elements.get("cd-profile-detail");
     assert.match(comparison.attributes["aria-label"],/^Cluster 3 recorded measurement comparison$/);
@@ -349,6 +362,15 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
       t.includes("Session value / learned")));
     assert.ok(comparisonText.includes("Solid = current session · outline = cluster center."));
     assert.equal(all(comparison).filter(n=>n.className==="cd-feature").length,4);
+    for(const label of [
+      "Subjective mental demand rating",
+      "Time interval between grabs",
+      "Duration to locate a target product",
+      "Total Head rotation while locating a product"
+    ])assert.ok(comparisonText.includes(label));
+    assert.ok(!comparisonText.includes("4 /10"));
+    assert.ok(!comparisonText.includes("40 °"));
+    assert.equal(all(comparison).filter(n=>n.tag==="strong").length,0);
 
     const calculation=all(elements.get("cd-calculation")).map(n=>n.textContent);
     for(const cluster of ["Cluster 1","Cluster 2","Cluster 3"])
@@ -359,4 +381,42 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     assert.ok(calculation.includes("0.5 × 3 = 1.5"));
     assert.ok(!calculation.some(t=>t.includes("Profile")));
   }finally{global.document=prev;}
+});
+
+
+test("new C/D display labels do not modify the stored four Auditory keys",()=>{
+  const d=fixture();
+  const names=[
+    "Subjective mental demand rating",
+    "Time interval between grabs",
+    "Duration to locate a target product",
+    "Total Head rotation while locating a product"
+  ];
+  assert.deepEqual(CD.validate(d).features.map(f=>f.key),KEYS);
+  withMockSvgDom(()=>{
+    const rows=CD.recordedRows(d.cases[0].measurements,d.profiles);
+    assert.equal(rows.length,4);
+    for(let i=0;i<4;i++){
+      assert.equal(rows[i].children[0].textContent,names[i]);
+      assert.equal(rows[i].children.length,5);
+    }
+  });
+  assert.equal(CD.linguisticLabel(
+    "IF Head turning is High AND Time between grabs is Low THEN difficulty term Medium"),
+    "IF Total Head rotation while locating a product is High AND Time interval between grabs is Low THEN difficulty level prediction is Intermediate");
+});
+test("long labels wrap cleanly in the learned CART without abbreviating their meaning",()=>{
+  const name="Total Head rotation while locating a product";
+  const wrapped=CD.wrappedFeatureName(name);
+  assert.equal(wrapped.join(" "),name);
+  assert.ok(wrapped.length>1);
+  assert.ok(wrapped.every(line=>line.length<=23));
+  const tree=fixture().tree;
+  tree.feature=KEYS[3];
+  const obs=fixture().cases[0];
+  const chart=withMockSvgDom(()=>CD.treeChart(tree,obs));
+  const spans=walkSvg(chart).filter(n=>n.tag==="tspan").map(n=>n.textContent);
+  assert.ok(spans.includes("Total Head rotation"));
+  assert.ok(spans.includes("while locating a"));
+  assert.ok(spans.includes("product"));
 });

@@ -3,13 +3,32 @@
 (function (root) {
   const NS = "http://www.w3.org/2000/svg";
   const KEYS = ["mental_demand_score_0_to_10","median_time_between_qualifying_grabs_seconds","median_time_to_target_seconds","median_head_turning_degrees"];
-  const LABELS = ["Mental demand","Grab interval","Time to target","Head turning"];
+  const LABELS = [
+    "Subjective mental demand rating",
+    "Time interval between grabs",
+    "Duration to locate a target product",
+    "Total Head rotation while locating a product"
+  ];
   const UNITS = ["/10","s","s","°"];
   const COLORS = ["#3576a5","#228d85","#ae7c35"];
   const linguisticLabel = value => String(value)
+    .replace(/\bMental demand\b/gi,LABELS[0])
+    .replace(/\bTime between grabs\b/gi,LABELS[1])
+    .replace(/\bTime to target\b/gi,LABELS[2])
+    .replace(/\bHead turning\b/gi,LABELS[3])
     .replace(/\bMedium\b/g,"Intermediate")
     .replace(/\bmedium\b/g,"intermediate")
     .replace(/\bdifficulty term\b/gi,"difficulty level prediction is");
+  function wrappedFeatureName(value,maxLength=23){
+    const result=[];let line="";
+    for(const word of value.split(/\s+/)){
+      if(line && (line.length+1+word.length)>maxLength){
+        result.push(line);line=word;
+      }else line=line?line+" "+word:word;
+    }
+    if(line)result.push(line);
+    return result;
+  }
   function plotBounds(grid, regression, prediction) {
     insist(grid.length>=3 && finite(regression) && finite(prediction),
       "incomplete prediction-axis inputs");
@@ -170,12 +189,12 @@
     let leaves=0,depthMax=0;
     function place(n,depth){
       depthMax=Math.max(depthMax,depth);
-      if(Object.hasOwn(n,"leaf"))return {node:n,x:90+leaves++*140,y:45+depth*110};
+      if(Object.hasOwn(n,"leaf"))return {node:n,x:118+leaves++*218,y:60+depth*134};
       const left=place(n.left,depth+1),right=place(n.right,depth+1);
-      return {node:n,x:(left.x+right.x)/2,y:45+depth*110,left,right};
+      return {node:n,x:(left.x+right.x)/2,y:60+depth*134,left,right};
     }
     const root=place(tree,0),chart=svg("svg",{
-      viewBox:"0 0 "+Math.max(1200,leaves*140+180)+" "+(115+depthMax*110),
+      viewBox:"0 0 "+Math.max(1750,leaves*218+236)+" "+(155+depthMax*134),
       role:"img",
       "aria-label":"Decision tree with the crisp route and every positively activated fuzzy rule route highlighted separately"
     });
@@ -185,8 +204,8 @@
         const strength=active.get(q.node)||0;
         const fuzzy=!crisp&&strength>0;
         const line=svg("path",{
-          d:"M"+p.x+" "+(p.y+22)+" V"+((p.y+q.y)/2)+
-            " H"+q.x+" V"+(q.y-22),
+          d:"M"+p.x+" "+(p.y+44)+" V"+((p.y+q.y)/2)+
+            " H"+q.x+" V"+(q.y-44),
           fill:"none",
           stroke:crisp?"#714bc3":fuzzy?"#198a9c":"#c7d2de",
           opacity:crisp?1:fuzzy?(.58+.42*strength):.65,
@@ -205,7 +224,7 @@
       const crisp=crispPath.has(p.node),strength=active.get(p.node)||0;
       const fuzzy=!crisp&&strength>0;
       const box=svg("rect",{
-        x:p.x-62,y:p.y-23,width:124,height:46,rx:9,
+        x:p.x-102,y:p.y-44,width:204,height:88,rx:9,
         fill:crisp?"#eee7ff":fuzzy?"#eaf7f8":"#f3f6fa",
         stroke:crisp?"#7048bd":fuzzy?"#198a9c":"#c4d0dc",
         "stroke-width":crisp?2.5:fuzzy?2:1
@@ -220,11 +239,15 @@
         label+"; threshold "+f(p.node.threshold)+
           "; observed "+f(obs.measurements[KEYS.indexOf(p.node.feature)])+
           "; strongest activated route "+f(strength,3)));
-      chart.append(box,
-        svg("text",{x:p.x,y:p.y-4,"text-anchor":"middle","font-size":12.4,
-          "font-weight":600,fill:"#26354a"},label),
-        svg("text",{x:p.x,y:p.y+13,"text-anchor":"middle","font-size":12,
-          fill:"#52677c"},value));
+      const labelNode=svg("text",{
+        x:p.x,y:leaf?p.y-8:p.y-24,"text-anchor":"middle",
+        "font-size":leaf?12.4:11.4,"font-weight":600,fill:"#26354a"
+      },leaf?label:undefined);
+      if(!leaf)wrappedFeatureName(label).forEach((line,i)=>
+        labelNode.append(svg("tspan",{x:p.x,dy:i===0?0:14},line)));
+      chart.append(box,labelNode,
+        svg("text",{x:p.x,y:p.y+31,"text-anchor":"middle",
+          "font-size":12,fill:"#52677c"},value));
       if(p.left)nodes(p.left);
       if(p.right)nodes(p.right);
     }
@@ -337,7 +360,7 @@
       ymin=Math.min(...all.map(p=>p.y)),ymax=Math.max(...all.map(p=>p.y));
     const X=v=>60+670*(v-xmin)/Math.max(xmax-xmin,1e-8);
     const Y=v=>420-360*(v-ymin)/Math.max(ymax-ymin,1e-8);
-    const chart=svg("svg",{viewBox:"0 0 790 475",role:"img",
+    const chart=svg("svg",{viewBox:"0 0 790 445",role:"img",
       "aria-label":"PCA overview fitted on 104 development Auditory observations, three training cluster centers and the current session"});
     chart.append(svg("line",{x1:60,y1:420,x2:730,y2:420,stroke:"#9baabb"}),
       svg("line",{x1:60,y1:60,x2:60,y2:420,stroke:"#9baabb"}));
@@ -360,19 +383,27 @@
       chart.append(svg("circle",{cx:X(p.x),cy:Y(p.y),r:14,fill:"#fff",stroke:COLORS[i],"stroke-width":3}),
         svg("text",{x:X(p.x),y:Y(p.y)+5,"text-anchor":"middle","font-weight":700,"font-size":15,fill:COLORS[i]},String(i+1)));
     });
-    chart.append(svg("text",{x:395,y:464,"text-anchor":"middle","font-size":13,fill:"#63788b"},
-      "PC1 · "+(100*map.explainedVariance[0]).toFixed(1)+"% variance"),
-      svg("text",{x:17,y:238,transform:"rotate(-90 17 238)","text-anchor":"middle","font-size":13,fill:"#63788b"},
-        "PC2 · "+(100*map.explainedVariance[1]).toFixed(1)+"% variance"));
+    // PCA coordinates remain unchanged; axes are deliberately unlabelled for the viewer.
+    // Their meaning and explained variance are retained in the thesis documentation.
     return chart;
+  }
+  function recordedRows(measurements,profiles=[]) {
+    return measurements.map((value,i)=>{
+      const row=html("tr");
+      row.append(html("td",null,LABELS[i]),
+        html("td",null,f(value)+" "+UNITS[i]));
+      profiles.forEach(profile=>{
+        row.append(html("td",null,f(profile.centre[i])+" "+UNITS[i]));
+      });
+      return row;
+    });
   }
   function profileDetails(target,obs,profile,features){
     target.replaceChildren();
     target.setAttribute("aria-label","Cluster "+profile.cluster+" recorded measurement comparison");
     for(let i=0;i<4;i++){
       const row=html("div","cd-feature");
-      row.append(html("span",null,LABELS[i]),html("strong",null,
-        f(obs.measurements[i])+" "+UNITS[i]+" / "+f(profile.centre[i])+" "+UNITS[i]));
+      row.append(html("span",null,LABELS[i]));
       const track=html("div","cd-feature-track"),dot1=html("span","cd-feature-dot"),
         dot2=html("span","cd-feature-dot cd-feature-centre");
       dot1.style.left=(100*Math.min(1,obs.measurements[i]/features[i].maximum))+"%";
@@ -402,11 +433,7 @@
       currentTreeZoom=1;
       zoomTree("reset");
       const recorded=document.getElementById("cd-recorded-rows");
-      recorded.replaceChildren(...obs.measurements.map((value,i)=>{
-        const row=html("tr");
-        row.append(html("td",null,LABELS[i]),html("td",null,f(value)+" "+UNITS[i]));
-        return row;
-      }));
+      recorded.replaceChildren(...recordedRows(obs.measurements));
       document.getElementById("cd-rule-list").replaceChildren(...ruleList(obs));
       document.getElementById("cd-curve").replaceChildren(outputChart(obs));
       const diff=document.getElementById("cd-curve-difference");
@@ -414,6 +441,8 @@
         "Approximation difference: "+(obs.mamdani.prediction>=obs.originalPrediction?"+":"−")+
         f(Math.abs(obs.mamdani.prediction-obs.originalPrediction)):"Difference unavailable";
     } else {
+      document.getElementById("cd-sugeno-recorded-rows")
+        .replaceChildren(...recordedRows(obs.measurements,data.profiles));
       document.getElementById("cd-scatter").replaceChildren(scatter(data.clusterMap,obs));
       const list=document.getElementById("cd-memberships"),detail=document.getElementById("cd-profile-detail");
       const buttons=[],winner=obs.sugeno.memberships.indexOf(Math.max(...obs.sugeno.memberships));
@@ -441,7 +470,8 @@
     }
   }
   const API={validate,route,centroid,show,zoomTree,zoomStep,plotBounds,
-    linguisticLabel,outputChart,treeChart,activeTreeRoutes,outputCategories};
+    linguisticLabel,outputChart,treeChart,activeTreeRoutes,outputCategories,
+    recordedRows,wrappedFeatureName};
   if(typeof module!=="undefined"&&module.exports)module.exports=API;
   if(root)root.AuditoryCD=API;
 })(typeof window!=="undefined"?window:null);
