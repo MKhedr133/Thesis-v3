@@ -18,11 +18,9 @@
     </div>
   </header>
 
-  <section class="panel load" aria-labelledby="load-title">
-    <h2 id="load-title">Load one local explanation file</h2>
-    <label for="data-file">Select unified A–D JSON (or an older A/B-only JSON)</label>
-    <input id="data-file" type="file" accept=".json,application/json">
-    <p id="load-status" role="status" aria-live="polite">No explanation data loaded.</p>
+  <section class="panel load" aria-label="Local explanation file">
+    <input id="data-file" type="file" accept=".json,application/json" aria-label="Choose a local explanation JSON file">
+    <p id="load-status" role="status" aria-live="polite" hidden></p>
   </section>
 
   <section id="workspace" hidden>
@@ -44,26 +42,52 @@
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
       <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
-      <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">C · Decision tree–Mamdani</button>
-      <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">D · FCM–Sugeno</button>
+      <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">Decision tree–Mamdani</button>
+      <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">FCM–Sugeno</button>
     </nav>
 
-    <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
-      <div class="estimate"><span>Predicted difficulty</span><strong id="prediction">—</strong></div>
-      <div class="chart-head">
-        <h3>Feature contributions</h3>
-
+    <section id="regression-view" class="panel cd-panel shap-panel" role="tabpanel" aria-labelledby="tab-regression">
+      <div class="cd-scores shap-scores" aria-label="Original regression prediction">
+        <div class="cd-score">
+          <small>Predicted difficulty level</small>
+          <strong id="prediction">—</strong>
+        </div>
       </div>
-      <figure>
-        <div id="waterfall" class="chart" aria-live="polite"></div>
-        <figcaption><span class="legend-up">↑ Raises the prediction</span><span class="legend-down">↓ Lowers the prediction</span></figcaption>
-      </figure>
-      <details>
+      <details class="cd-recorded shap-recorded">
         <summary>Recorded measurements</summary>
-        <table>
-          <thead><tr><th>Measurement</th><th>Measured value</th><th>SHAP contribution</th></tr></thead>
-          <tbody id="measurement-rows"></tbody>
-        </table>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Recorded Auditory measurements">
+            <thead><tr><th>Measurement</th><th>Measured value</th></tr></thead>
+            <tbody id="measurement-rows"></tbody>
+          </table>
+        </div>
+      </details>
+      <div class="cd-hero shap-hero">
+        <figure>
+          <div id="waterfall" class="chart" aria-live="polite"></div>
+          <figcaption><span class="legend-up">↑ Raises the prediction</span><span class="legend-down">↓ Lowers the prediction</span></figcaption>
+        </figure>
+      </div>
+      <details id="shap-compare-details" class="cd-bottom shap-compare">
+        <summary>Comparison with other observations</summary>
+        <div class="shap-comparison-body">
+          <label for="shap-stage-filter">Comparison population
+            <select id="shap-stage-filter">
+              <option value="all">All difficulty levels</option>
+              <option value="0">Level 0</option>
+              <option value="2">Level 1</option>
+              <option value="6">Level 2</option>
+              <option value="10">Level 3</option>
+            </select>
+          </label>
+          <div id="shap-beeswarm" class="chart shap-beeswarm" role="group" aria-live="polite"></div>
+          <p id="shap-comparison-unavailable" class="cd-note" hidden></p>
+          <div class="shap-legend" aria-label="Beeswarm markers">
+            <span><i class="shap-dot"></i>Other observation</span>
+            <span><i class="shap-dot shap-current"></i>Current observation</span>
+            <span class="shap-value-gradient">Lower contribution value <i></i> Higher contribution value</span>
+          </div>
+        </div>
       </details>
     </section>
 
@@ -115,7 +139,7 @@
           </div>
           <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
           <div class="cd-tree-legend" aria-label="Decision tree route legend">
-            <span class="cd-legend-crisp">Crisp tree route</span>
+            <span class="cd-legend-crisp" title="Crisp decision-tree route; not necessarily the highest-activation fuzzy rule">Strongest rule route</span>
             <span class="cd-legend-fuzzy">Other activated fuzzy routes</span>
             <span class="cd-legend-inactive">Inactive routes</span>
           </div>
@@ -130,10 +154,10 @@
         <h3>Mamdani approximation of predicted difficulty level</h3>
         <div id="cd-curve" class="cd-graphic"></div>
         <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
-          <span class="cd-legend-categories">Prediction-level categories</span>
+          <span class="cd-legend-categories">Prediction difficulty level categories</span>
           <span class="cd-legend-shape">Combined fuzzy output</span>
           <span class="cd-legend-regression">Regression model prediction</span>
-          <span class="cd-legend-centroid">Mamdani centroid</span>
+          <span class="cd-legend-centroid">Mamdani prediction</span>
           <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
         </div>
       </div>
@@ -156,7 +180,7 @@
           <div class="cd-key" aria-label="Cluster plot legend">
             <span><i class="cd-marker cd-marker-current" aria-hidden="true"></i>Current session</span>
             <span><i class="cd-marker cd-marker-center" aria-hidden="true"></i>Cluster center 1–3</span>
-            <span><i class="cd-marker-dots" aria-hidden="true"><b></b><b></b><b></b></i>Other observations</span>
+            <span><i class="cd-marker-dots" aria-hidden="true"><b></b><b></b><b></b></i>Other sessions</span>
           </div>
         </div>
         <aside class="cd-sidebar">

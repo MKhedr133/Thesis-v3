@@ -258,7 +258,7 @@
     if(!rules.length)return [html("p","hint","No activated rules. Mamdani result unavailable.")];
     return rules.map(rule=>{
       const item=html("details","cd-rule"),head=html("summary");
-      head.append(html("span",null,"Leaf "+rule.leaf+" · "+linguisticLabel(rule.consequent)),
+      head.append(html("span",null,"Leaf "+rule.leaf),
         html("strong",null,f(rule.activation,2)));
       const track=html("div","cd-track"),fill=html("div","cd-fill");
       fill.style.width=(rule.activation*100)+"%";track.append(fill);
@@ -278,8 +278,8 @@
     const xa=X(original),xb=X(centroidScore);
     const chart=svg("svg",{viewBox:"0 0 790 322",role:"img",
       "aria-label":"Five output membership categories, combined fuzzy shape, regression prediction "+
-        f(original)+" and Mamdani centroid "+f(centroidScore)+
-        ". Approximation difference "+(centroidScore>=original?"+":"−")+
+        f(original)+" and Mamdani prediction "+f(centroidScore)+
+        ". Difference "+(centroidScore>=original?"+":"−")+
         f(Math.abs(centroidScore-original))+" difficulty-level points."});
     chart.append(svg("title",{},
       "Original five fuzzy output categories, combined Mamdani membership and two model prediction markers"));
@@ -438,7 +438,7 @@
       document.getElementById("cd-curve").replaceChildren(outputChart(obs));
       const diff=document.getElementById("cd-curve-difference");
       diff.textContent=obs.mamdani.status==="OK"?
-        "Approximation difference: "+(obs.mamdani.prediction>=obs.originalPrediction?"+":"−")+
+        "Difference: "+(obs.mamdani.prediction>=obs.originalPrediction?"+":"−")+
         f(Math.abs(obs.mamdani.prediction-obs.originalPrediction)):"Difference unavailable";
     } else {
       document.getElementById("cd-sugeno-recorded-rows")

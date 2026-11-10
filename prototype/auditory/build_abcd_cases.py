@@ -196,6 +196,79 @@ def infer_fuzzy_rules(partitions: dict, frozen_rules: pd.DataFrame,
     return rules,pred,grid,agg
 
 
+def build_shap_comparison(
+    development: pd.DataFrame, coefficients: dict[str, float],
+    legacy: list[dict],
+) -> dict:
+    """Export only development observations, compared with each fixed stage reference.
+
+    Excludes participant IDs and never uses the selected reserved-test cases as a
+    reference. The SHAP coordinates are fixed linear-model attributions.
+    """
+    require(len(development) == 104 and
+            development["participant_id"].nunique() == 26,
+            "SHAP comparison requires 26 development participants and 104 trials")
+    require(not development.duplicated(KEYS).any(),
+            "Duplicate development trial in SHAP comparison")
+    require(all(set(part["difficulty_level"].astype(int)) == {0, 2, 6, 10}
+                and len(part) == 4
+                for _, part in development.groupby("participant_id")),
+            "Development participants must have four eligible stages")
+    require(set(coefficients) == {"Intercept", *FEATURES},
+            "SHAP comparison requires original frozen Auditory coefficients")
+    raw = development.loc[:, FEATURES].to_numpy(dtype=float)
+    require(np.isfinite(raw).all(), "Nonfinite development feature in SHAP comparison")
+    fitted = coefficients["Intercept"] + sum(
+        coefficients[key] * raw[:, j] for j, key in enumerate(FEATURES))
+    require(np.isfinite(fitted).all(), "Nonfinite development model prediction")
+    stage_codes = development["difficulty_level"].astype(int).tolist()
+    output = {}
+    for stage in ("0", "2", "6", "10"):
+        mask = np.asarray([str(code) == stage for code in stage_codes])
+        require(int(mask.sum()) == 26,
+                "SHAP comparison requires 26 development trials at stage " + stage)
+        means = raw[mask].mean(axis=0)
+        baseline = float(fitted[mask].mean())
+        reconstructed_baseline = coefficients["Intercept"] + sum(
+            coefficients[key] * means[j] for j, key in enumerate(FEATURES))
+        require(np.isclose(baseline, reconstructed_baseline,
+                           atol=1e-10, rtol=0),
+                "SHAP stage reference does not match frozen linear model")
+        references = [
+            numeric(r["Regression"]["ReferencePrediction"], "original stage reference")
+            for r in legacy if r["DifficultyStage"] == STAGE_TEXT[stage]
+        ]
+        require(len(references) == 2 and
+                all(np.isclose(baseline, value, atol=1e-7, rtol=0)
+                    for value in references),
+                "SHAP reference differs from the original MOD-16 waterfall")
+        contributions = (raw - means[None, :]) * np.asarray(
+            [coefficients[key] for key in FEATURES], dtype=float)[None, :]
+        require(np.allclose(baseline + contributions.sum(axis=1), fitted,
+                            atol=1e-8, rtol=0),
+                "SHAP comparison failed frozen prediction reconstruction")
+        output[stage] = {
+            "referencePrediction": baseline,
+            "meanFeatures": means.tolist(),
+            "observations": [
+                {"stage": str(code), "values": values.tolist(),
+                 "contributions": phi.tolist()}
+                for code, values, phi in zip(stage_codes, raw, contributions)
+            ],
+        }
+    return {
+        "schema": "auditory-shap-comparison-v1",
+        "population": "development",
+        "model": "auditory",
+        "developmentParticipants": 26,
+        "developmentObservations": 104,
+        "features": [NAME_BY_FEATURE[key] for key in FEATURES],
+        "coefficients": [float(coefficients[key]) for key in FEATURES],
+        "intercept": float(coefficients["Intercept"]),
+        "byReferenceStage": output,
+    }
+
+
 def combined_payload(args: argparse.Namespace) -> dict:
     legacy=load_legacy(args.legacy_json)
     prior=assemble(args)  # Validates all existing development-only output sources.
@@ -238,6 +311,7 @@ def combined_payload(args: argparse.Namespace) -> dict:
                         np.asarray([[p["x"],p["y"]] for p in saved_points]),
                         atol=1e-9,rtol=0),
             "Display PCA projection changed from development-only fit")
+    shap_comparison = build_shap_comparison(dev_frame, regression, legacy)
     raw_original={(r["ParticipantId"],next(k for k,v in STAGE_TEXT.items()
                    if v==r["DifficultyStage"])):r for r in legacy}
     selected_points=[]
@@ -315,6 +389,7 @@ def combined_payload(args: argparse.Namespace) -> dict:
         "participants":["P06","P07"],
         "records":legacy,
         "cd":cd,
+        "shapComparison":shap_comparison,
         "provenance":{
             "legacyViewerSha256":source_hash(args.legacy_json),
             "modelingDataSha256":source_hash(args.modeling_data),

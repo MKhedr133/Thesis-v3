@@ -206,6 +206,9 @@ test("Mamdani SVG overlays original regression and centroid on one axis with sha
     assert.equal(figure.tag,"svg");
     assert.match(figure.attributes["aria-label"],/Regression prediction/i);
     assert.match(figure.attributes["aria-label"],/1.389/);
+    assert.match(figure.attributes["aria-label"],/Mamdani prediction/);
+    assert.match(figure.attributes["aria-label"],/Difference /);
+    assert.doesNotMatch(figure.attributes["aria-label"],/Approximation difference/);
     assert.ok(nodes.some(n=>n.tag==="polygon"&&n.attributes.fill==="#7850c8"));
     assert.ok(nodes.some(n=>n.tag==="polyline"&&n.attributes.stroke==="#7147bf"));
     const orig=nodes.find(n=>n.tag==="line"&&n.attributes.stroke==="#687a90");
@@ -419,4 +422,42 @@ test("long labels wrap cleanly in the learned CART without abbreviating their me
   assert.ok(spans.includes("Total Head rotation"));
   assert.ok(spans.includes("while locating a"));
   assert.ok(spans.includes("product"));
+});
+
+test("Mamdani leaf summaries omit consequents while retaining activations and conditions",()=>{
+  const d=exploratoryFixture();
+  const previous=global.document;
+  const elements=new Map();
+  function el(tag){
+    return {tag,attributes:{},children:[],style:{},textContent:"",
+      setAttribute(k,v){this.attributes[k]=String(v);},
+      append(...nodes){this.children.push(...nodes);},
+      replaceChildren(...nodes){this.children=[...nodes];},
+      querySelector(){return null;}
+    };
+  }
+  global.document={
+    createElement:el,createElementNS:(_ns,tag)=>el(tag),
+    getElementById:id=>{
+      if(!elements.has(id))elements.set(id,el("div"));
+      return elements.get(id);
+    }
+  };
+  try{
+    CD.show(d,"P06","0","mamdani");
+    const summaries=walkSvg(elements.get("cd-rule-list"))
+      .filter(n=>n.tag==="summary");
+    assert.ok(summaries.length>0);
+    for(const summary of summaries){
+      assert.match(summary.children[0].textContent,/^Leaf \d+$/);
+      assert.ok(Number(summary.children[1].textContent)>0);
+      assert.ok(!summary.children[0].textContent.includes(" · "));
+    }
+    const details=walkSvg(elements.get("cd-rule-list"))
+      .filter(n=>n.className==="cd-rule-text");
+    assert.ok(details.length>0);
+    assert.ok(details.some(node=>node.textContent.includes("IF ")));
+    const diff=elements.get("cd-curve-difference").textContent;
+    assert.match(diff,/^Difference: /);
+  }finally{global.document=previous;}
 });

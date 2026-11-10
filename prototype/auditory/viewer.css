@@ -38,7 +38,7 @@ th{color:#38576d;background:#f4f7fa;font-weight:700}
 .rule-id{font-size:12px;color:#456078;font-weight:700}
 figcaption{display:flex;gap:20px;flex-wrap:wrap}
 .legend-up,.legend-down{font-size:13px;font-weight:600}
-.legend-up{color:#23678f}.legend-down{color:#a8513b}
+.legend-up{color:#25835c}.legend-down{color:#c04c46}
 .decision-grid{display:grid;grid-template-columns:1fr 2fr;gap:15px}
 footer{font-size:12px;color:#647383;margin:16px 3px}
 [hidden]{display:none!important}
@@ -151,3 +151,33 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .cd-cluster-recorded td:not(:first-child){white-space:nowrap}
 #cd-profile-detail .cd-feature{grid-template-columns:1fr;gap:8px}
 #cd-profile-detail .cd-feature>span{font-size:12px;line-height:1.35}
+
+/* SHAP A: the same visual hierarchy and card language as C/D. */
+.shap-panel .shap-scores{grid-template-columns:minmax(0,1fr);max-width:510px;margin-top:0}
+.shap-panel .shap-recorded{margin-bottom:14px}
+.shap-panel .shap-hero{margin-bottom:14px}
+.shap-panel .shap-hero figure{margin:0}
+.shap-panel .shap-hero figcaption{display:flex;gap:18px;flex-wrap:wrap;margin:9px 0 0}
+.shap-panel .shap-compare{margin-top:14px}
+.shap-compare>summary{cursor:pointer;color:#243d54;font-weight:700;padding:2px 0}
+.shap-comparison-body{margin-top:14px}
+.shap-comparison-body>label{max-width:270px;margin-bottom:11px}
+.shap-compare .shap-beeswarm{overflow:auto;background:#fff;border:1px solid #ecf0f5;border-radius:8px}
+.shap-beeswarm svg{display:block;width:100%;min-width:0;max-height:none}
+.shap-beeswarm .row-name{font-size:12px;fill:#263d50}
+.shap-beeswarm .axis-label{font-size:12px;fill:#546779}
+.shap-beeswarm .shap-row-selected{fill:#edf7f1}
+.shap-legend{display:flex;gap:10px 18px;align-items:center;flex-wrap:wrap;font-size:12px;color:#536879;margin-top:9px}
+.shap-legend span{display:inline-flex;align-items:center;gap:6px}
+.shap-dot{display:inline-block;width:9px;height:9px;background:#80909b;border-radius:50%}
+.shap-dot.shap-current{width:13px;height:13px;background:#fff;border:3px solid #7052b4}
+.shap-value-gradient i{display:inline-block;width:90px;height:10px;border-radius:3px;background:linear-gradient(90deg,#c04c46 0%,#9ca3af 50%,#25835c 100%)}
+#waterfall rect[data-shap-feature]{cursor:pointer}
+#waterfall rect[data-shap-feature]:focus{outline:none;stroke:#6f48b1;stroke-width:3}
+@media(max-width:620px){.shap-panel .shap-scores{max-width:none}.shap-beeswarm svg{min-width:790px}.shap-legend{gap:8px}}
+
+#regression-view #waterfall .row-name{font-size:12px}
+#regression-view .shap-recorded td:first-child{white-space:nowrap}
+
+/* Long C/D terminology stays on one line; small screens scroll rather than clip it. */
+@media(max-width:620px){#regression-view #waterfall svg{min-width:790px}}
