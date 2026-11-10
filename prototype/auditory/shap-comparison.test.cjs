@@ -1,8 +1,9 @@
 "use strict";
 const test=require("node:test");
 const assert=require("node:assert/strict");
-const {validateShapComparison,shapComparisonPoints,shapInterpretation,
-  makeWaterfall,makeShapBeeswarm,swarmOffsets} = require("./viewer.js");
+const {validateShapComparison,shapComparisonPoints,
+  makeWaterfall,makeShapBeeswarm,swarmOffsets,
+  shapFeatureLabel,shapMeasuredValue} = require("./viewer.js");
 
 const stages=["0","2","6","10"];
 const names=["Mental demand","Time between qualifying grabs","Time to locate target","Head turning"];
@@ -86,11 +87,15 @@ test("reject malformed stage filter",()=>{
   const {comparison}=fixture();
   assert.throws(()=>shapComparisonPoints(comparison,"6","prediction:high"),/Unknown SHAP comparison/);
 });
-test("interpretation remains descriptive, not clinical instruction",()=>{
+test("SHAP-only labels stay on one line and measured units match C/D",()=>{
   const {records}=fixture();
-  const explanation=shapInterpretation(records[0].Regression);
-  assert.match(explanation,/fitted prediction/);
-  assert.match(explanation,/not effects of changing a measurement/);
+  for(const feature of records[0].Regression.Measurements) {
+    assert.ok(shapFeatureLabel(feature.Name).length<=35);
+    assert.ok(!shapFeatureLabel(feature.Name).includes("\\n"));
+  }
+  assert.equal(shapMeasuredValue(records[0].Regression.Measurements[0]),"5 /10");
+  assert.equal(shapMeasuredValue(records[0].Regression.Measurements[1]),"4.5 s");
+  assert.equal(shapMeasuredValue(records[0].Regression.Measurements[3]),"16 °");
 });
 
 function withSvgDocument(run){
@@ -129,7 +134,33 @@ test("beeswarm includes four highlighted current-trial markers",()=>{
     const current=chart.children.filter(node=>node.tag==="circle"&&
       node.attributes.stroke==="#7052b4");
     assert.equal(current.length,4);
-    assert.match(chart.attributes["aria-label"],/26 development trials/);
+    assert.match(chart.attributes["aria-label"],/26 other development observations/);
     assert.equal(chart.children.filter(node=>node.attributes.class==="shap-row-selected").length,1);
+  });
+});
+
+test("waterfall uses green/red bars and labels the population prediction reference",()=>{
+  const {records}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeWaterfall(records[0].Regression);
+    const bars=chart.children.filter(n=>n.tag==="rect"&&n.attributes["data-shap-feature"]);
+    assert.equal(bars.length,4);
+    assert.ok(bars.some(n=>n.attributes.fill==="#25835c"));
+    assert.ok(bars.some(n=>n.attributes.fill==="#c04c46"));
+    const text=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
+    assert.ok(text.includes("Population difficulty level"));
+    assert.ok(text.includes("prediction reference"));
+    names.forEach(name=>assert.ok(text.includes(shapFeatureLabel(name))));
+  });
+});
+test("beeswarm has explicit zero tick and a Feature contribution axis",()=>{
+  const {records,comparison}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","all",null);
+    const text=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
+    assert.ok(text.includes("0"));
+    assert.ok(text.includes("Feature contribution"));
+    assert.equal(text.filter(x=>x==="Feature contribution").length,1);
+    names.forEach(name=>assert.ok(text.includes(shapFeatureLabel(name))));
   });
 });
