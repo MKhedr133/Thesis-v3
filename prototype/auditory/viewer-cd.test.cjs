@@ -449,7 +449,7 @@ test("Mamdani leaf summaries omit consequents while retaining activations and co
       .filter(n=>n.tag==="summary");
     assert.ok(summaries.length>0);
     for(const summary of summaries){
-      assert.match(summary.children[0].textContent,/^Leaf \\d+$/);
+      assert.match(summary.children[0].textContent,/^Leaf \d+$/);
       assert.ok(Number(summary.children[1].textContent)>0);
       assert.ok(!summary.children[0].textContent.includes(" · "));
     }
