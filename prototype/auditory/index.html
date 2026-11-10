@@ -48,23 +48,57 @@
       <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">D · FCM–Sugeno</button>
     </nav>
 
-    <section id="regression-view" class="panel" role="tabpanel" aria-labelledby="tab-regression">
-      <div class="estimate"><span>Predicted difficulty</span><strong id="prediction">—</strong></div>
-      <div class="chart-head">
-        <h3>Feature contributions</h3>
-
+    <section id="regression-view" class="panel cd-panel shap-panel" role="tabpanel" aria-labelledby="tab-regression">
+      <div class="cd-scores shap-scores" aria-label="Original regression prediction and selected reference">
+        <div class="cd-score">
+          <small>Predicted difficulty level</small>
+          <strong id="prediction">—</strong>
+        </div>
+        <div class="cd-score">
+          <small>Reference prediction · selected level</small>
+          <strong id="shap-reference">—</strong>
+        </div>
       </div>
-      <figure>
-        <div id="waterfall" class="chart" aria-live="polite"></div>
-        <figcaption><span class="legend-up">↑ Raises the prediction</span><span class="legend-down">↓ Lowers the prediction</span></figcaption>
-      </figure>
-      <details>
+      <details class="cd-recorded shap-recorded">
         <summary>Recorded measurements</summary>
-        <table>
-          <thead><tr><th>Measurement</th><th>Measured value</th><th>SHAP contribution</th></tr></thead>
-          <tbody id="measurement-rows"></tbody>
-        </table>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Auditory measurements and local SHAP contributions">
+            <thead><tr><th>Measurement</th><th>Measured value</th><th>SHAP contribution</th></tr></thead>
+            <tbody id="measurement-rows"></tbody>
+          </table>
+        </div>
       </details>
+      <div class="cd-hero shap-hero">
+        <div class="chart-head"><h3>Feature contributions</h3></div>
+        <figure>
+          <div id="waterfall" class="chart" aria-live="polite"></div>
+          <figcaption><span class="legend-up">↑ Raises the prediction</span><span class="legend-down">↓ Lowers the prediction</span></figcaption>
+        </figure>
+      </div>
+      <details id="shap-compare-details" class="cd-bottom shap-compare">
+        <summary>Compare with development trials</summary>
+        <div class="shap-comparison-body">
+          <label for="shap-stage-filter">Comparison population
+            <select id="shap-stage-filter">
+              <option value="current">Current assigned level</option>
+              <option value="all">All eligible levels</option>
+              <option value="0">Level 0 (D0)</option>
+              <option value="2">Level 1 (D2)</option>
+              <option value="6">Level 2 (D6)</option>
+              <option value="10">Level 3 (D10)</option>
+            </select>
+          </label>
+          <p id="shap-comparison-meta" class="cd-note" aria-live="polite"></p>
+          <div id="shap-beeswarm" class="chart shap-beeswarm" role="group" aria-live="polite"></div>
+          <p id="shap-comparison-unavailable" class="cd-note" hidden></p>
+          <div class="shap-legend" aria-label="Beeswarm markers">
+            <span><i class="shap-dot"></i>Development trial</span>
+            <span><i class="shap-dot shap-current"></i>Selected trial</span>
+            <span class="shap-value-gradient">Lower measured value <i></i> Higher measured value</span>
+          </div>
+        </div>
+      </details>
+      <p id="shap-interpretation" class="shap-interpretation" aria-live="polite"></p>
     </section>
 
     <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
