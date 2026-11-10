@@ -140,3 +140,14 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .cd-legend-categories::before{border-top:2px dashed #9bb1c5}
 @media(max-width:620px){#mamdani-view .cd-scores{grid-template-columns:1fr}
   .cd-tree-legend{gap:8px 12px}}
+
+/* C/D recorded measurements retain the frozen feature units; Sugeno includes all centres. */
+.cd-cluster-recorded{margin:4px 0 16px}
+.cd-recorded-scroll{overflow-x:auto;max-width:100%}
+.cd-cluster-recorded table{min-width:890px;width:100%;table-layout:fixed;
+  font-size:12px;font-variant-numeric:tabular-nums}
+.cd-cluster-recorded th:first-child,.cd-cluster-recorded td:first-child{width:32%}
+.cd-cluster-recorded th:not(:first-child),
+.cd-cluster-recorded td:not(:first-child){white-space:nowrap}
+#cd-profile-detail .cd-feature{grid-template-columns:1fr;gap:8px}
+#cd-profile-detail .cd-feature>span{font-size:12px;line-height:1.35}
