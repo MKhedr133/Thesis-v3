@@ -186,6 +186,39 @@ test("beeswarm contribution ticks use explicit signs and a single zero",()=>{
     assert.equal(texts.filter(x=>x==="0").length,1);
   });
 });
+test("beeswarm quarter-step ticks include negative values without clipping points",()=>{
+  const {records,comparison}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","all",null);
+    const axisText=chart.children.filter(n=>n.tag==="text"&&
+      n.attributes.class==="axis-label").map(n=>n.textContent);
+    const labels=axisText.filter(t=>t==="0" || /^[+−]\\d+\\.\\d{2}$/.test(t));
+    assert.ok(labels.includes("−0.25"));
+    assert.ok(labels.includes("0"));
+    assert.ok(labels.includes("+0.25"));
+    assert.equal(labels.filter(t=>t==="0").length,1);
+    const numbers=labels.map(t=>t==="0"?0:Number(t.replace("−","-")));
+    for(let i=1;i<numbers.length;i++){
+      assert.ok(Math.abs(numbers[i]-numbers[i-1]-.25)<1e-10);
+    }
+    const dots=chart.children.filter(n=>n.tag==="circle"&&n.attributes.opacity);
+    assert.ok(dots.every(n=>Number(n.attributes.cx)>=370&&
+      Number(n.attributes.cx)<=1030));
+    assert.ok(dots.every(n=>Number(n.attributes.opacity)>=.9));
+  });
+});
+test("subtle signed contributions are visibly coloured against grey zero",()=>{
+  const grey=shapContributionColor(0,1);
+  const weakNegative=shapContributionColor(-.01,1);
+  const weakPositive=shapContributionColor(.01,1);
+  assert.notEqual(weakNegative,grey);
+  assert.notEqual(weakPositive,grey);
+  const channels=value=>value.match(/\\d+/g).map(Number);
+  const [redR,redG]=channels(weakNegative);
+  const [greenR,greenG]=channels(weakPositive);
+  assert.ok(redR-redG>30);
+  assert.ok(greenG-greenR>10);
+});
 test("beeswarm colours are based on signed SHAP contributions, not raw measurements",()=>{
   assert.equal(shapContributionColor(0,1),"rgb(156,163,175)");
   assert.equal(shapContributionColor(-1,1),"rgb(192,76,70)");
