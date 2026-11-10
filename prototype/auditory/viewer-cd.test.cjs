@@ -301,3 +301,62 @@ test("original fuzzy membership functions remain independent of selected regress
   assert.ok(bounds.upper>3.75);
   assert.equal(a.centres.length,5);
 });
+
+test("Sugeno screen uses clusters, no visible case caption, and unchanged membership arithmetic",()=>{
+  const d=exploratoryFixture();
+  const prev=global.document;
+  const elements=new Map();
+  function element(tag){
+    return {
+      tag,attributes:{},children:[],style:{},textContent:"",className:"",
+      setAttribute(name,value){this.attributes[name]=String(value);},
+      append(...children){this.children.push(...children);},
+      replaceChildren(...children){this.children=[...children];},
+      addEventListener(name,callback){this.listeners??={};this.listeners[name]=callback;}
+    };
+  }
+  global.document={
+    createElement:element,
+    createElementNS:(_ns,tag)=>element(tag),
+    getElementById:(name)=>{
+      if(!elements.has(name))elements.set(name,element("div"));
+      return elements.get(name);
+    }
+  };
+  try{
+    CD.show(d,"P06","0","sugeno");
+    const all=(root)=>walkSvg(root);
+    const plot=elements.get("cd-scatter").children[0];
+    assert.equal(plot.tag,"svg");
+    const points=all(plot);
+    assert.equal(points.filter(x=>x.tag==="circle").length,108);
+    assert.ok(points.some(x=>x.tag==="title"&&x.textContent==="Current session"));
+    assert.ok(!points.some(x=>x.tag==="text"&&x.textContent.includes("exploratory test case")));
+    assert.ok(points.some(x=>x.tag==="text"&&x.textContent.startsWith("PC1")));
+    assert.ok(points.some(x=>x.tag==="text"&&x.textContent.startsWith("PC2")));
+
+    const membershipTexts=all(elements.get("cd-memberships")).map(n=>n.textContent);
+    for(const cluster of ["Cluster 1","Cluster 2","Cluster 3"])
+      assert.ok(membershipTexts.includes(cluster));
+    assert.ok(!membershipTexts.some(t=>t.includes("Profile")));
+
+    const comparison=elements.get("cd-profile-detail");
+    assert.match(comparison.attributes["aria-label"],/^Cluster 3 recorded measurement comparison$/);
+    const comparisonText=all(comparison).map(n=>n.textContent).filter(Boolean);
+    assert.ok(!comparisonText.some(t=>t.includes("Profile")||
+      t.includes("Each feature has its own scale")||
+      t.includes("measurement comparison")||
+      t.includes("Session value / learned")));
+    assert.ok(comparisonText.includes("Solid = current session · outline = cluster center."));
+    assert.equal(all(comparison).filter(n=>n.className==="cd-feature").length,4);
+
+    const calculation=all(elements.get("cd-calculation")).map(n=>n.textContent);
+    for(const cluster of ["Cluster 1","Cluster 2","Cluster 3"])
+      assert.ok(calculation.includes(cluster));
+    assert.ok(calculation.includes("Combined prediction = 2.3"));
+    assert.ok(calculation.includes("0.2 × 1 = 0.2"));
+    assert.ok(calculation.includes("0.3 × 2 = 0.6"));
+    assert.ok(calculation.includes("0.5 × 3 = 1.5"));
+    assert.ok(!calculation.some(t=>t.includes("Profile")));
+  }finally{global.document=prev;}
+});

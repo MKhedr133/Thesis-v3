@@ -140,27 +140,26 @@
     </section>
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
-      <div class="cd-top"><h2>D · Fuzzy C-Means–Sugeno</h2><span class="cd-method">Three learned measurement profiles · development-fitted model</span></div>
       <div id="cd-sugeno-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
-          <h3>Learned clusters and this session</h3>
-          <p class="cd-note">The selected session is shown over a 104-observation development PCA map. Projection does not determine its four-dimensional FCM membership.</p>
           <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
-          <div class="cd-key"><span>● Selected session</span><span>◯ Cluster centre 1–3</span><span>· Other development observations</span></div>
+          <div class="cd-key" aria-label="Cluster plot legend">
+            <span><i class="cd-marker cd-marker-current" aria-hidden="true"></i>Current session</span>
+            <span><i class="cd-marker cd-marker-center" aria-hidden="true"></i>Cluster center 1–3</span>
+            <span><i class="cd-marker-dots" aria-hidden="true"><b></b><b></b><b></b></i>Other observations</span>
+          </div>
         </div>
         <aside class="cd-sidebar">
           <h3>How much does it belong to each cluster?</h3>
           <div id="cd-memberships" class="cd-memberships"></div>
-          <div id="cd-profile-detail"></div>
+          <div id="cd-profile-detail" role="group" aria-label="Selected cluster measurement comparison"></div>
         </aside>
       </div>
       <div class="cd-bottom">
-        <h3>Weighted numerical calculation</h3>
+        <h3>Calculation</h3>
         <div id="cd-calculation" class="cd-calculation"></div>
-        <details><summary>What do these percentages mean?</summary><p>Fuzzy membership describes relative similarity to three learned four-measurement profiles. It is not a probability of clinical difficulty and does not suggest an adaptation.</p></details>
       </div>
-      <p class="cd-note">The model combines the three constant outputs using memberships calculated in the original, scaled four-feature space.</p>
     </section>
 
     <section class="panel" aria-label="Next session decision">
