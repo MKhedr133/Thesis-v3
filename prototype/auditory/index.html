@@ -141,6 +141,15 @@
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
       <div id="cd-sugeno-scores" class="cd-scores"></div>
+      <details class="cd-recorded cd-cluster-recorded">
+        <summary>Recorded measurements</summary>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Auditory measurements and all three learned cluster centers">
+            <thead><tr><th>Measurement</th><th>Recorded value</th><th>Cluster 1 center</th><th>Cluster 2 center</th><th>Cluster 3 center</th></tr></thead>
+            <tbody id="cd-sugeno-recorded-rows"></tbody>
+          </table>
+        </div>
+      </details>
       <div class="cd-grid">
         <div class="cd-hero">
           <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
