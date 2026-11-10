@@ -238,7 +238,7 @@ function format(value, digits = 3) {
 function sign(value) {
   return (value >= 0 ? "+" : "−") + format(Math.abs(value));
 }
-function makeWaterfall(regression) {
+function makeWaterfall(regression, onFeatureFocus) {
   const baseline = finite(regression.ReferencePrediction);
   const prediction = finite(regression.Prediction);
   const values = [baseline], features = regression.Measurements;
@@ -248,12 +248,12 @@ function makeWaterfall(regression) {
   const lo = min - pad, hi = max + pad;
   const x = v => 252 + (v - lo) / (hi - lo) * 455;
   const svg = svgNode("svg", {
-    viewBox: "0 0 860 392", role: "img",
+    viewBox: "0 0 860 392", role: "group",
     "aria-label": "SHAP waterfall. Baseline " + format(baseline) +
       ", final prediction " + format(prediction) + ". " +
       features.map(f => featureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
   });
-  const title = svgNode("title", {}, "Level-specific SHAP waterfall");
+  const title = svgNode("title", {}, "SHAP feature contributions");
   svg.append(title);
   const top = 68, step = 56, axisY = 342;
   for (let tick = 0; tick <= 4; tick++) {
@@ -284,16 +284,29 @@ function makeWaterfall(regression) {
     const bar = svgNode("rect",{
       x:Math.min(prevX,nextX), y:y-12,
       width:Math.max(Math.abs(nextX-prevX),2), height:24, rx:3,
-      fill: contribution >= 0 ? "#2a719f" : "#b85e46"
+      fill: contribution >= 0 ? "#2a719f" : "#b85e46",
+      "data-shap-feature": f.Name
     });
     bar.append(svgNode("title",{},featureLabel(f.Name) + ": " + sign(contribution) +
       "; observed " + format(finite(f.Observed,true)) + " " + f.Unit));
+    if (typeof onFeatureFocus === "function") {
+      bar.setAttribute("tabindex", "0");
+      bar.setAttribute("role", "button");
+      bar.setAttribute("aria-label", "Compare " + featureLabel(f.Name) + " with development trials");
+      bar.addEventListener("click", () => onFeatureFocus(f.Name));
+      bar.addEventListener("keydown", event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onFeatureFocus(f.Name);
+        }
+      });
+    }
     svg.append(bar);
     svg.append(svgNode("text",{x:790,y:y+5,"text-anchor":"end",class:"row-value"},sign(contribution)));
   });
   const finalY = top + 5*step;
   svg.append(svgNode("line",{x1:x(prediction),y1:top+4*step+12,x2:x(prediction),y2:finalY-8,stroke:"#94a3b8","stroke-dasharray":"4 4"}));
-  svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Predicted difficulty"));
+  svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Predicted difficulty level"));
   svg.append(svgNode("circle",{cx:x(prediction),cy:finalY,r:6,fill:"#334155"}));
   svg.append(svgNode("text",{x:790,y:finalY+5,"text-anchor":"end",class:"row-value final-name"},format(prediction)));
   svg.append(svgNode("text",{x:490,y:axisY+45,"text-anchor":"middle",class:"axis-label"},"Difficulty prediction scale"));
@@ -309,17 +322,227 @@ function row(cells) {
   cells.forEach(v => tr.append(cell(v)));
   return tr;
 }
-function renderRegression(record) {
+function validateShapComparison(data, records) {
+  if (data === undefined || data === null) return null; // Backward-compatible old local JSON.
+  const stages = STAGES.map(item => item[0]);
+  const expected = [...EXPECTED_FEATURES];
+  if (data.schema !== "auditory-shap-comparison-v1" ||
+      data.population !== "development" || data.model !== "auditory" ||
+      data.developmentParticipants !== 26 || data.developmentObservations !== 104 ||
+      !Array.isArray(data.features) || data.features.join("|") !== expected.join("|") ||
+      !Array.isArray(data.coefficients) || data.coefficients.length !== expected.length ||
+      !data.byReferenceStage ||
+      Object.keys(data.byReferenceStage).sort().join("|") !== [...stages].sort().join("|")) {
+    throw new Error("SHAP comparison provenance or feature identities are invalid");
+  }
+  const coefficients = data.coefficients.map(n => finite(n));
+  const intercept = finite(data.intercept);
+  let sharedObservations = null;
+  for (const stage of stages) {
+    const group = data.byReferenceStage[stage];
+    if (!group || !Array.isArray(group.meanFeatures) ||
+        group.meanFeatures.length !== expected.length ||
+        !Array.isArray(group.observations) || group.observations.length !== 104) {
+      throw new Error("Missing development SHAP comparison observations");
+    }
+    const baseline = finite(group.referencePrediction);
+    const means = group.meanFeatures.map(n => finite(n));
+    const expectedBaseline = intercept + means.reduce((a, v, j) =>
+      a + v * coefficients[j], 0);
+    if (Math.abs(baseline - expectedBaseline) > 1e-8) {
+      throw new Error("SHAP comparison reference disagrees with frozen coefficients");
+    }
+    const counts = new Map(stages.map(s => [s, 0]));
+    for (let i = 0; i < group.observations.length; i++) {
+      const point = group.observations[i];
+      if (!point || !counts.has(point.stage) ||
+          !Array.isArray(point.values) || point.values.length !== expected.length ||
+          !Array.isArray(point.contributions) ||
+          point.contributions.length !== expected.length ||
+          Object.keys(point).some(k => !["stage", "values", "contributions"].includes(k))) {
+        throw new Error("Invalid or identifying SHAP development observation");
+      }
+      counts.set(point.stage, counts.get(point.stage) + 1);
+      const values = point.values.map(n => finite(n));
+      const contribution = point.contributions.map(n => finite(n));
+      for (let j = 0; j < expected.length; j++) {
+        if (Math.abs(contribution[j] - coefficients[j] * (values[j] - means[j])) > 1e-8) {
+          throw new Error("SHAP comparison contributions use the wrong reference");
+        }
+      }
+      const predicted = intercept + values.reduce((a, v, j) =>
+        a + coefficients[j] * v, 0);
+      if (Math.abs(baseline + contribution.reduce((a, v) => a + v, 0) - predicted) > 1e-8) {
+        throw new Error("SHAP comparison does not reconstruct the frozen prediction");
+      }
+      if (sharedObservations && (point.stage !== sharedObservations[i].stage ||
+          values.some((v, j) => Math.abs(v - sharedObservations[i].values[j]) > 1e-10))) {
+        throw new Error("Comparison observations changed across reference selections");
+      }
+    }
+    if ([...counts.values()].some(n => n !== 26)) {
+      throw new Error("Expected 26 development trials per assigned level");
+    }
+    for (let j = 0; j < means.length; j++) {
+      const actual = group.observations.filter(p => p.stage === stage)
+        .reduce((a, p) => a + finite(p.values[j]), 0) / 26;
+      if (Math.abs(means[j] - actual) > 1e-9) {
+        throw new Error("SHAP reference feature mean differs from its stage population");
+      }
+    }
+    records.filter(record => stageCode(record.DifficultyStage) === stage)
+      .forEach(record => {
+        if (Math.abs(finite(record.Regression.ReferencePrediction) - baseline) > 1e-7) {
+          throw new Error("SHAP comparison does not match the original waterfall reference");
+        }
+        expected.forEach((name, j) => {
+          const measure = record.Regression.Measurements.find(m => m.Name === name);
+          if (!measure ||
+              Math.abs(finite(measure.ShapContribution) -
+                coefficients[j] * (finite(measure.Observed) - means[j])) > 1e-7) {
+            throw new Error("Selected trial SHAP contribution mismatches comparison");
+          }
+        });
+      });
+    if (!sharedObservations) sharedObservations = group.observations;
+  }
+  return data;
+}
+function shapComparisonPoints(data, referenceStage, filter) {
+  if (!data) return [];
+  const points = data.byReferenceStage[referenceStage].observations;
+  if (filter === "current") return points.filter(item => item.stage === referenceStage);
+  if (filter === "all") return points;
+  if (!STAGES.some(item => item[0] === filter)) {
+    throw new Error("Unknown SHAP comparison stage filter");
+  }
+  return points.filter(item => item.stage === filter);
+}
+function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
+  const group = data.byReferenceStage[referenceStage];
+  const all = group.observations;
+  const points = shapComparisonPoints(data, referenceStage, filter);
+  const features = regression.Measurements;
+  const left = 265, right = 814, top = 64, spacing = 61, axisY = 316;
+  const extent = [
+    0,
+    ...all.flatMap(p => p.contributions),
+    ...features.map(m => finite(m.ShapContribution))
+  ];
+  const min = Math.min(...extent), max = Math.max(...extent);
+  const pad = Math.max((max - min) * .09, .025);
+  const lo = min - pad, hi = max + pad;
+  const x = v => left + (v - lo) / (hi - lo) * (right - left);
+  const plot = svgNode("svg", {
+    viewBox: "0 0 860 355", role: "img",
+    "aria-label": "SHAP contributions of " + points.length +
+      " development trials against the " + displayStage(referenceStage) +
+      " reference. The selected session is outlined."
+  });
+  plot.append(svgNode("title", {}, "Compare feature contributions with development trials"));
+  for (let tick = 0; tick <= 4; tick++) {
+    const value = lo + (hi - lo) * tick / 4;
+    const px = x(value);
+    plot.append(svgNode("line", {
+      x1: px, y1: 38, x2: px, y2: axisY, stroke: "#94a3b8",
+      "stroke-opacity": .18, "stroke-dasharray": "3 5"
+    }));
+    plot.append(svgNode("text", {x:px,y:axisY+20,"text-anchor":"middle",
+      class:"axis-label"},format(value,2)));
+  }
+  plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
+    stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
+  features.forEach((feature,j) => {
+    const y = top + j * spacing;
+    if (focused === feature.Name) {
+      plot.append(svgNode("rect",{x:2,y:y-23,width:844,height:47,rx:7,
+        class:"shap-row-selected"}));
+    }
+    const words = featureLabel(feature.Name).split(" ");
+    const lines = [""];
+    for (const word of words) {
+      const last = lines.length - 1;
+      if (lines[last] && (lines[last] + " " + word).length > 28) lines.push(word);
+      else lines[last] += (lines[last] ? " " : "") + word;
+    }
+    lines.forEach((line,i) => plot.append(svgNode("text", {
+      x:14, y:y + (i-(lines.length-1)/2)*14+4, class:"row-name"
+    },line)));
+    const observedValues = all.map(p => finite(p.values[j]));
+    const low = Math.min(...observedValues), high = Math.max(...observedValues);
+    points.forEach((point,i) => {
+      const value = finite(point.values[j]);
+      const t = high > low ? (value - low) / (high - low) : .5;
+      const hue = 207 - 185 * t;
+      const dot = svgNode("circle", {
+        cx:x(finite(point.contributions[j])),
+        cy:y+((i*11+j*3)%7-3)*3,
+        r:3.7,fill:"hsl("+hue.toFixed(1)+",57%,49%)",
+        opacity:.67
+      });
+      dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
+        featureLabel(feature.Name) + ": observed " + format(value,3) +
+        " " + feature.Unit + "; SHAP " + sign(finite(point.contributions[j]))));
+      plot.append(dot);
+    });
+    const selectedContribution = finite(feature.ShapContribution);
+    const selected = svgNode("circle", {
+      cx:x(selectedContribution), cy:y,r:7.5,
+      fill:"#fff",stroke:"#7052b4","stroke-width":3
+    });
+    selected.append(svgNode("title",{}, "Selected trial; " +
+      featureLabel(feature.Name) + ": observed " +
+      format(finite(feature.Observed),3) + " " + feature.Unit +
+      "; SHAP " + sign(selectedContribution)));
+    plot.append(selected);
+    plot.append(svgNode("circle",{cx:x(selectedContribution),cy:y,r:2.6,
+      fill:"#7052b4","pointer-events":"none"}));
+  });
+  plot.append(svgNode("text",{x:540,y:axisY+39,"text-anchor":"middle",
+    class:"axis-label"},"SHAP contribution · encoded difficulty-level points"));
+  return plot;
+}
+function shapInterpretation(regression) {
+  const ordered = regression.Measurements.slice()
+    .sort((a,b) => Math.abs(finite(b.ShapContribution)) -
+      Math.abs(finite(a.ShapContribution)));
+  const main = ordered.slice(0,2).map(feature =>
+    featureLabel(feature.Name) + " " +
+    (finite(feature.ShapContribution) >= 0 ? "raised" : "lowered") +
+    " the fitted prediction by " + format(Math.abs(finite(feature.ShapContribution))) +
+    " points").join("; ");
+  return "Largest contributions relative to the selected level's development reference: " +
+    main + ". Contributions describe the fitted model, not effects of changing a measurement.";
+}
+function renderRegression(record, comparison, selectedStage, focused, onFeatureFocus) {
   const reg = record.Regression;
   document.getElementById("prediction").textContent = format(reg.Prediction);
-  const target = document.getElementById("waterfall");
-  target.replaceChildren(makeWaterfall(reg));
+  document.getElementById("shap-reference").textContent = format(reg.ReferencePrediction);
+  document.getElementById("waterfall")
+    .replaceChildren(makeWaterfall(reg, onFeatureFocus));
   const tbody = document.getElementById("measurement-rows");
   tbody.replaceChildren(...reg.Measurements.map(m => row([
     featureLabel(m.Name),
     format(finite(m.Observed,true)) + (m.Name==="Mental demand"?" / 10":" "+m.Unit),
     sign(finite(m.ShapContribution))
   ])));
+  document.getElementById("shap-interpretation").textContent = shapInterpretation(reg);
+  const svgTarget = document.getElementById("shap-beeswarm");
+  const meta = document.getElementById("shap-comparison-meta");
+  const warning = document.getElementById("shap-comparison-unavailable");
+  const filter = document.getElementById("shap-stage-filter").value;
+  if (!comparison) {
+    svgTarget.replaceChildren();
+    meta.textContent = "";
+    warning.hidden = false;
+    warning.textContent = "Development comparison is unavailable in this file. Regenerate the local unified A–D JSON with the updated exporter.";
+    return;
+  }
+  const points = shapComparisonPoints(comparison, selectedStage, filter);
+  warning.hidden = true;
+  meta.textContent = points.length + " development trials displayed · contributions calculated against the " +
+    displayStage(selectedStage) + " reference. The selected session is outlined.";
+  svgTarget.replaceChildren(makeShapBeeswarm(reg,comparison,selectedStage,filter,focused));
 }
 function ruleCard(rule) {
   const node=document.createElement("div");
@@ -407,7 +630,7 @@ function validateUnifiedDataset(bundle, validateCD) {
   return {records,cd};
 }
 function installApp() {
-  let records=[], cd=null, activeTab="regression";
+  let records=[], cd=null, comparison=null, focused=null, activeTab="regression";
   const file=document.getElementById("data-file");
   const participant=document.getElementById("participant");
   const stage=document.getElementById("stage");
@@ -429,7 +652,11 @@ function installApp() {
       if(!cd)throw new Error("Unified P06/P07 file required for C/D");
       CD.show(cd,participant.value,stage.value,activeTab);
     }else{
-      renderRegression(chosen);
+      renderRegression(chosen,comparison,stage.value,focused,name=>{
+        focused=name;
+        document.getElementById("shap-compare-details").open=true;
+        render();
+      });
       renderFuzzy(chosen);
     }
   }
@@ -456,7 +683,7 @@ function installApp() {
     clearDecision();render();
   }
   file.addEventListener("change",async()=>{
-    workspace.hidden=true;records=[];cd=null;status.hidden=false;
+    workspace.hidden=true;records=[];cd=null;comparison=null;focused=null;status.hidden=false;
     try{
       if(!file.files||file.files.length!==1)throw new Error("Select one local JSON file");
       if(file.files[0].size>12_000_000)throw new Error("File exceeds local 12 MB limit");
@@ -466,6 +693,7 @@ function installApp() {
       }else{
         const unified=validateUnifiedDataset(parsed,CD.validate);
         records=unified.records;cd=unified.cd;
+        comparison=validateShapComparison(parsed.shapComparison,records);
       }
       const labels=[...new Set(records.map(r=>r.ParticipantId))].sort();
       participant.replaceChildren(...labels.map(name=>{
@@ -473,17 +701,30 @@ function installApp() {
         option.value=name;option.textContent=name;return option;
       }));
       stage.value="0";
+      document.getElementById("shap-stage-filter").value="current";
+      document.getElementById("shap-compare-details").open=false;
       workspace.hidden=false;
       status.textContent="";
       status.hidden=true;
       setTab("regression");
     }catch(error){
-      records=[];cd=null;workspace.hidden=true;status.hidden=false;
+      records=[];cd=null;comparison=null;workspace.hidden=true;status.hidden=false;
       status.textContent="Cannot display file: "+error.message;
     }
   });
   participant.addEventListener("change",()=>{clearDecision();render();});
-  stage.addEventListener("change",()=>{clearDecision();render();});
+  stage.addEventListener("change",()=>{
+    focused=null;
+    document.getElementById("shap-stage-filter").value="current";
+    clearDecision();render();
+  });
+  participant.addEventListener("change",()=>{
+    focused=null;
+    document.getElementById("shap-stage-filter").value="current";
+  });
+  document.getElementById("shap-stage-filter").addEventListener("change",()=>{
+    if(activeTab==="regression")render();
+  });
   for(const name of ["regression","fuzzy","mamdani","sugeno"])
     document.getElementById("tab-"+name).addEventListener("click",()=>setTab(name));
   for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"]])
@@ -494,5 +735,7 @@ if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", installApp);
 }
 if (typeof module !== "undefined" && module.exports) {
-  module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,featureLabel,ruleSentence,ruleSummary};
+  module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,
+    validateShapComparison,shapComparisonPoints,shapInterpretation,
+    featureLabel,ruleSentence,ruleSummary};
 }
