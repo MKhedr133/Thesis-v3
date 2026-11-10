@@ -37,16 +37,37 @@ If necessary, first prepare the original file by following **Legacy A/B-only pre
         "--mamdani-fuzzy-dir", $fuzzyRules.DirectoryName,
         "--fcm-stage1-dir", $fcm.DirectoryName,
         "--sugeno-dir", $sugeno.DirectoryName,
-        "--output", "outputs/auditory_abcd_p06_p07_exploratory.json"
+        "--output", "outputs/auditory_abcd_p06_p07_shap_comparison.json"
     )
     python @argsList
     if ($LASTEXITCODE -ne 0) { throw "Unified A–D export failed." }
 
 The exporter refuses to overwrite an existing file. Keep the resulting participant-level JSON private under the Git-ignored outputs directory; do not commit it.
 
-Open prototype/auditory/index.html and choose outputs/auditory_abcd_p06_p07_exploratory.json in the **single** file picker. Select P06 or P07 and the completed stage once; tabs A–D show matched observations. An older A/B-only JSON is still accepted for A/B, but will not populate C/D.
+Open prototype/auditory/index.html and choose outputs/auditory_abcd_p06_p07_shap_comparison.json in the **single** file picker. Select P06 or P07 and the completed stage once; tabs A–D show matched observations. An older A/B-only JSON is still accepted for A/B, but will not populate C/D.
 
-**A:** original level-specific SHAP waterfall. **B:** original manually specified rules. **C:** the eight-leaf CART shows the single crisp path and every positively activated fuzzy-rule path, with separate line styles and activation-dependent emphasis. The expandable recorded measurements, tree zoom controls and activated-rule details remain available. The Mamdani plot shows the five original output membership functions behind the aggregated fuzzy output and marks both the regression prediction and centroid as numbers on the same continuous prediction-level axis; the legend identifies the two markers, and the approximation difference appears only below the plot. **D:** three FCM cluster centers and the current session on a development-only PCA overview, membership bars labelled Cluster 1–3, original-unit measurement comparisons, and the unchanged weighted Sugeno score. C/D remain numerical explanations, not adaptation recommendations.
+**A:** original level-specific SHAP waterfall with a matching reference card, recorded measurements above the waterfall, and an optional stage-filtered development beeswarm. **B:** original manually specified rules. **C:** the eight-leaf CART shows the single crisp path and every positively activated fuzzy-rule path, with separate line styles and activation-dependent emphasis. The expandable recorded measurements, tree zoom controls and activated-rule details remain available. The Mamdani plot shows the five original output membership functions behind the aggregated fuzzy output and marks both the regression prediction and centroid as numbers on the same continuous prediction-level axis; the legend identifies the two markers, and the approximation difference appears only below the plot. **D:** three FCM cluster centers and the current session on a development-only PCA overview, membership bars labelled Cluster 1–3, original-unit measurement comparisons, and the unchanged weighted Sugeno score. C/D remain numerical explanations, not adaptation recommendations.
+
+### SHAP comparison across assigned difficulty levels
+
+The SHAP tab displays the original continuous **Predicted difficulty level** and a second card with the selected level's average fitted development prediction. Expand **Recorded measurements** before the waterfall to inspect the four original inputs and contributions. The waterfall remains the original MOD-16 calculation.
+
+The optional **Compare with development trials** beeswarm initially shows 26 eligible Auditory development trials at the selected assigned level. The dropdown can show all 104 development trials, or one other assigned level (D0, D2, D6 or D10). Each dot represents a **trial**, not an independent participant. Every dot is calculated against the same development reference used by the selected session's waterfall, even when the displayed development trial was conducted at another assigned level. Changing the display filter does not recalculate the baseline. An outlined point identifies the selected reserved-test trial, which is never included among the development dots. Clicking a waterfall contribution highlights its beeswarm row. Dot colour indicates the observed feature value, not a difficulty probability.
+
+The unified exporter now checks the reference against the original MOD-16 waterfall, uses the frozen Auditory coefficients, and generates development-only per-level comparison distributions without exporting development participant IDs. All comparison data remain inside the private Git-ignored local JSON; do not commit or host them. The previously generated unified JSON remains compatible but shows **comparison unavailable** until regenerated using the updated command. The exporter refuses to overwrite an existing output file; choose a new private output filename if the suggested one already exists.
+
+SHAP describes how the fitted prediction differs from a reference; comparison dots are descriptive, not causal intervention effects or proposed therapy changes. Both P06/P07 examples remain exploratory because their reserved-test observations were already inspected during interface design.
+
+### Additional focused checks
+
+From the repository root, run:
+
+```powershell
+node --test prototype/auditory/viewer.test.cjs prototype/auditory/viewer-cd.test.cjs prototype/auditory/shap-comparison.test.cjs
+python -m unittest prototype/auditory/test_build_shap_comparison.py -v
+```
+
+The tests use synthetic inputs. Run the actual-data exporter and perform a local browser check separately; do not claim official-data verification from unit tests alone.
 
 **Screen D PCA and measurements:** The plot still uses the first two principal components of the four development-scaled Auditory measurements, but the PC1/PC2 axis labels and variance percentages have been removed from the therapist display. Their meaning and saved PCA explained-variance values are unchanged. This two-dimensional overview does not preserve every four-dimensional distance. Its 104 background observations come from the 26 development participants; P06/P07 are projected separately without refitting the PCA. Background colours indicate each observation's strongest fuzzy cluster membership, although observations can partly belong to all three clusters. Memberships are computed from the four scaled input measurements, not from the chart coordinates, and are not clinical probabilities.
 
