@@ -16,6 +16,13 @@ const FEATURE_LABELS = Object.freeze({
   "Time to locate target": "Duration to locate a target product",
   "Head turning": "Head rotation while locating a product"
 });
+// Short display labels apply to SHAP only; A/B source identities and C/D labels stay frozen.
+const SHAP_LABELS = Object.freeze({
+  "Mental demand": "Mental demand rating",
+  "Time between qualifying grabs": "Time between grabs",
+  "Time to locate target": "Time to locate target",
+  "Head turning": "Head rotation while searching"
+});
 // Exact Auditory antecedents from MOD-18's frozen RULES registry.
 // Low/Medium/High match the memberships already stored in the local JSON.
 const AUDITORY_RULES = Object.freeze({
@@ -238,6 +245,15 @@ function format(value, digits = 3) {
 function sign(value) {
   return (value >= 0 ? "+" : "−") + format(Math.abs(value));
 }
+function shapFeatureLabel(name) {
+  if (!Object.hasOwn(SHAP_LABELS,name)) throw new Error("Unknown Auditory SHAP feature");
+  return SHAP_LABELS[name];
+}
+function shapMeasuredValue(feature) {
+  const unit = feature.Name === "Mental demand" ? "/10" :
+    feature.Name === "Head turning" ? "°" : "s";
+  return format(finite(feature.Observed,true)) + " " + unit;
+}
 function makeWaterfall(regression, onFeatureFocus) {
   const baseline = finite(regression.ReferencePrediction);
   const prediction = finite(regression.Prediction);
@@ -246,12 +262,12 @@ function makeWaterfall(regression, onFeatureFocus) {
   const min = Math.min(...values), max = Math.max(...values);
   const pad = Math.max((max - min) * .16, .15);
   const lo = min - pad, hi = max + pad;
-  const x = v => 252 + (v - lo) / (hi - lo) * 455;
+  const x = v => 234 + (v - lo) / (hi - lo) * 470;
   const svg = svgNode("svg", {
     viewBox: "0 0 860 392", role: "group",
     "aria-label": "SHAP waterfall. Baseline " + format(baseline) +
       ", final prediction " + format(prediction) + ". " +
-      features.map(f => featureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
+      features.map(f => shapFeatureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
   });
   const title = svgNode("title", {}, "SHAP feature contributions");
   svg.append(title);
@@ -261,8 +277,8 @@ function makeWaterfall(regression, onFeatureFocus) {
     svg.append(svgNode("line", {x1:xpos,y1:38,x2:xpos,y2:axisY,stroke:"currentColor","stroke-opacity":".09"}));
     svg.append(svgNode("text",{x:xpos,y:axisY+19,"text-anchor":"middle",class:"axis-label"},format(val,2)));
   }
-  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Level prediction"));
-  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name","font-weight":"700"},"baseline"));
+  svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Population difficulty level"));
+  svg.append(svgNode("text",{x:14,y:top+11,class:"row-name","font-weight":"700"},"prediction reference"));
   svg.append(svgNode("circle",{cx:x(baseline),cy:top,r:6,fill:"#64748b"}));
   svg.append(svgNode("text",{x:790,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
   features.forEach((f,i) => {
@@ -271,28 +287,19 @@ function makeWaterfall(regression, onFeatureFocus) {
     const prevX=x(previous), nextX=x(next);
     const priorY = top + i*step;
     svg.append(svgNode("line",{x1:prevX,y1:priorY+8,x2:prevX,y2:y-12,stroke:"#94a3b8","stroke-dasharray":"4 4"}));
-    const words=featureLabel(f.Name).split(" ");
-    const labelLines=[""];
-    for (const word of words) {
-      const last=labelLines.length-1;
-      if (labelLines[last] && (labelLines[last]+" "+word).length>25) labelLines.push(word);
-      else labelLines[last]+=(labelLines[last]?" ":"")+word;
-    }
-    labelLines.forEach((line,j)=>svg.append(svgNode("text",{
-      x:14,y:y-(labelLines.length-1)*8+j*16+5,class:"row-name"
-    },line)));
+    svg.append(svgNode("text",{x:14,y:y+5,class:"row-name"},shapFeatureLabel(f.Name)));
     const bar = svgNode("rect",{
       x:Math.min(prevX,nextX), y:y-12,
       width:Math.max(Math.abs(nextX-prevX),2), height:24, rx:3,
-      fill: contribution >= 0 ? "#2a719f" : "#b85e46",
+      fill: contribution >= 0 ? "#25835c" : "#c04c46",
       "data-shap-feature": f.Name
     });
-    bar.append(svgNode("title",{},featureLabel(f.Name) + ": " + sign(contribution) +
-      "; observed " + format(finite(f.Observed,true)) + " " + f.Unit));
+    bar.append(svgNode("title",{},shapFeatureLabel(f.Name) + ": " + sign(contribution) +
+      "; observed " + shapMeasuredValue(f)));
     if (typeof onFeatureFocus === "function") {
       bar.setAttribute("tabindex", "0");
       bar.setAttribute("role", "button");
-      bar.setAttribute("aria-label", "Compare " + featureLabel(f.Name) + " with development trials");
+      bar.setAttribute("aria-label", "Compare " + shapFeatureLabel(f.Name) + " with other observations");
       bar.addEventListener("click", () => onFeatureFocus(f.Name));
       bar.addEventListener("keydown", event => {
         if (event.key === "Enter" || event.key === " ") {
@@ -438,7 +445,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   const all = group.observations;
   const points = shapComparisonPoints(data, referenceStage, filter);
   const features = regression.Measurements;
-  const left = 265, right = 814, top = 64, spacing = 61, axisY = 316;
+  const left = 242, right = 865, top = 55, spacing = 55, axisY = 273;
   const extent = [
     0,
     ...all.flatMap(p => p.contributions),
@@ -449,21 +456,31 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   const lo = min - pad, hi = max + pad;
   const x = v => left + (v - lo) / (hi - lo) * (right - left);
   const plot = svgNode("svg", {
-    viewBox: "0 0 860 355", role: "img",
+    viewBox: "0 0 900 332", role: "img",
     "aria-label": "SHAP contributions of " + points.length +
-      " development trials against the " + displayStage(referenceStage) +
-      " reference. The selected session is outlined."
+      " other development observations using the " + displayStage(referenceStage) +
+      " reference. The selected observation is outlined."
   });
-  plot.append(svgNode("title", {}, "Compare feature contributions with development trials"));
-  for (let tick = 0; tick <= 4; tick++) {
-    const value = lo + (hi - lo) * tick / 4;
+  plot.append(svgNode("title", {}, "Compare feature contributions with other observations"));
+  // Round-number ticks always include the meaningful zero-contribution reference.
+  const rawStep = (hi - lo) / 5;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const step = [1,2,2.5,5,10].map(n => n * magnitude)
+    .reduce((best,n) => Math.abs(n-rawStep)<Math.abs(best-rawStep)?n:best);
+  const ticks = [];
+  const firstTick = Math.ceil(lo/step - 1e-10);
+  const lastTick = Math.floor(hi/step + 1e-10);
+  for (let i = firstTick; i <= lastTick; i++) ticks.push(i * step);
+  if (!ticks.some(value => Math.abs(value) < step * 1e-8)) ticks.push(0);
+  ticks.sort((a,b) => a-b);
+  for (const value of ticks) {
     const px = x(value);
     plot.append(svgNode("line", {
-      x1: px, y1: 38, x2: px, y2: axisY, stroke: "#94a3b8",
-      "stroke-opacity": .18, "stroke-dasharray": "3 5"
+      x1:px,y1:38,x2:px,y2:axisY,stroke:"#94a3b8",
+      "stroke-opacity":.18,"stroke-dasharray":"3 5"
     }));
-    plot.append(svgNode("text", {x:px,y:axisY+20,"text-anchor":"middle",
-      class:"axis-label"},format(value,2)));
+    plot.append(svgNode("text",{x:px,y:axisY+20,"text-anchor":"middle",
+      class:"axis-label"},Math.abs(value)<step*1e-8?"0":format(value,2)));
   }
   plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
     stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
@@ -471,26 +488,17 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
     const featureIndex = data.features.indexOf(feature.Name);
     const y = top + j * spacing;
     if (focused === feature.Name) {
-      plot.append(svgNode("rect",{x:2,y:y-23,width:844,height:47,rx:7,
+      plot.append(svgNode("rect",{x:2,y:y-23,width:896,height:47,rx:7,
         class:"shap-row-selected"}));
     }
-    const words = featureLabel(feature.Name).split(" ");
-    const lines = [""];
-    for (const word of words) {
-      const last = lines.length - 1;
-      if (lines[last] && (lines[last] + " " + word).length > 28) lines.push(word);
-      else lines[last] += (lines[last] ? " " : "") + word;
-    }
-    lines.forEach((line,i) => plot.append(svgNode("text", {
-      x:14, y:y + (i-(lines.length-1)/2)*14+4, class:"row-name"
-    },line)));
+    plot.append(svgNode("text",{x:14,y:y+4,class:"row-name"},shapFeatureLabel(feature.Name)));
     const observedValues = all.map(p => finite(p.values[featureIndex]));
     const low = Math.min(...observedValues), high = Math.max(...observedValues);
     const offsets = swarmOffsets(points.map(p => x(finite(p.contributions[featureIndex]))));
     points.forEach((point,i) => {
       const value = finite(point.values[featureIndex]);
       const t = high > low ? (value - low) / (high - low) : .5;
-      const hue = 207 - 185 * t;
+      const hue = 145 * (1-t);
       const dot = svgNode("circle", {
         cx:x(finite(point.contributions[featureIndex])),
         cy:y+offsets[i],
@@ -498,7 +506,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
         opacity:.67
       });
       dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
-        featureLabel(feature.Name) + ": observed " + format(value,3) +
+        shapFeatureLabel(feature.Name) + ": observed " + format(value,3) +
         " " + feature.Unit + "; SHAP " + sign(finite(point.contributions[featureIndex]))));
       plot.append(dot);
     });
@@ -507,58 +515,38 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       cx:x(selectedContribution), cy:y,r:7.5,
       fill:"#fff",stroke:"#7052b4","stroke-width":3
     });
-    selected.append(svgNode("title",{}, "Selected trial; " +
-      featureLabel(feature.Name) + ": observed " +
+    selected.append(svgNode("title",{}, "Selected observation; " +
+      shapFeatureLabel(feature.Name) + ": observed " +
       format(finite(feature.Observed),3) + " " + feature.Unit +
       "; SHAP " + sign(selectedContribution)));
     plot.append(selected);
     plot.append(svgNode("circle",{cx:x(selectedContribution),cy:y,r:2.6,
       fill:"#7052b4","pointer-events":"none"}));
   });
-  plot.append(svgNode("text",{x:540,y:axisY+39,"text-anchor":"middle",
-    class:"axis-label"},"SHAP contribution · encoded difficulty-level points"));
+  plot.append(svgNode("text",{x:554,y:axisY+42,"text-anchor":"middle",
+    class:"axis-label"},"Feature contribution"));
   return plot;
-}
-function shapInterpretation(regression) {
-  const ordered = regression.Measurements.slice()
-    .sort((a,b) => Math.abs(finite(b.ShapContribution)) -
-      Math.abs(finite(a.ShapContribution)));
-  const main = ordered.slice(0,2).map(feature =>
-    featureLabel(feature.Name) + " " +
-    (finite(feature.ShapContribution) >= 0 ? "raised" : "lowered") +
-    " the fitted prediction by " + format(Math.abs(finite(feature.ShapContribution))) +
-    " points").join("; ");
-  return "Largest contributions relative to the selected level's development reference: " +
-    main + ". Contributions describe the fitted model, not effects of changing a measurement.";
 }
 function renderRegression(record, comparison, selectedStage, focused, onFeatureFocus) {
   const reg = record.Regression;
   document.getElementById("prediction").textContent = format(reg.Prediction);
-  document.getElementById("shap-reference").textContent = format(reg.ReferencePrediction);
   document.getElementById("waterfall")
     .replaceChildren(makeWaterfall(reg, onFeatureFocus));
   const tbody = document.getElementById("measurement-rows");
   tbody.replaceChildren(...reg.Measurements.map(m => row([
-    featureLabel(m.Name),
-    format(finite(m.Observed,true)) + (m.Name==="Mental demand"?" / 10":" "+m.Unit),
-    sign(finite(m.ShapContribution))
+    shapFeatureLabel(m.Name),shapMeasuredValue(m)
   ])));
-  document.getElementById("shap-interpretation").textContent = shapInterpretation(reg);
   const svgTarget = document.getElementById("shap-beeswarm");
-  const meta = document.getElementById("shap-comparison-meta");
   const warning = document.getElementById("shap-comparison-unavailable");
   const filter = document.getElementById("shap-stage-filter").value;
   if (!comparison) {
     svgTarget.replaceChildren();
-    meta.textContent = "";
     warning.hidden = false;
     warning.textContent = "Development comparison is unavailable in this file. Regenerate the local unified A–D JSON with the updated exporter.";
     return;
   }
   const points = shapComparisonPoints(comparison, selectedStage, filter);
   warning.hidden = true;
-  meta.textContent = points.length + " development trials displayed · contributions calculated against the " +
-    displayStage(selectedStage) + " reference. The selected session is outlined.";
   svgTarget.replaceChildren(makeShapBeeswarm(reg,comparison,selectedStage,filter,focused));
 }
 function ruleCard(rule) {
@@ -718,7 +706,7 @@ function installApp() {
         option.value=name;option.textContent=name;return option;
       }));
       stage.value="0";
-      document.getElementById("shap-stage-filter").value="current";
+      document.getElementById("shap-stage-filter").value=stage.value;
       document.getElementById("shap-compare-details").open=false;
       workspace.hidden=false;
       status.textContent="";
@@ -731,12 +719,12 @@ function installApp() {
   });
   participant.addEventListener("change",()=>{
     focused=null;
-    document.getElementById("shap-stage-filter").value="current";
+    document.getElementById("shap-stage-filter").value=stage.value;
     clearDecision();render();
   });
   stage.addEventListener("change",()=>{
     focused=null;
-    document.getElementById("shap-stage-filter").value="current";
+    document.getElementById("shap-stage-filter").value=stage.value;
     clearDecision();render();
   });
   document.getElementById("shap-stage-filter").addEventListener("change",()=>{
@@ -753,7 +741,7 @@ if (typeof document !== "undefined") {
 }
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,
-    validateShapComparison,shapComparisonPoints,swarmOffsets,shapInterpretation,
-    makeWaterfall,makeShapBeeswarm,
+    validateShapComparison,shapComparisonPoints,swarmOffsets,
+    makeWaterfall,makeShapBeeswarm,shapFeatureLabel,shapMeasuredValue,
     featureLabel,ruleSentence,ruleSummary};
 }
