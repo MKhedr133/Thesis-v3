@@ -3,7 +3,7 @@ const test=require("node:test");
 const assert=require("node:assert/strict");
 const {validateShapComparison,shapComparisonPoints,
   makeWaterfall,makeShapBeeswarm,swarmOffsets,
-  shapFeatureLabel,shapMeasuredValue} = require("./viewer.js");
+  shapFeatureLabel,shapMeasuredValue,signTick,shapContributionColor} = require("./viewer.js");
 
 const stages=["0","2","6","10"];
 const names=["Mental demand","Time between qualifying grabs","Time to locate target","Head turning"];
@@ -87,12 +87,18 @@ test("reject malformed stage filter",()=>{
   const {comparison}=fixture();
   assert.throws(()=>shapComparisonPoints(comparison,"6","prediction:high"),/Unknown SHAP comparison/);
 });
-test("SHAP-only labels stay on one line and measured units match C/D",()=>{
+test("SHAP labels exactly match current C/D names and units",()=>{
   const {records}=fixture();
-  for(const feature of records[0].Regression.Measurements) {
-    assert.ok(shapFeatureLabel(feature.Name).length<=35);
-    assert.ok(!shapFeatureLabel(feature.Name).includes("\\n"));
-  }
+  const exact=[
+    "Subjective mental demand rating",
+    "Time interval between grabs",
+    "Duration to locate a target product",
+    "Total Head rotation while locating a product"
+  ];
+  records[0].Regression.Measurements.forEach((feature,i)=>{
+    assert.equal(shapFeatureLabel(feature.Name),exact[i]);
+    assert.ok(!shapFeatureLabel(feature.Name).includes("\n"));
+  });
   assert.equal(shapMeasuredValue(records[0].Regression.Measurements[0]),"5 /10");
   assert.equal(shapMeasuredValue(records[0].Regression.Measurements[1]),"4.5 s");
   assert.equal(shapMeasuredValue(records[0].Regression.Measurements[3]),"16 °");
@@ -150,6 +156,7 @@ test("waterfall uses green/red bars and labels the population prediction referen
     const text=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
     assert.ok(text.includes("Population difficulty level"));
     assert.ok(text.includes("prediction reference"));
+    assert.ok(text.includes("Model-predicted difficulty level"));
     names.forEach(name=>assert.ok(text.includes(shapFeatureLabel(name))));
   });
 });
@@ -162,5 +169,36 @@ test("beeswarm has explicit zero tick and a Feature contribution axis",()=>{
     assert.ok(text.includes("Feature contribution"));
     assert.equal(text.filter(x=>x==="Feature contribution").length,1);
     names.forEach(name=>assert.ok(text.includes(shapFeatureLabel(name))));
+  });
+});
+
+test("beeswarm contribution ticks use explicit signs and a single zero",()=>{
+  assert.equal(signTick(-0.5),"−0.5");
+  assert.equal(signTick(0),"0");
+  assert.equal(signTick(0.5),"+0.5");
+  assert.equal(signTick(0.0025,4),"+0.0025");
+  const {records,comparison}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","all",null);
+    const texts=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
+    assert.ok(texts.some(x=>/^\\+0[.]\\d+/.test(x)));
+    assert.ok(texts.some(x=>/^−0[.]\\d+/.test(x)));
+    assert.equal(texts.filter(x=>x==="0").length,1);
+  });
+});
+test("beeswarm colours are based on signed SHAP contributions, not raw measurements",()=>{
+  assert.equal(shapContributionColor(0,1),"rgb(156,163,175)");
+  assert.equal(shapContributionColor(-1,1),"rgb(192,76,70)");
+  assert.equal(shapContributionColor(1,1),"rgb(37,131,92)");
+  const {records,comparison}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","current",null);
+    const dots=chart.children.filter(n=>n.tag==="circle"&&n.attributes.opacity);
+    assert.ok(dots.length>=26);
+    // This synthetic background has equal zero SHAP contributions in every row.
+    assert.ok(dots.every(n=>n.attributes.fill==="rgb(156,163,175)"));
+    const titles=chart.children.filter(n=>n.tag==="circle").flatMap(n=>n.children||[])
+      .filter(n=>n.tag==="title").map(n=>n.textContent);
+    assert.ok(titles.some(s=>s.startsWith("Current observation;")));
   });
 });
