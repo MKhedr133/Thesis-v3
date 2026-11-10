@@ -489,6 +489,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   for (let i = firstTick; i <= lastTick; i++) ticks.push(i * step);
   if (!ticks.some(value => Math.abs(value) < step * 1e-8)) ticks.push(0);
   ticks.sort((a,b) => a-b);
+  const tickDigits = Math.min(5,Math.max(2,Math.ceil(-Math.log10(step))+1));
   for (const value of ticks) {
     const px = x(value);
     plot.append(svgNode("line", {
@@ -496,7 +497,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       "stroke-opacity":.18,"stroke-dasharray":"3 5"
     }));
     plot.append(svgNode("text",{x:px,y:axisY+20,"text-anchor":"middle",
-      class:"axis-label"},Math.abs(value)<step*1e-8?"0":signTick(value,2)));
+      class:"axis-label"},Math.abs(value)<step*1e-8?"0":signTick(value,tickDigits)));
   }
   plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
     stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
