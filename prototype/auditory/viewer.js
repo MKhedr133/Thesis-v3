@@ -418,6 +418,21 @@ function shapComparisonPoints(data, referenceStage, filter) {
   }
   return points.filter(item => item.stage === filter);
 }
+function swarmOffsets(horizontalPositions) {
+  // Stable, deterministic 1D collision-avoiding stack; vertical offset has no data meaning.
+  const offsets = Array(horizontalPositions.length).fill(0);
+  const placed = [];
+  const candidates = [0,8,-8,16,-16,24,-24];
+  horizontalPositions.map((x,index)=>({x,index}))
+    .sort((a,b)=>a.x-b.x||a.index-b.index)
+    .forEach(item=>{
+      const offset = candidates.find(dy => placed.every(previous =>
+        Math.abs(previous.x-item.x) >= 9 || Math.abs(previous.dy-dy) >= 8));
+      offsets[item.index] = offset === undefined ? 0 : offset;
+      placed.push({x:item.x,dy:offsets[item.index]});
+    });
+  return offsets;
+}
 function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   const group = data.byReferenceStage[referenceStage];
   const all = group.observations;
@@ -453,6 +468,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
     stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
   features.forEach((feature,j) => {
+    const featureIndex = data.features.indexOf(feature.Name);
     const y = top + j * spacing;
     if (focused === feature.Name) {
       plot.append(svgNode("rect",{x:2,y:y-23,width:844,height:47,rx:7,
@@ -468,21 +484,22 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
     lines.forEach((line,i) => plot.append(svgNode("text", {
       x:14, y:y + (i-(lines.length-1)/2)*14+4, class:"row-name"
     },line)));
-    const observedValues = all.map(p => finite(p.values[j]));
+    const observedValues = all.map(p => finite(p.values[featureIndex]));
     const low = Math.min(...observedValues), high = Math.max(...observedValues);
+    const offsets = swarmOffsets(points.map(p => x(finite(p.contributions[featureIndex]))));
     points.forEach((point,i) => {
-      const value = finite(point.values[j]);
+      const value = finite(point.values[featureIndex]);
       const t = high > low ? (value - low) / (high - low) : .5;
       const hue = 207 - 185 * t;
       const dot = svgNode("circle", {
-        cx:x(finite(point.contributions[j])),
-        cy:y+((i*11+j*3)%7-3)*3,
+        cx:x(finite(point.contributions[featureIndex])),
+        cy:y+offsets[i],
         r:3.7,fill:"hsl("+hue.toFixed(1)+",57%,49%)",
         opacity:.67
       });
       dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
         featureLabel(feature.Name) + ": observed " + format(value,3) +
-        " " + feature.Unit + "; SHAP " + sign(finite(point.contributions[j]))));
+        " " + feature.Unit + "; SHAP " + sign(finite(point.contributions[featureIndex]))));
       plot.append(dot);
     });
     const selectedContribution = finite(feature.ShapContribution);
@@ -736,6 +753,6 @@ if (typeof document !== "undefined") {
 }
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,
-    validateShapComparison,shapComparisonPoints,shapInterpretation,
+    validateShapComparison,shapComparisonPoints,swarmOffsets,shapInterpretation,
     featureLabel,ruleSentence,ruleSummary};
 }
