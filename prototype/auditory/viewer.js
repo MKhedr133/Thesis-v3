@@ -449,10 +449,14 @@ function signTick(value, digits=2) {
 }
 function shapContributionColor(value, maxAbs) {
   // A common signed scale: negative red, zero grey, positive green.
-  const t = Math.min(1,Math.abs(value) / Math.max(maxAbs,1e-12));
+  if (value === 0) return "rgb(156,163,175)";
+  // Increase contrast for modest nonzero attributions without changing their sign.
+  const ratio = Math.min(1,Math.abs(value)/Math.max(maxAbs,1e-12));
+  const intensity = .48 + .52*Math.sqrt(ratio);
   const grey = [156,163,175];
   const end = value < 0 ? [192,76,70] : [37,131,92];
-  const rgb = grey.map((channel,i)=>Math.round(channel+(end[i]-channel)*t));
+  const rgb = grey.map((channel,i)=>
+    Math.round(channel+(end[i]-channel)*intensity));
   return "rgb("+rgb.join(",")+")";
 }
 function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
@@ -468,7 +472,10 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   ];
   const min = Math.min(...extent), max = Math.max(...extent);
   const pad = Math.max((max - min) * .09, .025);
-  const lo = min - pad, hi = max + pad;
+  const step = .25;
+  // Round BOTH axis ends to quarter steps; all points and ticks remain inside.
+  const lo = Math.floor((min-pad)/step)*step;
+  const hi = Math.ceil((max+pad)/step)*step;
   const maxAbs = Math.max(Math.abs(min),Math.abs(max),1e-12);
   const x = v => left + (v - lo) / (hi - lo) * (right - left);
   const plot = svgNode("svg", {
@@ -478,26 +485,18 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       " reference. The current observation is outlined."
   });
   plot.append(svgNode("title", {}, "Compare feature contributions with other observations"));
-  // Round-number ticks always include the meaningful zero-contribution reference.
-  const rawStep = (hi - lo) / 5;
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-  const step = [1,2,2.5,5,10].map(n => n * magnitude)
-    .reduce((best,n) => Math.abs(n-rawStep)<Math.abs(best-rawStep)?n:best);
-  const ticks = [];
-  const firstTick = Math.ceil(lo/step - 1e-10);
-  const lastTick = Math.floor(hi/step + 1e-10);
-  for (let i = firstTick; i <= lastTick; i++) ticks.push(i * step);
-  if (!ticks.some(value => Math.abs(value) < step * 1e-8)) ticks.push(0);
-  ticks.sort((a,b) => a-b);
-  const tickDigits = Math.min(5,Math.max(2,Math.ceil(-Math.log10(step))+1));
-  for (const value of ticks) {
+  // Quarter-point ticks with one zero and explicit direction either side.
+  const firstTick = Math.round(lo/step);
+  const lastTick = Math.round(hi/step);
+  for (let i = firstTick; i <= lastTick; i++) {
+    const value = i*step;
     const px = x(value);
     plot.append(svgNode("line", {
       x1:px,y1:38,x2:px,y2:axisY,stroke:"#94a3b8",
       "stroke-opacity":.18,"stroke-dasharray":"3 5"
     }));
     plot.append(svgNode("text",{x:px,y:axisY+20,"text-anchor":"middle",
-      class:"axis-label"},Math.abs(value)<step*1e-8?"0":signTick(value,tickDigits)));
+      class:"axis-label"},i===0?"0":(i>0?"+":"−")+Math.abs(value).toFixed(2)));
   }
   plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
     stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
@@ -516,8 +515,8 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       const dot = svgNode("circle", {
         cx:x(finite(point.contributions[featureIndex])),
         cy:y+offsets[i],
-        r:3.7,fill:shapContributionColor(contribution,maxAbs),
-        opacity:.67
+        r:4.2,fill:shapContributionColor(contribution,maxAbs),
+        opacity:.92
       });
       dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
         shapFeatureLabel(feature.Name) + ": observed " + format(value,3) +
