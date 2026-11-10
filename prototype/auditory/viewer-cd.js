@@ -338,7 +338,7 @@
     const X=v=>60+670*(v-xmin)/Math.max(xmax-xmin,1e-8);
     const Y=v=>420-360*(v-ymin)/Math.max(ymax-ymin,1e-8);
     const chart=svg("svg",{viewBox:"0 0 790 475",role:"img",
-      "aria-label":"PCA overview fitted on 104 development Auditory observations, three training cluster centres and the selected session"});
+      "aria-label":"PCA overview fitted on 104 development Auditory observations, three training cluster centers and the current session"});
     chart.append(svg("line",{x1:60,y1:420,x2:730,y2:420,stroke:"#9baabb"}),
       svg("line",{x1:60,y1:60,x2:60,y2:420,stroke:"#9baabb"}));
     map.points.forEach((p,i)=>{
@@ -347,14 +347,14 @@
       const dot=svg("circle",{cx:X(p.x),cy:Y(p.y),r:isSelected?10:5,
         fill:isSelected?"#172d56":COLORS[dominant],opacity:isSelected?1:.52,
         stroke:isSelected?"#ffffff":"none","stroke-width":isSelected?3:0});
-      dot.append(svg("title",{},isSelected?"Selected development session":"Anonymised development observation"));
+      dot.append(svg("title",{},isSelected?"Current session":"Other development observation"));
       chart.append(dot);
     });
     if(map.selectedPoints){
-      chart.append(svg("circle",{cx:X(current.x),cy:Y(current.y),r:13,fill:"#172d56",
-        stroke:"#ffffff","stroke-width":4}));
-      chart.append(svg("text",{x:X(current.x)+14,y:Y(current.y)-11,
-        fill:"#172d56","font-weight":700,"font-size":14},obs.example+" · exploratory test case"));
+      const marker=svg("circle",{cx:X(current.x),cy:Y(current.y),r:13,fill:"#172d56",
+        stroke:"#ffffff","stroke-width":4});
+      marker.append(svg("title",{},"Current session"));
+      chart.append(marker);
     }
     map.centres.forEach((p,i)=>{
       chart.append(svg("circle",{cx:X(p.x),cy:Y(p.y),r:14,fill:"#fff",stroke:COLORS[i],"stroke-width":3}),
@@ -367,8 +367,8 @@
     return chart;
   }
   function profileDetails(target,obs,profile,features){
-    target.replaceChildren(html("h3",null,"Profile "+profile.cluster+" · measurement comparison"),
-      html("p","hint","Session value / learned profile centre (original units)"));
+    target.replaceChildren();
+    target.setAttribute("aria-label","Cluster "+profile.cluster+" recorded measurement comparison");
     for(let i=0;i<4;i++){
       const row=html("div","cd-feature");
       row.append(html("span",null,LABELS[i]),html("strong",null,
@@ -379,7 +379,7 @@
       dot2.style.left=(100*Math.min(1,profile.centre[i]/features[i].maximum))+"%";
       track.append(dot1,dot2);row.append(track);target.append(row);
     }
-    target.append(html("p","cd-note","Solid = session · outline = cluster centre. Each feature has its own scale."));
+    target.append(html("p","cd-note","Solid = current session · outline = cluster center."));
   }
   function show(data,example,stage,method){
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);
@@ -421,7 +421,7 @@
         const b=html("button","cd-membership");b.type="button";
         b.setAttribute("aria-pressed",String(i===winner));
         const row=html("span","cd-membership-head");
-        row.append(html("span",null,"Profile "+(i+1)),
+        row.append(html("span",null,"Cluster "+(i+1)),
           html("strong",null,(100*obs.sugeno.memberships[i]).toFixed(1)+"%"));
         const track=html("span","cd-track"),fill=html("span","cd-fill");
         fill.style.width=(100*obs.sugeno.memberships[i])+"%";fill.style.background=COLORS[i];
@@ -434,7 +434,7 @@
       list.replaceChildren(...buttons);profileDetails(detail,obs,data.profiles[winner],data.features);
       const calcs=document.getElementById("cd-calculation");
       calcs.replaceChildren(...data.profiles.map((profile,i)=>{
-        const r=html("div","cd-term");r.append(html("span",null,"Profile "+(i+1)),
+        const r=html("div","cd-term");r.append(html("span",null,"Cluster "+(i+1)),
           html("strong",null,f(obs.sugeno.memberships[i])+" × "+f(profile.constant)+
           " = "+f(obs.sugeno.contributions[i])));return r;
       }),html("div","cd-total","Combined prediction = "+f(obs.sugeno.prediction)));
