@@ -1,7 +1,8 @@
 "use strict";
 const test=require("node:test");
 const assert=require("node:assert/strict");
-const {validateShapComparison,shapComparisonPoints,shapInterpretation} = require("./viewer.js");
+const {validateShapComparison,shapComparisonPoints,shapInterpretation,
+  makeWaterfall,makeShapBeeswarm,swarmOffsets} = require("./viewer.js");
 
 const stages=["0","2","6","10"];
 const names=["Mental demand","Time between qualifying grabs","Time to locate target","Head turning"];
@@ -90,4 +91,45 @@ test("interpretation remains descriptive, not clinical instruction",()=>{
   const explanation=shapInterpretation(records[0].Regression);
   assert.match(explanation,/fitted prediction/);
   assert.match(explanation,/not effects of changing a measurement/);
+});
+
+function withSvgDocument(run){
+  const previous=global.document;
+  const node=tag=>({tag,attributes:{},children:[],handlers:{},textContent:"",
+    setAttribute(k,v){this.attributes[k]=String(v)},
+    append(...nodes){this.children.push(...nodes)},
+    addEventListener(k,fn){this.handlers[k]=fn}
+  });
+  global.document={createElementNS:(_ns,tag)=>node(tag)};
+  try{return run()}finally{global.document=previous}
+}
+test("swarm offsets are deterministic and avoid overplotting colliding dots",()=>{
+  const positions=[100,100,100,112,112];
+  const result=swarmOffsets(positions);
+  assert.deepEqual(result,swarmOffsets(positions));
+  assert.equal(result.length,5);
+  assert.ok(new Set(result.slice(0,3)).size===3);
+});
+test("waterfall feature can focus its matching comparison row",()=>{
+  const {records}=fixture();
+  withSvgDocument(()=>{
+    let focus=null;
+    const svg=makeWaterfall(records[0].Regression,name=>{focus=name});
+    const first=svg.children.find(node=>node.tag==="rect"&&node.attributes["data-shap-feature"]);
+    assert.equal(first.attributes["data-shap-feature"],names[0]);
+    first.handlers.click();
+    assert.equal(focus,names[0]);
+    assert.equal(first.attributes.role,"button");
+  });
+});
+test("beeswarm includes four highlighted current-trial markers",()=>{
+  const {records,comparison}=fixture();
+  withSvgDocument(()=>{
+    const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","current",names[1]);
+    const current=chart.children.filter(node=>node.tag==="circle"&&
+      node.attributes.stroke==="#7052b4");
+    assert.equal(current.length,4);
+    assert.match(chart.attributes["aria-label"],/26 development trials/);
+    assert.equal(chart.children.filter(node=>node.attributes.class==="shap-row-selected").length,1);
+  });
 });
