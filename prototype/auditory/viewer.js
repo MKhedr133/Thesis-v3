@@ -712,15 +712,15 @@ function installApp() {
       status.textContent="Cannot display file: "+error.message;
     }
   });
-  participant.addEventListener("change",()=>{clearDecision();render();});
-  stage.addEventListener("change",()=>{
+  participant.addEventListener("change",()=>{
     focused=null;
     document.getElementById("shap-stage-filter").value="current";
     clearDecision();render();
   });
-  participant.addEventListener("change",()=>{
+  stage.addEventListener("change",()=>{
     focused=null;
     document.getElementById("shap-stage-filter").value="current";
+    clearDecision();render();
   });
   document.getElementById("shap-stage-filter").addEventListener("change",()=>{
     if(activeTab==="regression")render();
