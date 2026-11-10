@@ -181,8 +181,8 @@ test("beeswarm contribution ticks use explicit signs and a single zero",()=>{
   withSvgDocument(()=>{
     const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","all",null);
     const texts=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
-    assert.ok(texts.some(x=>/^\\+0[.]\\d+/.test(x)));
-    assert.ok(texts.some(x=>/^−0[.]\\d+/.test(x)));
+    assert.ok(texts.some(x=>/^\+0[.]\d+/.test(x)));
+    assert.ok(texts.some(x=>/^−0[.]\d+/.test(x)));
     assert.equal(texts.filter(x=>x==="0").length,1);
   });
 });
