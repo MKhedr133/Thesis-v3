@@ -242,11 +242,9 @@
       const labelNode=svg("text",{
         x:p.x,y:leaf?p.y-8:p.y-24,"text-anchor":"middle",
         "font-size":leaf?12.4:11.4,"font-weight":600,fill:"#26354a"
-      });
-      const lines=leaf?[label]:wrappedFeatureName(label);
-      lines.forEach((line,i)=>labelNode.append(svg("tspan",{
-        x:p.x,dy:i===0?0:14
-      },line)));
+      },leaf?label:undefined);
+      if(!leaf)wrappedFeatureName(label).forEach((line,i)=>
+        labelNode.append(svg("tspan",{x:p.x,dy:i===0?0:14},line)));
       chart.append(box,labelNode,
         svg("text",{x:p.x,y:p.y+31,"text-anchor":"middle",
           "font-size":12,fill:"#52677c"},value));
