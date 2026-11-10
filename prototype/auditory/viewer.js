@@ -18,10 +18,10 @@ const FEATURE_LABELS = Object.freeze({
 });
 // Short display labels apply to SHAP only; A/B source identities and C/D labels stay frozen.
 const SHAP_LABELS = Object.freeze({
-  "Mental demand": "Mental demand rating",
-  "Time between qualifying grabs": "Time between grabs",
-  "Time to locate target": "Time to locate target",
-  "Head turning": "Head rotation while searching"
+  "Mental demand": "Subjective mental demand rating",
+  "Time between qualifying grabs": "Time interval between grabs",
+  "Time to locate target": "Duration to locate a target product",
+  "Head turning": "Total Head rotation while locating a product"
 });
 // Exact Auditory antecedents from MOD-18's frozen RULES registry.
 // Low/Medium/High match the memberships already stored in the local JSON.
@@ -264,9 +264,9 @@ function makeWaterfall(regression, onFeatureFocus) {
   const min = Math.min(...values), max = Math.max(...values);
   const pad = Math.max((max - min) * .16, .15);
   const lo = min - pad, hi = max + pad;
-  const x = v => 234 + (v - lo) / (hi - lo) * 470;
+  const x = v => 370 + (v - lo) / (hi - lo) * 490;
   const svg = svgNode("svg", {
-    viewBox: "0 0 860 392", role: "group",
+    viewBox: "0 0 1080 392", role: "group",
     "aria-label": "SHAP waterfall. Baseline " + format(baseline) +
       ", final prediction " + format(prediction) + ". " +
       features.map(f => shapFeatureLabel(f.Name) + " " + sign(finite(f.ShapContribution))).join("; ")
@@ -282,7 +282,7 @@ function makeWaterfall(regression, onFeatureFocus) {
   svg.append(svgNode("text",{x:14,y:top-5,class:"row-name","font-weight":"700"},"Population difficulty level"));
   svg.append(svgNode("text",{x:14,y:top+11,class:"row-name","font-weight":"700"},"prediction reference"));
   svg.append(svgNode("circle",{cx:x(baseline),cy:top,r:6,fill:"#64748b"}));
-  svg.append(svgNode("text",{x:790,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
+  svg.append(svgNode("text",{x:1030,y:top+5,"text-anchor":"end",class:"row-value"},format(baseline)));
   features.forEach((f,i) => {
     const previous = values[i], next = values[i+1], contribution = finite(f.ShapContribution);
     const y = top + (i+1)*step;
@@ -311,14 +311,14 @@ function makeWaterfall(regression, onFeatureFocus) {
       });
     }
     svg.append(bar);
-    svg.append(svgNode("text",{x:790,y:y+5,"text-anchor":"end",class:"row-value"},sign(contribution)));
+    svg.append(svgNode("text",{x:1030,y:y+5,"text-anchor":"end",class:"row-value"},sign(contribution)));
   });
   const finalY = top + 5*step;
   svg.append(svgNode("line",{x1:x(prediction),y1:top+4*step+12,x2:x(prediction),y2:finalY-8,stroke:"#94a3b8","stroke-dasharray":"4 4"}));
   svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Predicted difficulty level"));
   svg.append(svgNode("circle",{cx:x(prediction),cy:finalY,r:6,fill:"#334155"}));
-  svg.append(svgNode("text",{x:790,y:finalY+5,"text-anchor":"end",class:"row-value final-name"},format(prediction)));
-  svg.append(svgNode("text",{x:490,y:axisY+45,"text-anchor":"middle",class:"axis-label"},"Difficulty prediction scale"));
+  svg.append(svgNode("text",{x:1030,y:finalY+5,"text-anchor":"end",class:"row-value final-name"},format(prediction)));
+  svg.append(svgNode("text",{x:615,y:axisY+45,"text-anchor":"middle",class:"axis-label"},"Model-predicted difficulty level"));
   return svg;
 }
 function cell(value) {
@@ -442,12 +442,25 @@ function swarmOffsets(horizontalPositions) {
     });
   return offsets;
 }
+function signTick(value, digits=2) {
+  // Explicit direction on the beeswarm contribution axis, including positive ticks.
+  if (Math.abs(value) < 1e-12) return "0";
+  return (value > 0 ? "+" : "−") + format(Math.abs(value),digits);
+}
+function shapContributionColor(value, maxAbs) {
+  // A common signed scale: negative red, zero grey, positive green.
+  const t = Math.min(1,Math.abs(value) / Math.max(maxAbs,1e-12));
+  const grey = [156,163,175];
+  const end = value < 0 ? [192,76,70] : [37,131,92];
+  const rgb = grey.map((channel,i)=>Math.round(channel+(end[i]-channel)*t));
+  return "rgb("+rgb.join(",")+")";
+}
 function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   const group = data.byReferenceStage[referenceStage];
   const all = group.observations;
   const points = shapComparisonPoints(data, referenceStage, filter);
   const features = regression.Measurements;
-  const left = 242, right = 865, top = 55, spacing = 55, axisY = 273;
+  const left = 370, right = 1030, top = 55, spacing = 55, axisY = 273;
   const extent = [
     0,
     ...all.flatMap(p => p.contributions),
@@ -456,12 +469,13 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
   const min = Math.min(...extent), max = Math.max(...extent);
   const pad = Math.max((max - min) * .09, .025);
   const lo = min - pad, hi = max + pad;
+  const maxAbs = Math.max(Math.abs(min),Math.abs(max),1e-12);
   const x = v => left + (v - lo) / (hi - lo) * (right - left);
   const plot = svgNode("svg", {
-    viewBox: "0 0 900 332", role: "img",
+    viewBox: "0 0 1080 332", role: "img",
     "aria-label": "SHAP contributions of " + points.length +
       " other development observations using the " + displayStage(referenceStage) +
-      " reference. The selected observation is outlined."
+      " reference. The current observation is outlined."
   });
   plot.append(svgNode("title", {}, "Compare feature contributions with other observations"));
   // Round-number ticks always include the meaningful zero-contribution reference.
@@ -482,7 +496,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       "stroke-opacity":.18,"stroke-dasharray":"3 5"
     }));
     plot.append(svgNode("text",{x:px,y:axisY+20,"text-anchor":"middle",
-      class:"axis-label"},Math.abs(value)<step*1e-8?"0":format(value,2)));
+      class:"axis-label"},Math.abs(value)<step*1e-8?"0":signTick(value,2)));
   }
   plot.append(svgNode("line",{x1:x(0),y1:38,x2:x(0),y2:axisY,
     stroke:"#5f7689","stroke-width":1.8,"stroke-opacity":.7}));
@@ -490,21 +504,18 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
     const featureIndex = data.features.indexOf(feature.Name);
     const y = top + j * spacing;
     if (focused === feature.Name) {
-      plot.append(svgNode("rect",{x:2,y:y-23,width:896,height:47,rx:7,
+      plot.append(svgNode("rect",{x:2,y:y-23,width:1074,height:47,rx:7,
         class:"shap-row-selected"}));
     }
     plot.append(svgNode("text",{x:14,y:y+4,class:"row-name"},shapFeatureLabel(feature.Name)));
-    const observedValues = all.map(p => finite(p.values[featureIndex]));
-    const low = Math.min(...observedValues), high = Math.max(...observedValues);
     const offsets = swarmOffsets(points.map(p => x(finite(p.contributions[featureIndex]))));
     points.forEach((point,i) => {
       const value = finite(point.values[featureIndex]);
-      const t = high > low ? (value - low) / (high - low) : .5;
-      const hue = 145 * (1-t);
+      const contribution = finite(point.contributions[featureIndex]);
       const dot = svgNode("circle", {
         cx:x(finite(point.contributions[featureIndex])),
         cy:y+offsets[i],
-        r:3.7,fill:"hsl("+hue.toFixed(1)+",57%,49%)",
+        r:3.7,fill:shapContributionColor(contribution,maxAbs),
         opacity:.67
       });
       dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
@@ -517,7 +528,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       cx:x(selectedContribution), cy:y,r:7.5,
       fill:"#fff",stroke:"#7052b4","stroke-width":3
     });
-    selected.append(svgNode("title",{}, "Selected observation; " +
+    selected.append(svgNode("title",{}, "Current observation; " +
       shapFeatureLabel(feature.Name) + ": observed " +
       shapMeasuredValue(feature) +
       "; SHAP " + sign(selectedContribution)));
@@ -525,7 +536,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
     plot.append(svgNode("circle",{cx:x(selectedContribution),cy:y,r:2.6,
       fill:"#7052b4","pointer-events":"none"}));
   });
-  plot.append(svgNode("text",{x:554,y:axisY+42,"text-anchor":"middle",
+  plot.append(svgNode("text",{x:700,y:axisY+42,"text-anchor":"middle",
     class:"axis-label"},"Feature contribution"));
   return plot;
 }
@@ -745,5 +756,6 @@ if (typeof module !== "undefined" && module.exports) {
   module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,
     validateShapComparison,shapComparisonPoints,swarmOffsets,
     makeWaterfall,makeShapBeeswarm,shapFeatureLabel,shapMeasuredValue,
+    signTick,shapContributionColor,
     featureLabel,ruleSentence,ruleSummary};
 }
