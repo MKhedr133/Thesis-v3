@@ -171,10 +171,13 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .shap-legend span{display:inline-flex;align-items:center;gap:6px}
 .shap-dot{display:inline-block;width:9px;height:9px;background:#80909b;border-radius:50%}
 .shap-dot.shap-current{width:13px;height:13px;background:#fff;border:3px solid #7052b4}
-.shap-value-gradient i{display:inline-block;width:90px;height:10px;border-radius:3px;background:linear-gradient(90deg,hsl(145,57%,49%),hsl(0,57%,49%))}
+.shap-value-gradient i{display:inline-block;width:90px;height:10px;border-radius:3px;background:linear-gradient(90deg,#c04c46 0%,#9ca3af 50%,#25835c 100%)}
 #waterfall rect[data-shap-feature]{cursor:pointer}
 #waterfall rect[data-shap-feature]:focus{outline:none;stroke:#6f48b1;stroke-width:3}
-@media(max-width:620px){.shap-panel .shap-scores{max-width:none}.shap-beeswarm svg{min-width:650px}.shap-legend{gap:8px}}
+@media(max-width:620px){.shap-panel .shap-scores{max-width:none}.shap-beeswarm svg{min-width:790px}.shap-legend{gap:8px}}
 
 #regression-view #waterfall .row-name{font-size:12px}
 #regression-view .shap-recorded td:first-child{white-space:nowrap}
+
+/* Long C/D terminology stays on one line; small screens scroll rather than clip it. */
+@media(max-width:620px){#regression-view #waterfall svg{min-width:790px}}
