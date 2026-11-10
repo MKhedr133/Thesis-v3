@@ -192,7 +192,7 @@ test("beeswarm quarter-step ticks include negative values without clipping point
     const chart=makeShapBeeswarm(records[0].Regression,comparison,"6","all",null);
     const axisText=chart.children.filter(n=>n.tag==="text"&&
       n.attributes.class==="axis-label").map(n=>n.textContent);
-    const labels=axisText.filter(t=>t==="0" || /^[+−]\\d+\\.\\d{2}$/.test(t));
+    const labels=axisText.filter(t=>t==="0" || /^[+−]\d+\.\d{2}$/.test(t));
     assert.ok(labels.includes("−0.25"));
     assert.ok(labels.includes("0"));
     assert.ok(labels.includes("+0.25"));
@@ -213,7 +213,7 @@ test("subtle signed contributions are visibly coloured against grey zero",()=>{
   const weakPositive=shapContributionColor(.01,1);
   assert.notEqual(weakNegative,grey);
   assert.notEqual(weakPositive,grey);
-  const channels=value=>value.match(/\\d+/g).map(Number);
+  const channels=value=>value.match(/\d+/g).map(Number);
   const [redR,redG]=channels(weakNegative);
   const [greenR,greenG]=channels(weakPositive);
   assert.ok(redR-redG>30);
