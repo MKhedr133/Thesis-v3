@@ -18,11 +18,9 @@
     </div>
   </header>
 
-  <section class="panel load" aria-labelledby="load-title">
-    <h2 id="load-title">Load one local explanation file</h2>
-    <label for="data-file">Select unified A–D JSON (or an older A/B-only JSON)</label>
-    <input id="data-file" type="file" accept=".json,application/json">
-    <p id="load-status" role="status" aria-live="polite">No explanation data loaded.</p>
+  <section class="panel load" aria-label="Local explanation file">
+    <input id="data-file" type="file" accept=".json,application/json" aria-label="Choose a local explanation JSON file">
+    <p id="load-status" role="status" aria-live="polite" hidden></p>
   </section>
 
   <section id="workspace" hidden>
@@ -141,7 +139,7 @@
           </div>
           <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
           <div class="cd-tree-legend" aria-label="Decision tree route legend">
-            <span class="cd-legend-crisp">Crisp tree route</span>
+            <span class="cd-legend-crisp">Strongest rule route</span>
             <span class="cd-legend-fuzzy">Other activated fuzzy routes</span>
             <span class="cd-legend-inactive">Inactive routes</span>
           </div>
@@ -156,10 +154,10 @@
         <h3>Mamdani approximation of predicted difficulty level</h3>
         <div id="cd-curve" class="cd-graphic"></div>
         <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
-          <span class="cd-legend-categories">Prediction-level categories</span>
+          <span class="cd-legend-categories">Prediction difficulty level categories</span>
           <span class="cd-legend-shape">Combined fuzzy output</span>
           <span class="cd-legend-regression">Regression model prediction</span>
-          <span class="cd-legend-centroid">Mamdani centroid</span>
+          <span class="cd-legend-centroid">Mamdani prediction</span>
           <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
         </div>
       </div>
@@ -182,7 +180,7 @@
           <div class="cd-key" aria-label="Cluster plot legend">
             <span><i class="cd-marker cd-marker-current" aria-hidden="true"></i>Current session</span>
             <span><i class="cd-marker cd-marker-center" aria-hidden="true"></i>Cluster center 1–3</span>
-            <span><i class="cd-marker-dots" aria-hidden="true"><b></b><b></b><b></b></i>Other observations</span>
+            <span><i class="cd-marker-dots" aria-hidden="true"><b></b><b></b><b></b></i>Other sessions</span>
           </div>
         </div>
         <aside class="cd-sidebar">
