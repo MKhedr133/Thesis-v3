@@ -6,8 +6,10 @@
   const LABELS = ["Mental demand","Grab interval","Time to target","Head turning"];
   const UNITS = ["/10","s","s","°"];
   const COLORS = ["#3576a5","#228d85","#ae7c35"];
-  const linguisticLabel = value => String(value).replace(/\bMedium\b/g,"Intermediate")
-    .replace(/\bmedium\b/g,"intermediate");
+  const linguisticLabel = value => String(value)
+    .replace(/\bMedium\b/g,"Intermediate")
+    .replace(/\bmedium\b/g,"intermediate")
+    .replace(/\bdifficulty term\b/gi,"difficulty level prediction is");
   function plotBounds(grid, regression, prediction) {
     insist(grid.length>=3 && finite(regression) && finite(prediction),
       "incomplete prediction-axis inputs");
@@ -51,6 +53,39 @@
       const i=KEYS.indexOf(n.feature);insist(i>=0&&path.length<8,"invalid tree path");
       n=values[i]<=n.threshold?n.left:n.right;
     }throw new Error("Missing decision tree leaf");
+  }
+  // Mirrors the original MOD-19 five-term, equally spaced triangular/shoulder
+  // output membership functions. The endpoints come from the saved fuzzy curve.
+  // This is display geometry, not parameter fitting or an inferred patient label.
+  function outputCategories(grid) {
+    insist(Array.isArray(grid)&&grid.length>=3&&grid.every(finite)&&
+      grid.every((value,index)=>index===0||value>grid[index-1])&&
+      grid[0]<grid[grid.length-1],"invalid original output universe");
+    const lo=grid[0],hi=grid[grid.length-1];
+    const centres=Array.from({length:5},(_,i)=>lo+(hi-lo)*i/4);
+    const names=["Very low","Low","Intermediate","High","Very high"];
+    const values=centres.map((centre,i)=>grid.map(x=>{
+      if(i===0)return Math.max(0,Math.min(1,(centres[1]-x)/(centres[1]-centres[0])));
+      if(i===4)return Math.max(0,Math.min(1,(x-centres[3])/(centres[4]-centres[3])));
+      return Math.max(0,Math.min(
+        (x-centres[i-1])/(centre-centres[i-1]),
+        (centres[i+1]-x)/(centres[i+1]-centre)));
+    }));
+    return {centres,names,values};
+  }
+  function activeTreeRoutes(tree,rules) {
+    const byLeaf=new Map(rules.filter(rule=>rule.activation>0).map(
+      rule=>[rule.leaf,rule.activation]));
+    const result=new Map();
+    function propagate(node) {
+      const strongest=Object.hasOwn(node,"leaf")?
+        (byLeaf.get(node.leaf)||0):
+        Math.max(propagate(node.left),propagate(node.right));
+      result.set(node,strongest);
+      return strongest;
+    }
+    propagate(tree);
+    return result;
   }
   function centroid(x,y){
     insist(x.length===y.length&&x.length>=3,"invalid fuzzy curve");
@@ -130,30 +165,68 @@
     }));
   }
   function treeChart(tree,obs){
-    const active=new Set(route(tree,obs.measurements).path);let leaves=0,depthMax=0;
-    function place(n,depth){depthMax=Math.max(depthMax,depth);
+    const crispPath=new Set(route(tree,obs.measurements).path);
+    const active=activeTreeRoutes(tree,obs.mamdani.rules);
+    let leaves=0,depthMax=0;
+    function place(n,depth){
+      depthMax=Math.max(depthMax,depth);
       if(Object.hasOwn(n,"leaf"))return {node:n,x:90+leaves++*140,y:45+depth*110};
       const left=place(n.left,depth+1),right=place(n.right,depth+1);
       return {node:n,x:(left.x+right.x)/2,y:45+depth*110,left,right};
     }
-    const root=place(tree,0),chart=svg("svg",{viewBox:"0 0 "+Math.max(1200,leaves*140+180)+" "+(115+depthMax*110),
-      role:"img","aria-label":"Eight-leaf decision tree with selected crisp path highlighted"});
-    function links(p){for(const q of [p.left,p.right].filter(Boolean)){
-      const chosen=active.has(p.node)&&active.has(q.node);
-      chart.append(svg("path",{d:"M"+p.x+" "+(p.y+22)+" V"+((p.y+q.y)/2)+" H"+q.x+" V"+(q.y-22),
-        fill:"none",stroke:chosen?"#714bc3":"#bdc8d3","stroke-width":chosen?4:2}));
-      links(q);
-    }}
-    function nodes(p){const leaf=Object.hasOwn(p.node,"leaf"),chosen=active.has(p.node);
-      const box=svg("rect",{x:p.x-62,y:p.y-23,width:124,height:46,rx:9,
-        fill:chosen?"#eee7ff":"#f3f6fa",stroke:chosen?"#7048bd":"#c4d0dc","stroke-width":chosen?2.5:1});
-      const name=leaf?"Leaf "+p.node.leaf:LABELS[KEYS.indexOf(p.node.feature)];
+    const root=place(tree,0),chart=svg("svg",{
+      viewBox:"0 0 "+Math.max(1200,leaves*140+180)+" "+(115+depthMax*110),
+      role:"img",
+      "aria-label":"Decision tree with the crisp route and every positively activated fuzzy rule route highlighted separately"
+    });
+    function links(p){
+      for(const q of [p.left,p.right].filter(Boolean)){
+        const crisp=crispPath.has(p.node)&&crispPath.has(q.node);
+        const strength=active.get(q.node)||0;
+        const fuzzy=!crisp&&strength>0;
+        const line=svg("path",{
+          d:"M"+p.x+" "+(p.y+22)+" V"+((p.y+q.y)/2)+
+            " H"+q.x+" V"+(q.y-22),
+          fill:"none",
+          stroke:crisp?"#714bc3":fuzzy?"#198a9c":"#c7d2de",
+          opacity:crisp?1:fuzzy?(.58+.42*strength):.65,
+          "stroke-width":crisp?4.4:fuzzy?(2.5+1.6*strength):1.8,
+          "stroke-dasharray":fuzzy?"6 3":"none"
+        });
+        line.append(svg("title",{},crisp?"Crisp decision-tree route":
+          fuzzy?"Activated fuzzy-rule route; strongest descendant activation "+f(strength,2):
+            "Inactive rule route"));
+        chart.append(line);
+        links(q);
+      }
+    }
+    function nodes(p){
+      const leaf=Object.hasOwn(p.node,"leaf");
+      const crisp=crispPath.has(p.node),strength=active.get(p.node)||0;
+      const fuzzy=!crisp&&strength>0;
+      const box=svg("rect",{
+        x:p.x-62,y:p.y-23,width:124,height:46,rx:9,
+        fill:crisp?"#eee7ff":fuzzy?"#eaf7f8":"#f3f6fa",
+        stroke:crisp?"#7048bd":fuzzy?"#198a9c":"#c4d0dc",
+        "stroke-width":crisp?2.5:fuzzy?2:1
+      });
+      const label=leaf?"Leaf "+p.node.leaf+
+        (strength>0?" · "+f(strength,2):""):
+        LABELS[KEYS.indexOf(p.node.feature)];
       const value=leaf?"Tree "+f(p.node.value):"≤ "+f(p.node.threshold);
-      box.append(svg("title",{},leaf?"Crisp tree leaf, not the Mamdani prediction":
-        name+"; threshold "+f(p.node.threshold)+"; observed "+f(obs.measurements[KEYS.indexOf(p.node.feature)])));
-      chart.append(box,svg("text",{x:p.x,y:p.y-4,"text-anchor":"middle","font-size":13,"font-weight":600,fill:"#26354a"},name),
-        svg("text",{x:p.x,y:p.y+13,"text-anchor":"middle","font-size":12,fill:"#52677c"},value));
-      if(p.left)nodes(p.left);if(p.right)nodes(p.right);
+      box.append(svg("title",{},leaf?
+        "Tree leaf "+p.node.leaf+"; crisp output "+f(p.node.value)+
+          "; fuzzy activation "+f(strength,3):
+        label+"; threshold "+f(p.node.threshold)+
+          "; observed "+f(obs.measurements[KEYS.indexOf(p.node.feature)])+
+          "; strongest activated route "+f(strength,3)));
+      chart.append(box,
+        svg("text",{x:p.x,y:p.y-4,"text-anchor":"middle","font-size":12.4,
+          "font-weight":600,fill:"#26354a"},label),
+        svg("text",{x:p.x,y:p.y+13,"text-anchor":"middle","font-size":12,
+          fill:"#52677c"},value));
+      if(p.left)nodes(p.left);
+      if(p.right)nodes(p.right);
     }
     links(root);nodes(root);return chart;
   }
@@ -170,64 +243,92 @@
       return item;
     });
   }
-  function outputChart(obs){
+  function outputChart(obs) {
     if(obs.mamdani.status!=="OK")
       return html("p","hint","Unavailable: no valid aggregated fuzzy output.");
     const curve=obs.mamdani.outputCurve,x=curve.x,y=curve.y;
+    const categories=outputCategories(x);
     const original=obs.originalPrediction,centroidScore=obs.mamdani.prediction;
     const bounds=plotBounds(x,original,centroidScore);
     const X=v=>48+694*(v-bounds.lower)/(bounds.upper-bounds.lower);
-    const Y=v=>202-137*v;
+    const axisY=218,Y=v=>axisY-126*v;
     const xa=X(original),xb=X(centroidScore);
-    const chart=svg("svg",{viewBox:"0 0 790 273",role:"img",
-      "aria-label":"Combined fuzzy membership shape with original regression prediction "+
+    const chart=svg("svg",{viewBox:"0 0 790 322",role:"img",
+      "aria-label":"Five output membership categories, combined fuzzy shape, regression prediction "+
         f(original)+" and Mamdani centroid "+f(centroidScore)+
         ". Approximation difference "+(centroidScore>=original?"+":"−")+
-        f(Math.abs(centroidScore-original))+" predicted difficulty level points."});
+        f(Math.abs(centroidScore-original))+" difficulty-level points."});
     chart.append(svg("title",{},
-      "Mamdani aggregation (purple), original regression (grey) and centroid (blue)"));
-    chart.append(svg("line",{x1:48,y1:202,x2:742,y2:202,stroke:"#94a5b8","stroke-width":1.5}));
-    chart.append(svg("text",{x:28,y:76,"text-anchor":"middle",fill:"#63788b","font-size":11},"1"));
-    chart.append(svg("text",{x:28,y:204,"text-anchor":"middle",fill:"#63788b","font-size":11},"0"));
-    // A light band makes the magnitude and direction of surrogate disagreement visible.
+      "Original five fuzzy output categories, combined Mamdani membership and two model prediction markers"));
+    chart.append(svg("line",{x1:48,y1:axisY,x2:742,y2:axisY,
+      stroke:"#94a5b8","stroke-width":1.5}));
+    chart.append(svg("text",{x:28,y:Y(1)+2,"text-anchor":"middle",
+      fill:"#63788b","font-size":11},"1"));
+    chart.append(svg("text",{x:28,y:axisY+2,"text-anchor":"middle",
+      fill:"#63788b","font-size":11},"0"));
     const gap=Math.abs(xb-xa);
     if(gap>0.25)chart.append(svg("rect",{
-      x:Math.min(xa,xb),y:57,width:gap,height:145,
+      x:Math.min(xa,xb),y:56,width:gap,height:axisY-56,
       fill:"#c7d8f5",opacity:".42"
     }));
-    const stride=Math.max(1,Math.floor((x.length-1)/350)),coords=[];
-    for(let i=0;i<x.length;i+=stride)
-      coords.push([X(x[i]),Y(y[i])]);
-    if((x.length-1)%stride!==0)
-      coords.push([X(x[x.length-1]),Y(y[y.length-1])]);
-    const raw=coords.map(p=>p[0].toFixed(2)+","+p[1].toFixed(2)).join(" ");
-    chart.append(svg("polygon",{
-      points:X(x[0]).toFixed(2)+",202 "+raw+" "+
-        X(x[x.length-1]).toFixed(2)+",202",
-      fill:"#7850c8","fill-opacity":".13"
-    }));
-    chart.append(svg("polyline",{points:raw,fill:"none",stroke:"#7147bf",
-      "stroke-width":3,"stroke-linejoin":"round"}));
-    // Labels intentionally use different vertical lanes for nearby predictions.
-    chart.append(svg("line",{x1:xa,y1:31,x2:xa,y2:202,stroke:"#687a90",
-      "stroke-width":2,"stroke-dasharray":"5 5"}));
-    chart.append(svg("line",{x1:xb,y1:51,x2:xb,y2:202,stroke:"#173f6c",
-      "stroke-width":2.5,"stroke-dasharray":"7 4"}));
-    chart.append(svg("text",{x:Math.max(98,Math.min(690,xa)),
-      y:23,"text-anchor":"middle",fill:"#586a80","font-size":14,
-      "font-weight":600},"Regression "+f(original)));
-    chart.append(svg("text",{x:Math.max(98,Math.min(690,xb)),
-      y:48,"text-anchor":"middle",fill:"#173f6c","font-size":14,
-      "font-weight":700},"Centroid "+f(centroidScore)));
-    for(let i=0;i<=4;i++){
-      const value=bounds.lower+(bounds.upper-bounds.lower)*i/4;
-      const px=X(value);
-      chart.append(svg("line",{x1:px,y1:202,x2:px,y2:208,stroke:"#94a5b8"}));
-      chart.append(svg("text",{x:px,y:228,"text-anchor":"middle",fill:"#63788b",
-        "font-size":12},f(value,2)));
+    const stride=Math.max(1,Math.floor((x.length-1)/350));
+    function points(values) {
+      const coords=[];
+      for(let i=0;i<x.length;i+=stride)
+        coords.push(X(x[i]).toFixed(2)+","+Y(values[i]).toFixed(2));
+      if((x.length-1)%stride!==0)
+        coords.push(X(x[x.length-1]).toFixed(2)+","+
+          Y(values[values.length-1]).toFixed(2));
+      return coords.join(" ");
     }
-    chart.append(svg("text",{x:395,y:257,"text-anchor":"middle",
-      fill:"#425e77","font-size":14,"font-weight":600},"Predicted difficulty level"));
+    // Show all five learned output sets before the aggregate.
+    categories.values.forEach((values,i)=>{
+      const line=svg("polyline",{
+        points:points(values),fill:"none",
+        stroke:"#9bb1c5","stroke-opacity":".85",
+        "stroke-width":1.35,"stroke-dasharray":"4 4"
+      });
+      line.append(svg("title",{},categories.names[i]+" prediction-level category"));
+      chart.append(line);
+    });
+    const combined=points(y);
+    chart.append(svg("polygon",{
+      points:X(x[0]).toFixed(2)+","+axisY+" "+combined+" "+
+        X(x[x.length-1]).toFixed(2)+","+axisY,
+      fill:"#7850c8","fill-opacity":".22"
+    }));
+    chart.append(svg("polyline",{
+      points:combined,fill:"none",stroke:"#7147bf",
+      "stroke-width":3.5,"stroke-linejoin":"round"
+    }));
+    chart.append(svg("line",{x1:xa,y1:34,x2:xa,y2:axisY,
+      stroke:"#687a90","stroke-width":2,"stroke-dasharray":"5 5"}));
+    chart.append(svg("line",{x1:xb,y1:56,x2:xb,y2:axisY,
+      stroke:"#173f6c","stroke-width":2.5,"stroke-dasharray":"7 4"}));
+    // Number-only markers: the legend identifies regression and centroid.
+    chart.append(svg("text",{
+      x:Math.max(80,Math.min(710,xa)),y:25,"text-anchor":"middle",
+      fill:"#586a80","font-size":15,"font-weight":600
+    },f(original)));
+    chart.append(svg("text",{
+      x:Math.max(80,Math.min(710,xb)),y:49,"text-anchor":"middle",
+      fill:"#173f6c","font-size":15,"font-weight":700
+    },f(centroidScore)));
+    for(let i=0;i<=4;i++){
+      const value=bounds.lower+(bounds.upper-bounds.lower)*i/4,px=X(value);
+      chart.append(svg("line",{x1:px,y1:axisY,x2:px,y2:axisY+6,
+        stroke:"#94a5b8"}));
+      chart.append(svg("text",{x:px,y:axisY+24,"text-anchor":"middle",
+        fill:"#63788b","font-size":12},f(value,2)));
+    }
+    categories.centres.forEach((centre,i)=>{
+      chart.append(svg("text",{x:X(centre),y:axisY+49,
+        "text-anchor":"middle",fill:"#51677d","font-size":12,
+        "font-weight":600},categories.names[i]));
+    });
+    chart.append(svg("text",{x:395,y:307,"text-anchor":"middle",
+      fill:"#425e77","font-size":14,"font-weight":600},
+      "Predicted difficulty level"));
     return chart;
   }
   function scatter(map,obs){
@@ -284,10 +385,14 @@
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);
     insist(obs,"observation not found");
     const which=obs[method];
-    const fields=[["Regression model predicted difficulty level",f(obs.originalPrediction)],
-      ["Surrogate model predicted difficulty level",which.status==="OK"?f(which.prediction):"Unavailable"],
-      ["Difference",which.status==="OK"?(which.prediction>=obs.originalPrediction?"+":"−")+
-        f(Math.abs(which.prediction-obs.originalPrediction)):"—"]];
+    const fields=[
+      ["Regression model predicted difficulty level",f(obs.originalPrediction)],
+      ["Surrogate model predicted difficulty level",
+        which.status==="OK"?f(which.prediction):"Unavailable"]
+    ];
+    if(method==="sugeno")fields.push(["Difference",which.status==="OK"?
+      (which.prediction>=obs.originalPrediction?"+":"−")+
+        f(Math.abs(which.prediction-obs.originalPrediction)):"—"]);
     const scores=document.getElementById("cd-"+method+"-scores");
     scores.replaceChildren(...fields.map(([name,value])=>{
       const card=html("div","cd-score");card.append(html("small",null,name),html("strong",null,value));return card;
@@ -335,7 +440,8 @@
       }),html("div","cd-total","Combined prediction = "+f(obs.sugeno.prediction)));
     }
   }
-  const API={validate,route,centroid,show,zoomTree,zoomStep,plotBounds,linguisticLabel,outputChart};
+  const API={validate,route,centroid,show,zoomTree,zoomStep,plotBounds,
+    linguisticLabel,outputChart,treeChart,activeTreeRoutes,outputCategories};
   if(typeof module!=="undefined"&&module.exports)module.exports=API;
   if(root)root.AuditoryCD=API;
 })(typeof window!=="undefined"?window:null);

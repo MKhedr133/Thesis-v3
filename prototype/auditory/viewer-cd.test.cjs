@@ -214,8 +214,13 @@ test("Mamdani SVG overlays original regression and centroid on one axis with sha
     assert.ok(Number(orig.attributes.x1)<Number(centroid.attributes.x1));
     assert.ok(nodes.some(n=>n.tag==="rect"&&n.attributes.fill==="#c7d8f5"));
     assert.ok(nodes.some(n=>n.textContent==="Predicted difficulty level"));
-    assert.ok(nodes.some(n=>n.textContent==="Regression 1.29"));
-    assert.ok(nodes.some(n=>n.textContent==="Centroid 1.389"));
+    assert.ok(nodes.some(n=>n.textContent==="1.29"));
+    assert.ok(nodes.some(n=>n.textContent==="1.389"));
+    assert.ok(!nodes.some(n=>/^Regression |^Centroid /.test(n.textContent)));
+    assert.equal(nodes.filter(n=>n.tag==="polyline"&&
+      n.attributes.stroke==="#9bb1c5").length,5);
+    for(const label of ["Very low","Low","Intermediate","High","Very high"])
+      assert.ok(nodes.some(n=>n.textContent===label));
   });
 });
 test("Mamdani chart preserves unavailable without plotting fabricated markers",()=>{
@@ -249,4 +254,50 @@ test("decision tree zoom controls change SVG width and reset scroll position",()
     CD.zoomTree("reset");
     assert.equal(parseFloat(drawing.style.width),before);
   }finally{global.document=old;}
+});
+
+
+test("display rename changes rule prose without altering saved Medium consequent",()=>{
+  assert.equal(
+    CD.linguisticLabel("IF Mental demand is Medium THEN difficulty term Medium"),
+    "IF Mental demand is Intermediate THEN difficulty level prediction is Intermediate"
+  );
+});
+test("five output categories exactly reproduce original triangular and shoulder knots",()=>{
+  const c=CD.outputCategories([0,1,2,3,4]);
+  assert.deepEqual(c.centres,[0,1,2,3,4]);
+  assert.deepEqual(c.names,["Very low","Low","Intermediate","High","Very high"]);
+  for(let i=0;i<5;i++){
+    assert.equal(c.values[i][i],1);
+    assert.equal(c.values.reduce((sum,curve)=>sum+curve[i],0),1);
+  }
+  assert.deepEqual(c.values[0],[1,0,0,0,0]);
+  assert.deepEqual(c.values[4],[0,0,0,0,1]);
+  const dense=CD.outputCategories([0,.5,1,1.5,2,2.5,3,3.5,4]);
+  assert.equal(dense.values[0][1],.5);
+  assert.equal(dense.values[1][1],.5);
+  assert.equal(dense.values[2][3],.5);
+});
+test("rule path map includes every positively activated fuzzy leaf and zeroes inactive branches",()=>{
+  const d=fixture(),obs=d.cases[0],crisp=obs.mamdani.crispLeaf;
+  const other=crisp===0?4:0;
+  obs.mamdani.rules.forEach(r=>{r.activation=r.leaf===crisp?.69:r.leaf===other?.31:0;});
+  const strengths=CD.activeTreeRoutes(d.tree,obs.mamdani.rules);
+  assert.equal(strengths.get(d.tree),.69);
+  const treeSvg=withMockSvgDom(()=>CD.treeChart(d.tree,obs));
+  const nodes=walkSvg(treeSvg);
+  assert.ok(nodes.some(n=>n.tag==="path"&&n.attributes.stroke==="#714bc3"));
+  assert.ok(nodes.some(n=>n.tag==="path"&&n.attributes.stroke==="#198a9c"));
+  assert.ok(nodes.some(n=>n.tag==="path"&&n.attributes.stroke==="#c7d2de"));
+  assert.equal(nodes.filter(n=>n.tag==="rect"&&n.attributes.stroke==="#198a9c").length>0,true);
+  assert.ok(nodes.some(n=>n.tag==="text"&&
+    n.textContent.includes("Leaf "+other+" · 0.31")));
+});
+test("original fuzzy membership functions remain independent of selected regression marker",()=>{
+  const a=CD.outputCategories([.46,1.1525,1.845,2.5375,3.23]);
+  const b=CD.outputCategories([.46,1.1525,1.845,2.5375,3.23]);
+  assert.deepEqual(a,b);
+  const bounds=CD.plotBounds([.46,1.1525,1.845,2.5375,3.23],3.75,1.389);
+  assert.ok(bounds.upper>3.75);
+  assert.equal(a.centres.length,5);
 });

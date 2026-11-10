@@ -97,7 +97,6 @@
 
 
     <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
-      <div class="cd-top"><span class="cd-method">Five output terms · development-fitted model</span></div>
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
@@ -115,6 +114,11 @@
             <button id="cd-tree-zoom-reset" type="button">Reset</button>
           </div>
           <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
+          <div class="cd-tree-legend" aria-label="Decision tree route legend">
+            <span class="cd-legend-crisp">Crisp tree route</span>
+            <span class="cd-legend-fuzzy">Other activated fuzzy routes</span>
+            <span class="cd-legend-inactive">Inactive routes</span>
+          </div>
         </div>
         <aside class="cd-sidebar">
           <h3>Fuzzy rule activations</h3>
@@ -126,6 +130,7 @@
         <h3>Mamdani approximation of predicted difficulty level</h3>
         <div id="cd-curve" class="cd-graphic"></div>
         <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
+          <span class="cd-legend-categories">Prediction-level categories</span>
           <span class="cd-legend-shape">Combined fuzzy output</span>
           <span class="cd-legend-regression">Regression model prediction</span>
           <span class="cd-legend-centroid">Mamdani centroid</span>

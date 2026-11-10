@@ -116,3 +116,16 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
   font-variant-numeric:tabular-nums}
 @media(max-width:620px){.cd-curve-legend{gap:10px}.cd-legend-difference{margin-left:0;width:100%}
   .cd-tree-viewport{max-height:420px}}
+
+/* Distinguish crisp CART navigation from every positively activated fuzzy route. */
+#mamdani-view .cd-scores{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:0}
+.cd-tree-legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;
+  margin-top:10px;font-size:12px;color:#526b82}
+.cd-tree-legend span{display:inline-flex;align-items:center;gap:6px}
+.cd-tree-legend span::before{content:"";display:inline-block;width:24px}
+.cd-legend-crisp::before{border-top:4px solid #714bc3}
+.cd-legend-fuzzy::before{border-top:3px dashed #198a9c}
+.cd-legend-inactive::before{border-top:2px solid #c7d2de}
+.cd-legend-categories::before{border-top:2px dashed #9bb1c5}
+@media(max-width:620px){#mamdani-view .cd-scores{grid-template-columns:1fr}
+  .cd-tree-legend{gap:8px 12px}}
