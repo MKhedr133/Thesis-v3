@@ -263,6 +263,8 @@ def build_shap_comparison(
         "developmentParticipants": 26,
         "developmentObservations": 104,
         "features": [NAME_BY_FEATURE[key] for key in FEATURES],
+        "coefficients": [float(coefficients[key]) for key in FEATURES],
+        "intercept": float(coefficients["Intercept"]),
         "byReferenceStage": output,
     }
 
