@@ -249,10 +249,12 @@ function shapFeatureLabel(name) {
   if (!Object.hasOwn(SHAP_LABELS,name)) throw new Error("Unknown Auditory SHAP feature");
   return SHAP_LABELS[name];
 }
+function shapUnit(name) {
+  if (!Object.hasOwn(SHAP_LABELS,name)) throw new Error("Unknown Auditory SHAP feature");
+  return name === "Mental demand" ? "/10" : name === "Head turning" ? "°" : "s";
+}
 function shapMeasuredValue(feature) {
-  const unit = feature.Name === "Mental demand" ? "/10" :
-    feature.Name === "Head turning" ? "°" : "s";
-  return format(finite(feature.Observed,true)) + " " + unit;
+  return format(finite(feature.Observed,true)) + " " + shapUnit(feature.Name);
 }
 function makeWaterfall(regression, onFeatureFocus) {
   const baseline = finite(regression.ReferencePrediction);
@@ -507,7 +509,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
       });
       dot.append(svgNode("title",{},displayStage(point.stage) + "; " +
         shapFeatureLabel(feature.Name) + ": observed " + format(value,3) +
-        " " + feature.Unit + "; SHAP " + sign(finite(point.contributions[featureIndex]))));
+        " " + shapUnit(feature.Name) + "; SHAP " + sign(finite(point.contributions[featureIndex]))));
       plot.append(dot);
     });
     const selectedContribution = finite(feature.ShapContribution);
@@ -517,7 +519,7 @@ function makeShapBeeswarm(regression, data, referenceStage, filter, focused) {
     });
     selected.append(svgNode("title",{}, "Selected observation; " +
       shapFeatureLabel(feature.Name) + ": observed " +
-      format(finite(feature.Observed),3) + " " + feature.Unit +
+      shapMeasuredValue(feature) +
       "; SHAP " + sign(selectedContribution)));
     plot.append(selected);
     plot.append(svgNode("circle",{cx:x(selectedContribution),cy:y,r:2.6,
