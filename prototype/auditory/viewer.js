@@ -754,5 +754,6 @@ if (typeof document !== "undefined") {
 if (typeof module !== "undefined" && module.exports) {
   module.exports = {finite,stageCode,displayStage,validateDataset,validateUnifiedDataset,
     validateShapComparison,shapComparisonPoints,swarmOffsets,shapInterpretation,
+    makeWaterfall,makeShapBeeswarm,
     featureLabel,ruleSentence,ruleSummary};
 }
