@@ -2883,6 +2883,7 @@ def _detect_search_intervals_with_cache(
     focus_episodes: Sequence[FocusEpisode],
     *,
     cache: _TrialSignalCache,
+    use_previous_grab_release: bool = False,
 ) -> SearchIntervalResult:
     """Build shared search records for qualifying first-time-on-list grabs."""
     if "time" not in tracker:
@@ -2920,9 +2921,10 @@ def _detect_search_intervals_with_cache(
     ordered_focus = cache.sorted_focus(focus_episodes)
 
     intervals: list[SearchInterval] = []
-    previous_qualifying_grab_start: float | None = None
+    previous_grab_boundary: float | None = None
     for event in qualifying_grabs:
         grab_start = event.grab_start_seconds
+        next_boundary = event.grab_release_seconds if use_previous_grab_release else grab_start
         completed_visit_ends = [
             visit.list_visit_end_seconds
             for visit in ordered_visits
@@ -2930,7 +2932,7 @@ def _detect_search_intervals_with_cache(
         ]
         latest_visit_end = max(completed_visit_ends, default=None)
 
-        if previous_qualifying_grab_start is None:
+        if previous_grab_boundary is None:
             if usable_activity_start is None:
                 intervals.append(
                     SearchInterval(
@@ -2941,7 +2943,7 @@ def _detect_search_intervals_with_cache(
                         is_valid=False,
                     )
                 )
-                previous_qualifying_grab_start = grab_start
+                previous_grab_boundary = next_boundary
                 continue
             search_start = max(
                 usable_activity_start,
@@ -2949,10 +2951,10 @@ def _detect_search_intervals_with_cache(
             )
         else:
             search_start = max(
-                previous_qualifying_grab_start,
+                previous_grab_boundary,
                 latest_visit_end
                 if latest_visit_end is not None
-                else previous_qualifying_grab_start,
+                else previous_grab_boundary,
             )
 
         if search_start > grab_start:
@@ -2966,7 +2968,7 @@ def _detect_search_intervals_with_cache(
                     is_valid=False,
                 )
             )
-            previous_qualifying_grab_start = grab_start
+            previous_grab_boundary = next_boundary
             continue
 
         target_focus_candidates: list[float] = []
@@ -2997,7 +2999,7 @@ def _detect_search_intervals_with_cache(
                 is_valid=first_target_focus is not None,
             )
         )
-        previous_qualifying_grab_start = grab_start
+        previous_grab_boundary = next_boundary
 
     return SearchIntervalResult(
         intervals=tuple(intervals), warnings=tuple(warnings)
