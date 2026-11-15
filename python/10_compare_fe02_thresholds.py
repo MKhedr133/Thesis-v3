@@ -343,6 +343,9 @@ def run(performance, raw_root, correct_lists, split, output_dir, reach_reference
         reference_summary.to_csv(output_dir / "reach_reference_summary.csv", index=False)
     render_plots(combined, reference_summary, output_dir)
     render_qc(qc.reset_index(), configs, output_dir)
+    render_threshold_figures(combined, qc.reset_index(),
+                             {name: asdict(cfg) for name, _, _, cfg, _ in configs},
+                             output_dir / "threshold_figures")
     inputs = {"performance": performance, "split": split, "correct_lists": correct_lists}
     if reach_reference:
         inputs["reach_reference"] = reach_reference
@@ -360,6 +363,179 @@ def run(performance, raw_root, correct_lists, split, output_dir, reach_reference
     }
     (output_dir / "sensitivity_manifest.json").write_text(json.dumps(manifest, indent=2)+"\n", encoding="utf-8")
     print(f"Sensitivity outputs: {output_dir}")
+
+
+# A short Results figure per setting. The complete diagnostics remain separate.
+# Each entry names the setting, file, title, x axis and two results to display.
+THRESHOLD_FIGURES = (
+    ("grab_duration_s", "grab_duration", "Minimum grab duration", "Duration (s)", (
+        ("changed", FEATURES[0], "Trials with a change in time between grabs"),
+        ("events", ("valid_grabs",), "Change in valid grabs (count)"),
+    )),
+    ("grab_merge_s", "grab_merge_gap", "Maximum gap between merged grabs", "Gap (s)", (
+        ("changed", FEATURES[0], "Trials with a change in time between grabs"),
+        ("events", ("valid_grabs",), "Change in valid grabs (count)"),
+    )),
+    ("list_focus_s", "list_focus", "Minimum list focus duration", "Duration (s)", (
+        ("paired", FEATURES[1], "Change in rechecks (count)"),
+        ("paired", FEATURES[2], "Change in time rechecking (s)"),
+    )),
+    ("target_focus_s", "target_focus", "Minimum target focus duration", "Duration (s)", (
+        ("paired", FEATURES[3], "Change in search time (s)"),
+        ("events", ("valid_searches",), "Change in usable searches (count)"),
+    )),
+    ("reach_floor_m_s", "reach_speed_floor", "Reach speed floor", "Speed (m/s)", (
+        ("changed", FEATURES[6], "Trials with a change in reach time"),
+        ("events", ("valid_reaches",), "Change in usable reaches (count)"),
+    )),
+    ("reach_peak_fraction", "peak_speed_cutoff", "Reach cutoff relative to peak speed", "Cutoff (% of peak speed)", (
+        ("paired", FEATURES[6], "Change in reach time (s)"),
+        ("events", ("valid_reaches", "valid_path_ratios"), "Change in usable events (count)"),
+    )),
+    ("reach_sustained_s", "sustained_movement", "Minimum time above the reach cutoff", "Duration (s)", (
+        ("changed", FEATURES[6], "Trials with a change in reach time"),
+        ("events", ("valid_reaches", "valid_path_ratios"), "Change in usable events (count)"),
+    )),
+    ("path_displacement_m", "path_displacement", "Minimum straight-line reach distance", "Distance (m)", (
+        ("changed", FEATURES[7], "Trials with a change in path ratio"),
+        ("events", ("valid_path_ratios",), "Change in usable path ratios (count)"),
+    )),
+    ("use_previous_grab_release", "search_start", "Previous grab boundary for the next search", "Previous grab", (
+        ("changed", FEATURES[3], "Trials with a change in search time"),
+        ("events", ("valid_searches",), "Change in usable searches (count)"),
+    )),
+)
+
+
+def threshold_tick(setting, value):
+    if setting == "use_previous_grab_release":
+        return "Release" if value else "Start"
+    if setting == "reach_peak_fraction":
+        return f"{100 * value:g}"
+    if setting in ("list_focus_s", "target_focus_s") and value == 0:
+        return "None"
+    return f"{value:.2f}"
+
+
+def render_threshold_figures(summary, qc, settings, output_dir):
+    """Export small, readable figures using the already computed sweep results."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.lines import Line2D
+    from matplotlib.ticker import MaxNLocator
+
+    by_trial = summary.set_index(["scenario", "condition", "feature"], verify_integrity=True)
+    baseline = settings["baseline"]
+    # Mask an event total if any condition is missing rather than implying zero.
+    totals = qc.groupby("scenario").sum(numeric_only=True, min_count=len(CONDITIONS))
+    event_change = totals - totals.loc["baseline"]
+    event_labels = {"valid_grabs": "product grabs", "valid_searches": "search events",
+                    "valid_reaches": "reaches", "valid_path_ratios": "hand path ratios"}
+    colours = ("#0072B2", "#9C4500", "#007454")
+    markers = ("o", "s", "^")
+    output_dir.mkdir(parents=True, exist_ok=False)
+    n_trials = int(summary.loc[summary.scenario.eq("baseline") &
+                               summary.feature.eq(FEATURES[0]), "n_trials"].sum())
+    notes = [
+        "# Threshold figure captions", "",
+        f"The sweep used {n_trials} trials from 26 development participants across difficulty levels 0 to 3. "
+        "Reserved participants were not included. Each figure varies one setting. The shaded column "
+        "marks the baseline. The figures compare sensitivity to extraction settings and do not measure "
+        "detector accuracy.", "",
+        "For changes in a feature, points show the median difference from baseline across matching "
+        "trials, and whiskers show the middle 50% of those differences. The trial-count panels show "
+        "how many matching trials changed, with missing values excluded. Event panels show the change "
+        "in the recorded event count, pooled across conditions. A trial can contain several events. "
+        "Open diamonds mark settings without a pooled total. For exact denominators, see "
+        "paired_feature_sensitivity.csv and event_qc_summary.csv.", "",
+        "List and target focus refer to events logged by the task software. None means no minimum duration. "
+        "Reach time runs from the detected start of a reach to the grab. The path ratio is the distance "
+        "travelled by the hand divided by the straight-line distance from reach start to grab.", "",
+    ]
+    style = {"font.size": 9, "axes.spines.top": False, "axes.spines.right": False,
+             "axes.linewidth": .65, "pdf.fonttype": 42}
+    with plt.rc_context(style), PdfPages(output_dir / "threshold_figures.pdf") as pdf:
+        for i, (setting, stem, title, x_label, panels) in enumerate(THRESHOLD_FIGURES, 1):
+            variants = sorted((values[setting], name) for name, values in settings.items()
+                              if name == "baseline" or
+                              {k for k in baseline if values[k] != baseline[k]} == {setting})
+            values, names = zip(*variants)
+            ref = names.index("baseline")
+            x = np.arange(len(names))
+            ticks = [threshold_tick(setting, v) for v in values]
+            ticks[ref] += "\nBaseline"
+            fig, axes = plt.subplots(1, 2, figsize=(7.15, 2.62))
+            fig.subplots_adjust(left=.105, right=.975, bottom=.335, top=.74, wspace=.31)
+            fig.text(.035, .945, title, ha="left", va="top", fontsize=13, weight="bold")
+
+            for ax, letter, (mode, metric, label) in zip(axes, "AB", panels):
+                ax.set_title(f"{letter}  {label}", loc="left", fontsize=8.7, fontweight="semibold", pad=8)
+                ax.axvspan(ref-.39, ref+.39, color="#EDF0F3", lw=0)
+                ax.axhline(0, color="#707680", lw=.65)
+                ax.grid(axis="y", color="#EAEAEA", lw=.55)
+                ax.set_axisbelow(True)
+                ax.set(xlim=(-.53, len(x)-.47), xticks=x, xticklabels=ticks)
+                ax.tick_params(labelsize=8)
+                ax.yaxis.set_major_locator(MaxNLocator(
+                    nbins=4, integer=mode != "paired" or metric == FEATURES[1]))
+
+                if mode in ("changed", "paired"):
+                    for j, (condition, colour, marker) in enumerate(zip(CONDITIONS, colours, markers)):
+                        rows = by_trial.loc[[(name, condition, metric) for name in names]]
+                        pos = x + (j-1)*.17
+                        if mode == "changed":
+                            ax.scatter(pos, rows.n_changed.where(rows.paired_n.gt(0)),
+                                       s=21, c=colour, marker=marker, zorder=3)
+                        else:
+                            ax.vlines(pos, rows.q25_change, rows.q75_change, color=colour, lw=1.3)
+                            ax.scatter(pos, rows.median_change, s=21, c=colour, marker=marker, zorder=3)
+                    if mode == "changed":
+                        ax.set_ylim(bottom=-.05 * max(1, ax.get_ylim()[1]))
+                    # A flat zero-change comparison needs no arbitrary decimal ticks.
+                    if not np.any(by_trial.loc[[(name, c, metric) for name in names for c in CONDITIONS],
+                                               "n_changed"]):
+                        ax.set_yticks([0])
+                else:
+                    grid = event_change.loc[list(names), list(metric)]
+                    for j, (column, marker) in enumerate(zip(metric, ("o", "s"))):
+                        y = grid[column].to_numpy(dtype=float)
+                        pos = x if len(metric) == 1 else x + (j-.5)*.26
+                        shade = ("#363D45", "#787878")[j]
+                        ax.vlines(pos, 0, y, color=shade, lw=1)
+                        ax.scatter(pos, y, marker=marker, color=shade, s=19, zorder=3)
+                        # Missing totals are explicitly marked, never presented as zero.
+                        if np.isnan(y).any():
+                            ax.scatter(pos[np.isnan(y)], np.zeros(np.isnan(y).sum()),
+                                       marker="D", facecolors="none", edgecolors=shade, s=22, zorder=4)
+                    if len(metric) == 2:
+                        ax.legend(handles=[
+                            Line2D([], [], marker=mk, color=co, ls="none", label=event_labels[col].capitalize())
+                            for col, mk, co in zip(metric, ("o", "s"), ("#363D45", "#787878"))
+                        ], loc="upper center", bbox_to_anchor=(.5, -.28), ncol=2,
+                            fontsize=7.5, frameon=False, handletextpad=.2, columnspacing=.75)
+                    if grid.fillna(0).eq(0).all().all():
+                        ax.set_yticks([0])
+
+            fig.text(.5, .165, x_label, ha="center", va="center", fontsize=9)
+            handles = [Line2D([], [], marker=m, color=c, ls="none", label=name)
+                       for name, m, c in zip(CONDITIONS, markers, colours)]
+            fig.legend(handles=handles, loc="lower center", bbox_to_anchor=(.49, .015),
+                       ncol=3, frameon=False, fontsize=8, handletextpad=.25, columnspacing=1.4)
+            filename = f"{i:02d}_{stem}.pdf"
+            fig.savefig(output_dir / filename)
+            pdf.savefig(fig)
+            plt.close(fig)
+            panel_notes = []
+            for letter, (mode, metric, label) in zip("AB", panels):
+                if mode == "events":
+                    text = "Change in the number of usable " + " and ".join(event_labels[c] for c in metric)
+                else:
+                    text = label.rsplit(" (", 1)[0]
+                panel_notes.append(f"({letter}) {text}.")
+            notes.extend([f"## {i}. {title}", "", f"`{filename}`", "", " ".join(panel_notes), ""])
+    (output_dir / "captions.md").write_text("\n".join(notes), encoding="utf-8")
 
 
 def render_plots(summary, reference, output_dir):
@@ -483,13 +659,36 @@ def render_qc(qc, configs, output_dir):
             pdf.savefig(fig)
             plt.close(fig)
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("performance", "raw-root", "correct-lists", "holdout-split", "output-dir"):
-        parser.add_argument("--"+name, type=Path, required=True)
+    extraction_flags = ("performance", "raw-root", "correct-lists", "holdout-split")
+    for name in extraction_flags:
+        parser.add_argument("--"+name, type=Path)
+    parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--reach-reference", type=Path, help="Optional independently annotated tracker-clock CSV.")
-    a = parser.parse_args()
-    run(a.performance, a.raw_root, a.correct_lists, a.holdout_split, a.output_dir, a.reach_reference)
+    parser.add_argument("--figures-from", type=Path, metavar="SWEEP_DIR",
+                        help="Replot an existing FE-03 sweep using its saved CSVs and manifest.")
+    a = parser.parse_args(argv)
+    arguments = [getattr(a, flag.replace("-", "_")) for flag in extraction_flags]
+    if a.figures_from is not None:
+        if any(arguments) or a.reach_reference is not None:
+            parser.error("--figures-from cannot be combined with extraction inputs.")
+        manifest = json.loads((a.figures_from / "sensitivity_manifest.json").read_text(encoding="utf-8"))
+        if (manifest.get("participant_partition") != "MOD-09 train only"
+                or manifest.get("development_participants") != 26 or manifest.get("trials") != 312
+                or manifest.get("reserved_tracker_reads") != 0):
+            parser.error("--figures-from requires an FE-03 development-only sweep.")
+        render_threshold_figures(
+            pd.read_csv(a.figures_from / "paired_feature_sensitivity.csv"),
+            pd.read_csv(a.figures_from / "event_qc_summary.csv"),
+            manifest["scenarios"], a.output_dir,
+        )
+        print(f"Threshold figures: {a.output_dir}")
+        return
+    missing = ["--"+flag for flag, value in zip(extraction_flags, arguments) if value is None]
+    if missing:
+        parser.error("extraction requires " + ", ".join(missing))
+    run(*arguments, a.output_dir, a.reach_reference)
 
 
 if __name__ == "__main__":

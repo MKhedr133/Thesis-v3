@@ -102,6 +102,30 @@ class SensitivityTests(unittest.TestCase):
             self.assertEqual(len(pd.read_csv(output/"trial_sensitivity.csv")), 312*28)
             for name in ("feature_sensitivity.pdf", "event_qc_sensitivity.pdf"):
                 self.assertTrue((output/name).read_bytes().startswith(b"%PDF"))
+            expected = {
+                "01_grab_duration.pdf", "02_grab_merge_gap.pdf",
+                "03_list_focus.pdf", "04_target_focus.pdf",
+                "05_reach_speed_floor.pdf", "06_peak_speed_cutoff.pdf",
+                "07_sustained_movement.pdf", "08_path_displacement.pdf",
+                "09_search_start.pdf", "threshold_figures.pdf",
+            }
+            figures = output / "threshold_figures"
+            self.assertEqual({f.name for f in figures.glob("*.pdf")}, expected)
+            for name in expected:
+                self.assertTrue((figures / name).read_bytes().startswith(b"%PDF"))
+            captions = (figures / "captions.md").read_text(encoding="utf-8")
+            self.assertIn("26 development participants", captions)
+            self.assertIn("middle 50%", captions)
+            self.assertIn("no minimum", captions.lower())
+
+            refreshed = tmp / "refresh"
+            with patch.object(sensitivity.fe01, "load_tracker_table") as load, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                sensitivity.main(["--figures-from", str(output), "--output-dir", str(refreshed)])
+                load.assert_not_called()
+            self.assertEqual({f.name for f in refreshed.glob("*.pdf")}, expected)
+            self.assertEqual((refreshed / "captions.md").read_text(encoding="utf-8"), captions)
+
             bad = pd.read_csv(holdout)
             bad.loc[0, "split"] = "test"
             bad.to_csv(holdout, index=False)
