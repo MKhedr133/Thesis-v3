@@ -16,7 +16,7 @@ are never replaced with frame-derived values.
 from __future__ import annotations
 
 import argparse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 import hashlib
 import json
 from pathlib import Path
@@ -3196,9 +3196,14 @@ def run_full_extraction(
     performance_path: Path,
     raw_root: Path,
     correct_lists_path: Path,
-    output_dir: Path,
+    output_dir: Path | None,
     limit: int | None = None,
     mental_demand_path: Path | None = None,
+    *,
+    on_extracted_trial: Callable[
+        [Mapping[str, object], _TrialSignalCache, Sequence[FocusEpisode], Sequence[ListVisit], pd.DataFrame],
+        None,
+    ] | None = None,
 ) -> FullExtractionResult:
     """Run FE-01.1--FE-01.14 for every normalized trial and write outputs.
 
@@ -3206,7 +3211,8 @@ def run_full_extraction(
     QC row and an otherwise complete trial row with unavailable behavioural
     measurements.  Raw input files are read only; the one known ``digits+time``
     header typo is repaired in the in-memory tracker table by
-    :func:`load_tracker_table`.
+    :func:`load_tracker_table`. With no output directory, callers receive the
+    tables without writing FE-01 files or figures.
     """
     if limit is not None and limit < 1:
         raise ValueError("--limit must be at least 1")
@@ -3214,7 +3220,7 @@ def run_full_extraction(
     performance_path = Path(performance_path)
     raw_root = Path(raw_root)
     correct_lists_path = Path(correct_lists_path)
-    output_dir = Path(output_dir)
+    output_dir = Path(output_dir) if output_dir is not None else None
 
     trials = standardize_trial_table(read_table(performance_path))
     source_has_explicit_percentage = any(
@@ -3403,6 +3409,11 @@ def run_full_extraction(
                     f"tracker_processing_failed:{type(error).__name__}:{error}",
                 )
 
+        if on_extracted_trial is not None and product_result is not None:
+            on_extracted_trial(
+                metadata, signal_cache, focus_result.episodes, list_visits, product_result.table
+            )
+
         error_key = (
             str(source_row["participant_id"]),
             str(source_row["session_id"]),
@@ -3491,6 +3502,9 @@ def run_full_extraction(
     product_table = _concat_fixed_tables(product_tables, PRODUCT_GRAB_OUTPUT_COLUMNS)
     trial_table = _concat_fixed_tables(trial_tables, TRIAL_FEATURE_COLUMNS)
     qc_table = _concat_fixed_tables([pd.DataFrame(qc_rows)], QC_COLUMNS)
+
+    if output_dir is None:
+        return FullExtractionResult(product_table, trial_table, qc_table, (), tuple(run_warnings))
 
     output_dir.mkdir(parents=True, exist_ok=True)
     product_path = output_dir / "product_grab_features_v2.csv"
