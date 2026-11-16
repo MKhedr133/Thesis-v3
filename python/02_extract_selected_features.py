@@ -257,7 +257,7 @@ class ListVisit(NamedTuple):
 
 
 class SearchInterval(NamedTuple):
-    """Search timing for one qualifying first-time-on-list product grab."""
+    """Search timing for one eligible product grab."""
 
     canonical_product_name: str
     qualifying_grab_start_seconds: float
@@ -1230,8 +1230,9 @@ def _detect_reach_intervals_with_cache(
     *,
     search_intervals: Sequence[SearchInterval] = (),
     cache: _TrialSignalCache,
+    all_grabs: bool = False,
 ) -> ReachDetectionResult:
-    """Detect the final sustained movement block before each qualifying grab.
+    """Detect the final sustained movement block before each eligible grab.
 
     Reach onset is the beginning of the final above-threshold movement block
     in the accepted search-start-to-grab interval.  The absolute threshold,
@@ -1262,10 +1263,8 @@ def _detect_reach_intervals_with_cache(
             add_unique_warning(warnings, "reach_search_interval_key_unavailable")
             continue
         if key in search_by_key:
-            add_unique_warning(
-                warnings,
-                f"duplicate_reach_search_interval:{key[0]}:{key[1]}",
-            )
+            if not all_grabs or search_by_key[key] != search:
+                add_unique_warning(warnings, f"duplicate_reach_search_interval:{key[0]}:{key[1]}")
         else:
             search_by_key[key] = search
 
@@ -1273,7 +1272,7 @@ def _detect_reach_intervals_with_cache(
         (
             event
             for event in grab_events
-            if event.is_on_list and event.is_first_time_on_list
+            if all_grabs or (event.is_on_list and event.is_first_time_on_list)
         ),
         key=lambda event: event.grab_start_seconds,
     )
@@ -2233,6 +2232,7 @@ def _build_product_grab_features_with_cache(
     tracker: pd.DataFrame,
     *,
     cache: _TrialSignalCache,
+    all_grabs: bool = False,
 ) -> ProductGrabOutputResult:
     """Build one auditable product-grab table without writing a file."""
     warnings: list[str] = []
@@ -2245,19 +2245,22 @@ def _build_product_grab_features_with_cache(
         if key is None:
             add_unique_warning(warnings, "search_interval_key_unavailable")
         elif key in search_by_key:
-            add_unique_warning(warnings, f"duplicate_search_interval:{key[0]}:{key[1]}")
+            if not all_grabs or search_by_key[key] != interval:
+                add_unique_warning(warnings, f"duplicate_search_interval:{key[0]}:{key[1]}")
         else:
             search_by_key[key] = interval
 
-    reach_by_key: dict[tuple[str, float], ReachInterval] = {}
+    reach_by_key: dict[tuple[str, float, str | None], ReachInterval] = {}
     for interval in reach_intervals:
         key = _product_event_key(interval.canonical_product_name, interval.grab_start_seconds)
         if key is None:
             add_unique_warning(warnings, "reach_interval_key_unavailable")
-        elif key in reach_by_key:
-            add_unique_warning(warnings, f"duplicate_reach_interval:{key[0]}:{key[1]}")
         else:
-            reach_by_key[key] = interval
+            reach_key = (*key, interval.hand if all_grabs else None)
+            if reach_key in reach_by_key:
+                add_unique_warning(warnings, f"duplicate_reach_interval:{key[0]}:{key[1]}")
+            else:
+                reach_by_key[reach_key] = interval
 
     rows: list[dict[str, object]] = []
     ordered_events = sorted(
@@ -2277,13 +2280,15 @@ def _build_product_grab_features_with_cache(
     for event in ordered_events:
         row_warnings: list[str] = []
         key = _product_event_key(event.canonical_product_name, event.grab_start_seconds)
-        search = search_by_key.get(key) if key is not None and event.is_first_time_on_list else None
-        reach = reach_by_key.get(key) if key is not None and event.is_first_time_on_list else None
+        eligible = all_grabs or event.is_first_time_on_list
+        search = search_by_key.get(key) if key is not None and eligible else None
+        reach = (reach_by_key.get((*key, event.hand if all_grabs else None))
+                 if key is not None and eligible else None)
 
         search_start = None
         target_focus = None
         search_valid = None
-        if event.is_first_time_on_list:
+        if eligible:
             if search is None:
                 warning = f"search_interval_unmatched:{event.canonical_product_name}:{event.grab_start_seconds}"
                 add_unique_warning(row_warnings, warning)
@@ -2297,7 +2302,7 @@ def _build_product_grab_features_with_cache(
         reach_duration = None
         reach_path_ratio = None
         reach_valid = None
-        if event.is_first_time_on_list:
+        if eligible:
             if reach is None:
                 warning = f"reach_interval_unmatched:{event.canonical_product_name}:{event.grab_start_seconds}"
                 add_unique_warning(row_warnings, warning)
@@ -2883,9 +2888,10 @@ def _detect_search_intervals_with_cache(
     focus_episodes: Sequence[FocusEpisode],
     *,
     cache: _TrialSignalCache,
+    all_grabs: bool = False,
     use_previous_grab_release: bool = False,
 ) -> SearchIntervalResult:
-    """Build shared search records for qualifying first-time-on-list grabs."""
+    """Build search records for eligible grabs in chronological order."""
     if "time" not in tracker:
         raise ValueError("Tracker table is missing required column: time")
 
@@ -2904,7 +2910,7 @@ def _detect_search_intervals_with_cache(
         (
             event
             for event in grab_events
-            if event.is_on_list and event.is_first_time_on_list
+            if all_grabs or (event.is_on_list and event.is_first_time_on_list)
         ),
         key=lambda event: (
             event.grab_start_seconds,
@@ -2922,9 +2928,16 @@ def _detect_search_intervals_with_cache(
 
     intervals: list[SearchInterval] = []
     previous_grab_boundary: float | None = None
+    current_start: float | None = None
+    earlier_boundary: float | None = None
     for event in qualifying_grabs:
         grab_start = event.grab_start_seconds
         next_boundary = event.grab_release_seconds if use_previous_grab_release else grab_start
+        if all_grabs:
+            # Simultaneous grabs share the boundary from the preceding grab time.
+            if current_start != grab_start:
+                earlier_boundary, current_start = previous_grab_boundary, grab_start
+            previous_grab_boundary = earlier_boundary
         completed_visit_ends = [
             visit.list_visit_end_seconds
             for visit in ordered_visits
@@ -3202,6 +3215,7 @@ def run_full_extraction(
     limit: int | None = None,
     mental_demand_path: Path | None = None,
     *,
+    all_grabs: bool = False,
     on_extracted_trial: Callable[
         [Mapping[str, object], _TrialSignalCache, Sequence[FocusEpisode], Sequence[ListVisit], pd.DataFrame],
         None,
@@ -3214,7 +3228,8 @@ def run_full_extraction(
     measurements.  Raw input files are read only; the one known ``digits+time``
     header typo is repaired in the in-memory tracker table by
     :func:`load_tracker_table`. With no output directory, callers receive the
-    tables without writing FE-01 files or figures.
+    tables without writing FE-01 files or figures. The descriptive opt-in
+    broadens search and reach eligibility without changing the FE-01 default.
     """
     if limit is not None and limit < 1:
         raise ValueError("--limit must be at least 1")
@@ -3338,6 +3353,7 @@ def run_full_extraction(
                     list_visits,
                     focus_result.episodes,
                     cache=signal_cache,
+                    all_grabs=all_grabs,
                 )
                 search_intervals = search_result.intervals
                 for warning in search_result.warnings:
@@ -3348,6 +3364,7 @@ def run_full_extraction(
                     grab_events,
                     search_intervals=search_intervals,
                     cache=signal_cache,
+                    all_grabs=all_grabs,
                 )
                 reach_intervals = reach_result.intervals
                 for warning in reach_result.warnings:
@@ -3378,6 +3395,7 @@ def run_full_extraction(
                     reach_intervals,
                     tracker,
                     cache=signal_cache,
+                    all_grabs=all_grabs,
                 )
                 for warning in product_result.warnings:
                     add_unique_warning(trial_warnings, warning)

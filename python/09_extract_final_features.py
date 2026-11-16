@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Extract the ten FE-02 trial features without replacing historical outputs."""
+"""Extract ten descriptive trial features without replacing historical outputs."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _same_trial(metadata, selector: tuple[str, str, str, int]) -> bool:
     ) == (participant, session, filename)
 
 
-def _make_worked_trace(metadata, cache, visits, grabs, grab_number: int) -> dict:
+def _make_worked_trace(metadata, cache, visits, grabs, grab_number: int, *, all_grabs: bool = False) -> dict:
     """Save exact extracted event boundaries and their recorded hand samples."""
     if not 1 <= grab_number <= len(grabs):
         raise ValueError("Worked example grab number is outside the valid-grab table.")
@@ -79,7 +79,10 @@ def _make_worked_trace(metadata, cache, visits, grabs, grab_number: int) -> dict
     search, focus, reach, end, ratio = (float(grab[key]) for key in required)
     motion = cache.hand_motion(grab["hand"])
     previous = grabs.iloc[:grab_number - 1]
-    previous = previous.loc[previous["is_first_time_on_list"]]
+    if all_grabs:
+        previous = previous.loc[previous["grab_start_seconds"] < end]
+    else:
+        previous = previous.loc[previous["is_first_time_on_list"]]
     previous_grab = float(previous.iloc[-1]["grab_start_seconds"]) if len(previous) else None
     last_visit = max(
         (v for v in visits if v.list_visit_end_seconds <= end),
@@ -137,11 +140,12 @@ def run_extraction(
     performance: Path, raw_root: Path, correct_lists: Path, output_dir: Path,
     *, mental_demand: Path | None = None, limit: int | None = None,
     worked_example: tuple[str, str, str, int] | None = None,
+    all_grabs: bool = False,
 ) -> tuple[Path, ...]:
-    """Write an isolated FE-02 run. Never overwrite an earlier run."""
+    """Write an isolated descriptive run. Never overwrite an earlier run."""
     output_dir = Path(output_dir)
     if output_dir.exists():
-        raise FileExistsError(f"Choose a new FE-02 output directory: {output_dir}")
+        raise FileExistsError(f"Choose a new descriptive output directory: {output_dir}")
     trace = None
 
     missing_focus_keys = []
@@ -156,11 +160,12 @@ def run_extraction(
         if worked_example is not None and _same_trial(metadata, worked_example):
             if trace is not None:
                 raise ValueError("Worked example selector matched more than one trial.")
-            trace = _make_worked_trace(metadata, cache, visits, grabs, worked_example[3])
+            trace = _make_worked_trace(
+                metadata, cache, visits, grabs, worked_example[3], all_grabs=all_grabs)
 
     result = fe01.run_full_extraction(
         performance, raw_root, correct_lists, None, limit=limit,
-        mental_demand_path=mental_demand, on_extracted_trial=collect,
+        mental_demand_path=mental_demand, all_grabs=all_grabs, on_extracted_trial=collect,
     )
     if worked_example is not None and trace is None:
         raise ValueError("No processed trial matched the worked example selector.")
@@ -197,7 +202,7 @@ def run_extraction(
     if trace is not None:
         files.append("worked_trace.json")
     manifest = {
-        "schema_version": "fe02_v1",
+        "schema_version": "fe04_all_grabs_v1" if all_grabs else "fe02_v1",
         "settings_status": "historical_settings_not_scientifically_validated",
         "recorded_code_to_study_level": STUDY_LEVEL,
         "grab_settings": fe01.GrabDetectionConfig()._asdict(),
@@ -225,6 +230,13 @@ def run_extraction(
     output_dir.mkdir(parents=True, exist_ok=False)
     for name, table in outputs.items():
         table.to_csv(output_dir / name, index=False, encoding="utf-8", na_rep="")
+    if all_grabs:
+        manifest.update(
+            search_and_reach_grab_scope="all_valid_product_grabs",
+            search_boundary="previous_valid_grab_start_or_later_completed_list_visit",
+            reach_requires_target_focus=True,
+            trial_features_sha256=hashlib.sha256((output_dir / "trial_features.csv").read_bytes()).hexdigest(),
+        )
     for name, data in [("worked_trace.json", trace), ("feature_extraction_manifest.json", manifest)]:
         if data is not None:
             (output_dir / name).write_text(
@@ -241,6 +253,8 @@ def main(argv=None) -> int:
     parser.add_argument("--mental-demand", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--limit", type=int)
+    parser.add_argument("--all-grabs", action="store_true",
+                        help="Include repeat and off-list grabs in descriptive search and reach measures.")
     parser.add_argument("--worked-example", nargs=4, metavar=("PARTICIPANT", "SESSION", "TRACKER", "GRAB_NUMBER"),
                         help="Optional trace for one trial and a 1-based valid grab number.")
     args = parser.parse_args(argv)
@@ -253,7 +267,8 @@ def main(argv=None) -> int:
             parser.error("GRAB_NUMBER must be a positive integer.")
         selector = (participant, session, tracker, number)
     files = run_extraction(args.performance, args.raw_root, args.correct_lists, args.output_dir,
-                           mental_demand=args.mental_demand, limit=args.limit, worked_example=selector)
+                           mental_demand=args.mental_demand, limit=args.limit, worked_example=selector,
+                           all_grabs=args.all_grabs)
     for path in files:
         print(path)
     return 0
