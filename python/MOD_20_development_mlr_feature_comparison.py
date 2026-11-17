@@ -299,7 +299,7 @@ def mae_change_figure(summary: pd.DataFrame) -> Figure:
     scores = summary.set_index(["candidate", "condition"])
     positions = np.arange(len(conditions))
     figure, axis = plt.subplots(figsize=(7.0, 3.8))
-    figure.subplots_adjust(left=0.14, right=0.965, bottom=0.18, top=0.68)
+    figure.subplots_adjust(left=0.14, right=0.965, bottom=0.205, top=0.68)
 
     zero = axis.axvline(
         0, color="#474747", linewidth=1, label=f"Full model ({len(TRIAL_FEATURES)} predictors)",
@@ -350,6 +350,11 @@ def mae_change_figure(summary: pd.DataFrame) -> Figure:
     axis.legend(
         handles=[*markers, selected_key, zero, margin], loc="lower left", bbox_to_anchor=(0, 1.04),
         borderaxespad=0, columnspacing=1.2, ncol=2, frameon=False, fontsize=9,
+    )
+    figure.text(
+        0.5, 0.035,
+        "Numbers beside the markers show the average number of predictors across five rounds.",
+        ha="center", va="bottom", fontsize=9,
     )
     return figure
 

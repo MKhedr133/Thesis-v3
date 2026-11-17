@@ -277,6 +277,12 @@ class DevelopmentComparisonTests(unittest.TestCase):
             self.assertIn("keeping those with $p < 0.05$", labels)
             self.assertIn("from the pair chosen in advance for each condition", labels)
             figure.canvas.draw()
+            caption = "Numbers beside the markers show the average number of predictors across five rounds."
+            notes = [label for label in figure.texts if label.get_text() == caption]
+            self.assertEqual(len(notes), 1)
+            note_bounds = notes[0].get_window_extent()
+            self.assertTrue(figure.bbox.contains(note_bounds.x0, note_bounds.y0))
+            self.assertLess(note_bounds.y1, axis.xaxis.label.get_window_extent().y0)
             legend = axis.get_legend().get_window_extent(figure.canvas.get_renderer())
             self.assertTrue(figure.bbox.contains(legend.x1, legend.y1))
             for label in axis.texts:
