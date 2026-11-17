@@ -1,12 +1,12 @@
 # Auditory therapist walkthrough (read-only prototype)
 
-This local viewer supports four Auditory explanations: SHAP (A), manual fuzzy rules (B), Decision Tree–Mamdani (C), and Fuzzy C-Means–Sugeno (D). Model inference for C/D is prepared locally, not fitted in the browser. The viewer cannot save therapist decisions or change VR settings.
+The viewer has three Auditory tabs: SHAP (A), Decision tree–Mamdani (C), and Fuzzy C-Means–Sugeno (D). The unified JSON still contains the manual fuzzy-rule records (B), but the viewer does not display them. The browser displays the saved Mamdani and Sugeno results without fitting either model. The viewer cannot save therapist decisions or change VR settings.
 
-## Current: one local file for all four methods (P06/P07)
+## One local file for all three tabs (P06/P07)
 
-The unified viewer uses **one JSON upload** and one shared participant/stage selector for A–D. P06 and P07 were originally reserved for testing, but their observations have **already been inspected** during earlier A/B interface development. Therefore these are **exploratory interface examples**, not untouched independent validation. The frozen Mamdani/Sugeno models stay fitted on 26 development participants; no model selection, modification, or test-performance metrics are performed.
+The unified viewer uses **one JSON upload** and one shared participant and stage selector for all three tabs. P06 and P07 were originally reserved for testing, but their observations have **already been inspected** during earlier A/B interface development. Therefore these are **exploratory interface examples**, not untouched independent validation. The frozen Mamdani/Sugeno models stay fitted on 26 development participants; no model selection, modification, or test-performance metrics are performed.
 
-The A/B source remains unchanged. The new exporter reads the existing local A/B JSON, checks it against canonical P06/P07 Auditory measurements and the original regression coefficients, and performs numerical C/D inference with the saved CART, fuzzy-rule partitions, five-term Mamdani output and three-cluster Sugeno constants. The PCA cloud still contains **104 development observations**; P06/P07 are separately projected onto it, without refitting the PCA or fuzzy model.
+The saved A/B input format is unchanged. The new exporter reads the existing local A/B JSON, checks it against canonical P06/P07 Auditory measurements and the original regression coefficients, and performs numerical C/D inference with the saved CART, fuzzy-rule partitions, five-term Mamdani output and three-cluster Sugeno constants. The PCA cloud still contains **104 development observations**; P06/P07 are separately projected onto it, without refitting the PCA or fuzzy model.
 
 ### Generate the unified file
 
@@ -44,9 +44,9 @@ If necessary, first prepare the original file by following **Legacy A/B-only pre
 
 The exporter refuses to overwrite an existing file. Keep the resulting participant-level JSON private under the Git-ignored outputs directory; do not commit it.
 
-Open prototype/auditory/index.html and choose outputs/auditory_abcd_p06_p07_shap_comparison.json in the **single** file picker. Select P06 or P07 and the completed stage once; tabs A–D show matched observations. An older A/B-only JSON is still accepted for A/B, but will not populate C/D.
+Open prototype/auditory/index.html and choose outputs/auditory_abcd_p06_p07_shap_comparison.json in the **single** file picker. Select P06 or P07 and the completed stage once; the three tabs show matched observations. An older A/B-only JSON still loads the SHAP tab, but it does not contain the data for Mamdani or Sugeno.
 
-**A:** original level-specific SHAP waterfall, a single prediction card, an optional stage-filtered comparison beeswarm, followed by the recorded measurements. **B:** original manually specified rules. **C:** the eight-leaf CART shows the single crisp path and every positively activated fuzzy-rule path, with separate line styles and activation-dependent emphasis. The expandable recorded measurements, tree zoom controls and activated-rule details remain available. The Mamdani plot shows the five original output membership functions behind the aggregated fuzzy output and marks both the regression prediction and centroid as numbers on the same continuous prediction-level axis; the regression marker is dashed grey and the Mamdani marker is solid orange, and the approximation difference appears only below the plot. **D:** three FCM cluster centers and the current session on a development-only PCA overview, membership bars labelled Cluster 1–3, a zero-centred gap chart for the selected cluster, and the unchanged weighted Sugeno score. C/D remain numerical explanations, not adaptation recommendations.
+**A:** original level-specific SHAP waterfall, a single prediction card, an optional stage-filtered comparison beeswarm, followed by the recorded measurements. **C:** the eight-leaf CART shows the single crisp path and every positively activated fuzzy-rule path, with separate line styles and activation-dependent emphasis. The expandable recorded measurements, tree zoom controls and activated-rule details remain available. The Mamdani plot shows the five original output membership functions behind the aggregated fuzzy output and marks both the regression prediction and centroid as numbers on the same continuous prediction-level axis; the regression marker is dashed grey and the Mamdani marker is solid orange, and the approximation difference appears only below the plot. **D:** three FCM cluster centers and the current session on a development-only PCA overview, membership bars labelled Cluster 1–3, a zero-centred gap chart for the selected cluster, and the unchanged weighted Sugeno score. C/D remain numerical explanations, not adaptation recommendations.
 
 In SHAP, Decision tree–Mamdani and FCM–Sugeno, the recorded measurements are the last item in the tab, directly above the shared next-session difficulty controls. Existing unified JSON files work without regeneration.
 
@@ -81,7 +81,7 @@ The interface uses **Level 0–3** and **Intermediate** as therapist-facing labe
 
 ### Verification
 
-Run the three viewer JavaScript test files using Node, and both Python export test files using unittest. Then generate the actual JSON and inspect all four browser tabs. The independent therapist-judgement fields remain unsaved.
+Run the viewer tests with Node and the Python export tests with unittest. Load the existing unified JSON in the browser and check all three tabs. The independent therapist-judgement fields remain unsaved.
 
 ---
 

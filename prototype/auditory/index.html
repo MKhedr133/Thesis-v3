@@ -41,7 +41,6 @@
 
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
-      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
       <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">Decision tree–Mamdani</button>
       <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">FCM–Sugeno</button>
     </nav>
@@ -91,35 +90,6 @@
       </details>
     </section>
 
-    <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
-      <div class="rule-summary">
-        <div class="rule-summary-main">
-          <p class="eyebrow">Suggested action</p>
-          <strong id="rule-indication">—</strong>
-          <p id="rule-context" class="hint"></p>
-        </div>
-      </div>
-      <div id="active-rule-section">
-        <h3>Activated rule(s)</h3>
-        <div id="main-rules" class="rule-list"></div>
-      </div>
-      <details>
-        <summary>All rules activations</summary>
-        <table>
-          <thead><tr><th>Rule description</th><th>Action</th><th>Activation scale (0–1)</th></tr></thead>
-          <tbody id="rule-rows"></tbody>
-        </table>
-      </details>
-      <details>
-        <summary>Feature categories activations</summary>
-        <table>
-          <thead><tr><th>Feature</th><th>Low</th><th>Intermediate</th><th>High</th></tr></thead>
-          <tbody id="membership-rows"></tbody>
-        </table>
-      </details>
-    </section>
-
-
     <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
@@ -153,7 +123,7 @@
           <span class="cd-legend-centroid">Mamdani prediction</span>
           <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
         </div>
-        <p class="cd-note">The strongest active leaf sets the limit for its category. Tied leaves share the limit.</p>
+        <p class="cd-note">The strongest active leaf sets the limit for its category.</p>
       </div>
       <details class="cd-recorded">
         <summary>Recorded measurements</summary>

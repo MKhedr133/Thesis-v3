@@ -562,48 +562,6 @@ function renderRegression(record, comparison, selectedStage, focused, onFeatureF
   warning.hidden = true;
   svgTarget.replaceChildren(makeShapBeeswarm(reg,comparison,selectedStage,filter,focused));
 }
-function ruleCard(rule) {
-  const node=document.createElement("div");
-  node.className="rule-item";
-  const identifier=document.createElement("span");
-  identifier.className="rule-id";
-  identifier.textContent=rule.Rule;
-  const sentence=document.createElement("p");
-  sentence.textContent=ruleSentence(rule.Rule);
-  node.append(identifier,sentence);
-  return node;
-}
-function renderFuzzy(record) {
-  const summary=ruleSummary(record);
-  document.getElementById("rule-indication").textContent=summary.suggestion;
-  const context=document.getElementById("rule-context");
-  context.textContent=summary.reason;
-  context.hidden=!summary.reason;
-
-  const main=document.getElementById("main-rules");
-  main.replaceChildren(...summary.main.map(ruleCard));
-  document.getElementById("active-rule-section").hidden=!summary.main.length;
-
-  // Keep all rule activations and the original policy outcomes in the input
-  // JSON unchanged. This tab displays a threshold-free rule-level indication,
-  // not a replacement for MOD-18's two-threshold candidate decision policy.
-  const rules=[...record.Fuzzy.Rules].sort((a,b)=>a.Rule.localeCompare(b.Rule));
-  document.getElementById("rule-rows").replaceChildren(...rules.map(rule=>
-    row([
-      rule.Rule+": "+ruleSentence(rule.Rule),
-      rule.Action,
-      format(finite(rule.Activation,true))
-    ])
-  ));
-  document.getElementById("membership-rows").replaceChildren(
-    ...record.Regression.Measurements.map(m=>row([
-      featureLabel(m.Name),
-      format(finite(m.Membership.Low,true)),
-      format(finite(m.Membership.Medium,true)),
-      format(finite(m.Membership.High,true))
-    ]))
-  );
-}
 function validateUnifiedDataset(bundle, validateCD) {
   if (!bundle || bundle.schema!=="auditory-abcd-unified-exploratory-v1" ||
       bundle.scientificStatus!=="exploratory_previously_inspected_reserved_test_cases" ||
@@ -648,6 +606,7 @@ function validateUnifiedDataset(bundle, validateCD) {
   return {records,cd};
 }
 function installApp() {
+  const methods=["regression","mamdani","sugeno"];
   let records=[], cd=null, comparison=null, focused=null, activeTab="regression";
   const file=document.getElementById("data-file");
   const participant=document.getElementById("participant");
@@ -675,15 +634,14 @@ function installApp() {
         document.getElementById("shap-compare-details").open=true;
         render();
       });
-      renderFuzzy(chosen);
     }
   }
   function setTab(name){
-    if(!["regression","fuzzy","mamdani","sugeno"].includes(name))
+    if(!methods.includes(name))
       throw new Error("Unknown explanation method");
     if((name==="mamdani"||name==="sugeno")&&!cd){
       status.hidden=false;
-      status.textContent="This file has A/B only. Load the unified A–D JSON for C/D.";
+      status.textContent="This file supports SHAP only. Load the unified JSON to view Mamdani or Sugeno.";
       return;
     }
     if(!records.length){
@@ -693,7 +651,7 @@ function installApp() {
     }
     activeTab=name;
     status.hidden=true;
-    for(const method of ["regression","fuzzy","mamdani","sugeno"]){
+    for(const method of methods){
       const selected=method===name;
       document.getElementById(method+"-view").hidden=!selected;
       document.getElementById("tab-"+method).setAttribute("aria-selected",String(selected));
@@ -743,7 +701,7 @@ function installApp() {
   document.getElementById("shap-stage-filter").addEventListener("change",()=>{
     if(activeTab==="regression")render();
   });
-  for(const name of ["regression","fuzzy","mamdani","sugeno"])
+  for(const name of methods)
     document.getElementById("tab-"+name).addEventListener("click",()=>setTab(name));
   for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"]])
     document.getElementById("cd-tree-zoom-"+suffix)
