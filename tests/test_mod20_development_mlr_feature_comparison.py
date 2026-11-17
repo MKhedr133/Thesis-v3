@@ -4,7 +4,9 @@ from hashlib import sha256
 import json
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import numpy as np
@@ -96,6 +98,77 @@ class DevelopmentComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "one trial"):
             comparison.prepare_development(source.drop(index=0), self.split())
 
+    def test_boundary_with_invalid_p_value_rescreens_all_features_by_participant(self):
+        rows = self.trials().query("condition_name == 'Visual'").iloc[:80].copy()
+        features = list(comparison.TRIAL_FEATURES)
+        mixed_p = pd.Series(0.99, index=features)
+        mixed_p["self_reported_mental_demand"] = np.nan
+        fit = SimpleNamespace(
+            converged=True, pvalues=mixed_p, cov_re=pd.DataFrame([[9e-11]]), scale=0.89,
+        )
+        # Stub the optimizer-dependent boundary result, but run real clustered OLS.
+        with patch.object(comparison.MOD02, "fit_mixedlm_with_fallback",
+                          return_value=(fit, "powell", ("boundary warning",), ())):
+            pvalues, audit = comparison._screen(rows, "Visual", "2")
+
+        design = comparison.sm.add_constant(rows[features])
+        reference = comparison.sm.OLS(rows["difficulty_stage"], design).fit()
+        clustered = reference.get_robustcov_results(
+            cov_type="cluster", groups=pd.factorize(rows["participant_id"])[0],
+            use_t=True, use_correction=True, df_correction=True,
+        )
+        self.assertEqual(list(pvalues), features)
+        np.testing.assert_allclose(list(pvalues.values()), clustered.pvalues[1:])
+        self.assertFalse(np.allclose(clustered.pvalues[1:], reference.pvalues.iloc[1:]))
+        self.assertEqual({row["screening_method"] for row in audit}, {"ols_participant_clustered"})
+        self.assertEqual({row["diagnostic"] for row in audit}, {"boundary warning"})
+        self.assertEqual({row["random_intercept_variance"] for row in audit}, {9e-11})
+        self.assertEqual(
+            [row["feature"] for row in audit if not row["mixed_model_p_value_finite"]],
+            ["self_reported_mental_demand"],
+        )
+
+    def test_boundary_with_finite_p_values_keeps_the_mixed_screen(self):
+        rows = self.trials().query("condition_name == 'Visual'").iloc[:80]
+        mixed_p = pd.Series(0.01, index=comparison.TRIAL_FEATURES)
+        fit = SimpleNamespace(
+            converged=True, pvalues=mixed_p, cov_re=pd.DataFrame([[0.0]]), scale=0.89,
+        )
+        with patch.object(comparison.MOD02, "fit_mixedlm_with_fallback",
+                          return_value=(fit, "powell", (), ())):
+            pvalues, audit = comparison._screen(rows, "Visual", "2")
+        self.assertEqual(pvalues, mixed_p.to_dict())
+        self.assertEqual({row["screening_method"] for row in audit}, {"mixedlm"})
+
+    def test_other_mixed_screen_failures_do_not_trigger_fallback(self):
+        rows = self.trials().query("condition_name == 'Visual'").iloc[:80]
+        for converged, variance, message in (
+            (False, 0.0, "did not converge"),
+            (True, 0.01, "invalid mixed-model p-values"),
+            (True, -0.01, "invalid mixed-model p-values"),
+        ):
+            with self.subTest(converged=converged, variance=variance):
+                fit = SimpleNamespace(
+                    converged=converged, pvalues=pd.Series(np.nan, index=comparison.TRIAL_FEATURES),
+                    cov_re=pd.DataFrame([[variance]]), scale=0.89,
+                )
+                with patch.object(comparison.MOD02, "fit_mixedlm_with_fallback",
+                                  return_value=(fit, "powell", (), ())):
+                    with self.assertRaisesRegex(ValueError, message):
+                        comparison._screen(rows, "Visual", "2")
+
+    def test_invalid_clustered_p_values_still_stop_the_screen(self):
+        rows = self.trials().query("condition_name == 'Visual'").iloc[:80].copy()
+        rows["difficulty_stage"] = 0
+        fit = SimpleNamespace(
+            converged=True, pvalues=pd.Series(np.nan, index=comparison.TRIAL_FEATURES),
+            cov_re=pd.DataFrame([[0.0]]), scale=0.89,
+        )
+        with patch.object(comparison.MOD02, "fit_mixedlm_with_fallback",
+                          return_value=(fit, "powell", (), ())):
+            with self.assertRaisesRegex(ValueError, "invalid participant-clustered OLS p-values"):
+                comparison._screen(rows, "Visual", "2")
+
     def test_real_mixed_screen_and_ols_produce_paired_oof_predictions(self):
         source = self.trials()
         source.loc[0, "median_hand_travel_to_straight_distance_ratio"] = np.nan
@@ -161,6 +234,7 @@ class DevelopmentComparisonTests(unittest.TestCase):
             provenance = json.loads((output / "comparison_manifest.json").read_text())
             self.assertEqual(provenance["evaluation"], "development_cross_validation")
             self.assertEqual(provenance["source_schema"], "fe04_all_grabs_v1")
+            self.assertEqual(provenance["screening_boundary_icc_max_inclusive"], 1e-8)
 
             self.assertEqual((output / "comparison_mae_change.pdf").read_bytes()[:5], b"%PDF-")
             table = (output / "comparison_table.tex").read_text(encoding="utf-8")

@@ -44,6 +44,8 @@ ADD_BACK = {
 }
 P_CUTOFF = 0.05
 MAE_MARGIN = 0.05
+# Numerical boundary tolerance on the unitless share of variance, not a significance test.
+SCREEN_BOUNDARY_ICC = 1e-8
 CANDIDATES = ("full", "screened", "add_back")
 CANDIDATE_LABELS = {"full": "Full MLR", "screened": "Screened MLR", "add_back": "Add-back MLR"}
 
@@ -139,13 +141,43 @@ def _screen(rows: pd.DataFrame, condition: str, label: str) -> tuple[dict[str, f
     diagnostic = " | ".join((*fit_warnings, *fit_errors))
     if result is None or not result.converged:
         raise ValueError(f"{condition}, {label}: mixed-model screen did not converge. {diagnostic}")
+    variance, residual = float(result.cov_re.iloc[0, 0]), float(result.scale)
+    icc = (
+        variance / (variance + residual)
+        if np.isfinite(variance) and variance >= 0 and np.isfinite(residual) and residual > 0
+        else np.nan
+    )
     pvalues = result.pvalues.reindex(TRIAL_FEATURES)
-    if not np.isfinite(pvalues).all():
-        raise ValueError(f"{condition}, {label}: invalid mixed-model p-values. {diagnostic}")
+    mixed_finite = np.isfinite(pvalues)
+    method = "mixedlm"
+    if not mixed_finite.all():
+        if not 0 <= icc <= SCREEN_BOUNDARY_ICC:
+            invalid = ", ".join(pvalues.index[~mixed_finite])
+            raise ValueError(
+                f"{condition}, {label}: invalid mixed-model p-values for {invalid} "
+                f"(random-intercept ICC={icc:.3g}). {diagnostic}"
+            )
+        method = "ols_participant_clustered"
+        clustered_fit = sm.OLS(rows[TARGET].astype(float), _design(rows, TRIAL_FEATURES)).fit(
+            cov_type="cluster", use_t=True,
+            cov_kwds={
+                "groups": rows["participant_id"].to_numpy(dtype=str),
+                "use_correction": True,
+                "df_correction": True,
+            },
+        )
+        pvalues = clustered_fit.pvalues.reindex(TRIAL_FEATURES)
+        if not np.isfinite(pvalues).all():
+            raise ValueError(
+                f"{condition}, {label}: invalid participant-clustered OLS p-values "
+                f"after a boundary mixed-model fit. {diagnostic}"
+            )
     audit = [
         {"condition": condition, "round": label, "feature": feature, "p_value": float(p),
          "retained_by_screen": bool(p < P_CUTOFF), "optimizer": optimizer,
-         "random_intercept_variance": float(result.cov_re.iloc[0, 0]), "diagnostic": diagnostic}
+         "random_intercept_variance": variance, "diagnostic": diagnostic,
+         "screening_method": method, "random_intercept_icc": icc,
+         "mixed_model_p_value_finite": bool(mixed_finite.loc[feature])}
         for feature, p in pvalues.items()
     ]
     return pvalues.to_dict(), audit
@@ -373,6 +405,7 @@ def main(argv: list[str] | None = None) -> None:
         "reserved_participants_evaluated": 0,
         "cross_validation_rounds": MOD15.CV_N_SPLITS,
         "p_value_cutoff_exclusive": P_CUTOFF,
+        "screening_boundary_icc_max_inclusive": SCREEN_BOUNDARY_ICC,
         "mae_margin_stage_units_inclusive": MAE_MARGIN,
         "add_back": ADD_BACK,
         "predictors": TRIAL_FEATURES,

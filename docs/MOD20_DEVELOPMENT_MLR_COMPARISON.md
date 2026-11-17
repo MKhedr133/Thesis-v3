@@ -12,7 +12,9 @@ In each of five participant-grouped cross-validation rounds, the full MLR uses a
 | Auditory | Time between grabs and product search duration |
 | Cognitive | Shopping list recheck count and total recheck time |
 
-All candidates in a round train and score on the same complete cases. The output counts trials with all features needed by each candidate. It lists that count separately from the trials used to compare prediction errors. The mixed-model p-values are screening statistics, not evidence that a predictor is useless.
+All candidates in a round train and score on the same complete cases. The output counts trials with all features needed by each candidate. It lists that count separately from the trials used to compare prediction errors. The p-values guide feature screening. They do not establish whether keeping a predictor improves predictions.
+
+An initial development run returned an invalid p-value in Visual round 2 despite convergence. The estimated participant variance was close to zero. MOD-20 now uses a fallback only when a converged mixed model returns at least one non-finite predictor p-value and the random intercept accounts for at most `1e-8` of the total estimated variance (participant plus residual). This is a numerical tolerance, not a test for whether participants differ. In that case, MOD-20 fits OLS on the same training trials and recalculates p-values for all ten predictors using standard errors clustered by participant and a small-sample correction. The screening cutoff stays at 0.05. The fallback can also apply when screening the final development refit. The screen audit records the method used, the original fit diagnostics and which original p-values were finite.
 
 The selected approach must have fewer predictors on average than the full MLR and a participant-balanced MAE no more than 0.05 stage units higher. If both alternatives qualify, prefer fewer predictors, then lower MAE. If they tie on both, prefer the screened equation. If neither qualifies, keep the full equation. Reapply the selected approach to the eligible trials of all 26 development participants to estimate the final coefficients. The six reserved participants do not enter fitting, scoring or selection. The cross-validation results are development comparisons, not independent test performance.
 
@@ -28,7 +30,7 @@ python python/MOD_20_development_mlr_feature_comparison.py `
     --output-dir outputs/mod20_development_mlr_features
 ```
 
-Start with `comparison_summary.csv`. The other outputs record each round's predictor set and coverage, development predictions, mixed-model p-values and fit warnings, final coefficients, and input hashes. If the screen fails to converge or produces invalid p-values, the analysis stops rather than treating the affected features as non-significant. Keep the input data and generated CSVs local.
+Start with `comparison_summary.csv`. To see where the fallback ran, look for `ols_participant_clustered` in the `screening_method` column of `mixed_model_screen.csv`. The other outputs record each round's predictor set and coverage, development predictions, final coefficients, and input hashes. The analysis stops if the mixed model fails to converge, the p-values are invalid outside the numerical boundary, or the fallback also returns invalid p-values. Keep the input data and generated CSVs local.
 
 ## Report outputs
 
