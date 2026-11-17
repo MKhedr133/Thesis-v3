@@ -29,3 +29,12 @@ python python/MOD_20_development_mlr_feature_comparison.py `
 ```
 
 Start with `comparison_summary.csv`. The other outputs record each round's predictor set and coverage, development predictions, mixed-model p-values and fit warnings, final coefficients, and input hashes. If the screen fails to converge or produces invalid p-values, the analysis stops rather than treating the affected features as non-significant. Keep the input data and generated CSVs local.
+
+## Report outputs
+
+The same command writes a vector PDF figure and a LaTeX table to the output directory. Both use the values from `comparison_summary.csv`.
+
+- `comparison_mae_change.pdf` shows how participant-balanced MAE changed relative to the full MLR. Each point summarises one candidate's results across the development cross-validation rounds. The dashed line marks the allowed increase of +0.05 difficulty-stage units. This margin guides model selection and does not establish statistical equivalence.
+- `comparison_table.tex` gives the absolute MAE, mean predictor count and shared scoring coverage for each equation. The selected equation is in bold. Include the table with `\input{path/to/comparison_table.tex}` and load `booktabs` in the LaTeX preamble.
+
+When including the figure, state in the caption that the comparison used participant-grouped cross-validation on the 26 development participants. Within each condition, all candidates were scored on the same trials. The six reserved participants were not evaluated.

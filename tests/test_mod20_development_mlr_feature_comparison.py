@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from matplotlib import pyplot as plt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 
@@ -128,6 +129,7 @@ class DevelopmentComparisonTests(unittest.TestCase):
             output = root / "comparison"
             rows = self.trials().rename(columns={"difficulty_stage": "difficulty_level"})
             rows["recorded_difficulty_code"] = rows["difficulty_level"].map({0: 0, 1: 2, 2: 6, 3: 10})
+            rows.loc[0, "median_hand_travel_to_straight_distance_ratio"] = np.nan
             rows.to_csv(trials, index=False)
             self.split().to_csv(split, index=False)
             source = {
@@ -154,11 +156,49 @@ class DevelopmentComparisonTests(unittest.TestCase):
             self.assertEqual(set(results.condition), {"Visual", "Auditory", "Cognitive"})
             self.assertEqual(results.groupby("condition").selected.sum().tolist(), [1, 1, 1])
             predictions = pd.read_csv(output / "development_predictions.csv")
-            self.assertEqual(len(predictions), 3 * 3 * 104)
+            self.assertEqual(len(predictions), 3 * (103 + 104 + 104))
             self.assertNotIn("S31", set(predictions.participant_id))
             provenance = json.loads((output / "comparison_manifest.json").read_text())
             self.assertEqual(provenance["evaluation"], "development_cross_validation")
             self.assertEqual(provenance["source_schema"], "fe04_all_grabs_v1")
+
+            self.assertEqual((output / "comparison_mae_change.pdf").read_bytes()[:5], b"%PDF-")
+            table = (output / "comparison_table.tex").read_text(encoding="utf-8")
+            self.assertEqual(table.count(r"\textbf{"), 3)
+            self.assertEqual(table.count("103/104"), 3)
+            self.assertEqual(table.count("104/104"), 6)
+            for result in results.itertuples():
+                self.assertIn(
+                    f"{result.participant_balanced_mae:.3f} & {result.mean_predictor_count:.1f}",
+                    table,
+                )
+
+    def test_mae_change_figure_uses_paired_deltas_and_marks_full_selection(self):
+        scores = pd.DataFrame([
+            ("Visual", "full", 0.00, False),
+            ("Visual", "screened", 0.05, True),
+            ("Visual", "add_back", -0.02, False),
+            ("Auditory", "full", 0.00, True),
+            ("Auditory", "screened", 0.08, False),
+            ("Auditory", "add_back", 0.08, False),
+            ("Cognitive", "full", 0.00, False),
+            ("Cognitive", "screened", 0.06, False),
+            ("Cognitive", "add_back", 0.01, True),
+        ], columns=["condition", "candidate", "mae_change_vs_full", "selected"])
+        figure = comparison.mae_change_figure(scores.sample(frac=1, random_state=1))
+        try:
+            axis = figure.axes[0]
+            screened, add_back = axis.collections
+            np.testing.assert_allclose(screened.get_offsets()[:, 0], [0.05, 0.08, 0.06])
+            np.testing.assert_allclose(add_back.get_offsets()[:, 0], [-0.02, 0.08, 0.01])
+            self.assertNotEqual(screened.get_offsets()[1, 1], add_back.get_offsets()[1, 1])
+            self.assertEqual([line.get_xdata() for line in axis.lines], [[0, 0], [0.05, 0.05]])
+            self.assertIn("Full MLR", [label.get_text() for label in axis.texts])
+            figure.canvas.draw()
+            for label in axis.texts:
+                self.assertLess(label.get_window_extent().x1, figure.bbox.x1)
+        finally:
+            plt.close(figure)
 
     def test_covariates_are_not_selected_from_participant_metadata(self):
         source = self.trials().assign(age=1, tmt_b_seconds=40)

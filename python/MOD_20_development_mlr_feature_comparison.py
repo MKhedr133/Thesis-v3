@@ -9,6 +9,8 @@ from hashlib import sha256
 import json
 from pathlib import Path
 
+from matplotlib import pyplot as plt
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 import statsmodels
@@ -43,6 +45,7 @@ ADD_BACK = {
 P_CUTOFF = 0.05
 MAE_MARGIN = 0.05
 CANDIDATES = ("full", "screened", "add_back")
+CANDIDATE_LABELS = {"full": "Full MLR", "screened": "Screened MLR", "add_back": "Add-back MLR"}
 
 
 @dataclass(frozen=True)
@@ -257,6 +260,86 @@ def _read_fe04(path: Path, manifest_path: Path) -> tuple[pd.DataFrame, str]:
     return rows.rename(columns={"difficulty_level": TARGET}), digest
 
 
+def mae_change_figure(summary: pd.DataFrame) -> Figure:
+    """Plot the saved CV differences on one scale without recomputing scores."""
+    conditions = list(ADD_BACK)
+    scores = summary.set_index(["candidate", "condition"])
+    positions = np.arange(len(conditions))
+    figure, axis = plt.subplots(figsize=(7.0, 3.4))
+    figure.subplots_adjust(left=0.16, right=0.715, bottom=0.22, top=0.72)
+
+    zero = axis.axvline(0, color="#474747", linewidth=1, label="Full MLR reference (0)")
+    margin = axis.axvline(
+        MAE_MARGIN, color="#474747", linewidth=1, linestyle="--",
+        label=f"Allowed increase (+{MAE_MARGIN:.2f})",
+    )
+    markers = []
+    for candidate, offset, shape, colour in (
+        ("screened", -0.15, "o", "#0072b2"),
+        ("add_back", 0.15, "D", "#a64119"),
+    ):
+        rows = scores.loc[candidate].loc[conditions]
+        markers.append(axis.scatter(
+            rows["mae_change_vs_full"], positions + offset, marker=shape, s=38,
+            facecolors=[colour if selected else "white" for selected in rows["selected"]],
+            edgecolors=colour, linewidths=1.25, zorder=3, label=CANDIDATE_LABELS[candidate],
+        ))
+
+    axis.set_yticks(positions, labels=conditions)
+    axis.set_ylim(len(conditions) - 0.55, -0.55)
+    axis.margins(x=0.13)
+    axis.tick_params(axis="y", length=0, pad=8)
+    axis.set_xlabel("Change in participant-balanced MAE (difficulty-stage units)")
+    axis.spines[["top", "right", "left"]].set_visible(False)
+    axis.set_axisbelow(True)
+    axis.grid(axis="y", color="#e0e0e0", linewidth=0.7)
+    axis.legend(
+        handles=[*markers, zero, margin], loc="lower left", bbox_to_anchor=(0, 1.07),
+        borderaxespad=0, ncol=2, frameon=False, fontsize=9,
+    )
+    axis.text(1.06, 1.04, "Selected equation", transform=axis.transAxes, fontweight="bold")
+    selected = summary.loc[summary["selected"]].set_index("condition")["candidate"]
+    for position, condition in enumerate(conditions):
+        axis.text(
+            1.06, position, CANDIDATE_LABELS[selected.loc[condition]],
+            transform=axis.get_yaxis_transform(), va="center",
+        )
+    return figure
+
+
+def _write_comparison_table(summary: pd.DataFrame, path: Path) -> None:
+    rows = summary.set_index(["condition", "candidate"])
+    lines = [
+        r"\begin{table}[tbp]",
+        r"\centering",
+        r"\caption{Development cross-validation on 26 participants by condition. "
+        r"MAE is participant-balanced and reported in difficulty-stage units. "
+        r"Predictor counts are averaged across five rounds. "
+        r"Trials scored shows the number of shared scored trials out of all validation trials. "
+        r"Bold marks the selected equation.}",
+        r"\label{tab:mod20-mlr-comparison}",
+        r"\begin{tabular}{llrrr}",
+        r"\toprule",
+        r"Condition & Equation & MAE & Mean predictors & Trials scored \\",
+        r"\midrule",
+    ]
+    for i, condition in enumerate(ADD_BACK):
+        if i:
+            lines.append(r"\addlinespace")
+        for candidate in CANDIDATES:
+            row = rows.loc[(condition, candidate)]
+            label = CANDIDATE_LABELS[candidate]
+            if row["selected"]:
+                label = rf"\textbf{{{label}}}"
+            lines.append(
+                f"{condition if candidate == 'full' else ''} & {label} & "
+                f"{row['participant_balanced_mae']:.3f} & {row['mean_predictor_count']:.1f} & "
+                f"{row['paired_scored_trials']}/{row['validation_trials']}" + r" \\"
+            )
+    lines.extend([r"\bottomrule", r"\end{tabular}", r"\end{table}"])
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--trial-features", type=Path, required=True, help="FE-04 trial_features.csv")
@@ -274,7 +357,6 @@ def main(argv: list[str] | None = None) -> None:
         for condition in ADD_BACK
     ]
     outputs = {
-        "comparison_summary.csv": "summary",
         "cross_validation_rounds.csv": "rounds",
         "development_predictions.csv": "predictions",
         "mixed_model_screen.csv": "screen",
@@ -299,10 +381,18 @@ def main(argv: list[str] | None = None) -> None:
         "missing_data": "same complete cases for fitting and scoring all candidates",
     }
     args.output_dir.mkdir(parents=True)
+    summary = pd.concat([result.summary for result in results], ignore_index=True)
+    summary.to_csv(args.output_dir / "comparison_summary.csv", index=False)
     for filename, name in outputs.items():
         pd.concat([getattr(result, name) for result in results], ignore_index=True).to_csv(
             args.output_dir / filename, index=False,
         )
+    figure = mae_change_figure(summary)
+    try:
+        figure.savefig(args.output_dir / "comparison_mae_change.pdf")
+    finally:
+        plt.close(figure)
+    _write_comparison_table(summary, args.output_dir / "comparison_table.tex")
     (args.output_dir / "comparison_manifest.json").write_text(
         json.dumps(provenance, indent=2) + "\n", encoding="utf-8",
     )
