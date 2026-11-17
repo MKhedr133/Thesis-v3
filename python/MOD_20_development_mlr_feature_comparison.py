@@ -11,6 +11,7 @@ from pathlib import Path
 
 from matplotlib import pyplot as plt
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import statsmodels
@@ -297,45 +298,59 @@ def mae_change_figure(summary: pd.DataFrame) -> Figure:
     conditions = list(ADD_BACK)
     scores = summary.set_index(["candidate", "condition"])
     positions = np.arange(len(conditions))
-    figure, axis = plt.subplots(figsize=(7.0, 3.4))
-    figure.subplots_adjust(left=0.16, right=0.715, bottom=0.22, top=0.72)
+    figure, axis = plt.subplots(figsize=(7.0, 3.8))
+    figure.subplots_adjust(left=0.14, right=0.965, bottom=0.18, top=0.68)
 
-    zero = axis.axvline(0, color="#474747", linewidth=1, label="Full MLR reference (0)")
+    zero = axis.axvline(
+        0, color="#474747", linewidth=1, label=f"Full model ({len(TRIAL_FEATURES)} predictors)",
+    )
     margin = axis.axvline(
         MAE_MARGIN, color="#474747", linewidth=1, linestyle="--",
         label=f"Allowed increase (+{MAE_MARGIN:.2f})",
     )
     markers = []
-    for candidate, offset, shape, colour in (
-        ("screened", -0.15, "o", "#0072b2"),
-        ("add_back", 0.15, "D", "#a64119"),
+    for candidate, offset, shape, colour, label in (
+        ("screened", -0.20, "o", "#0072b2",
+         f"After removing predictors\n(keeping those with $p < {P_CUTOFF:.2f}$)"),
+        ("add_back", 0.20, "D", "#a64119",
+         "After adding back any removed predictors\nfrom the pair chosen in advance for each condition"),
+        ("full", 0, "s", "#474747", ""),
     ):
         rows = scores.loc[candidate].loc[conditions]
-        markers.append(axis.scatter(
-            rows["mae_change_vs_full"], positions + offset, marker=shape, s=38,
+        y_positions = positions + offset
+        if candidate == "full":
+            # The reference line already shows the full model. Mark it only if selected.
+            y_positions = y_positions[rows["selected"].to_numpy()]
+            rows = rows.loc[rows["selected"]]
+            if rows.empty:
+                continue
+        marker = axis.scatter(
+            rows["mae_change_vs_full"], y_positions, marker=shape, s=38,
             facecolors=[colour if selected else "white" for selected in rows["selected"]],
-            edgecolors=colour, linewidths=1.25, zorder=3, label=CANDIDATE_LABELS[candidate],
-        ))
+            edgecolors=colour, linewidths=1.25, zorder=3, label=label,
+        )
+        if candidate != "full":
+            markers.append(marker)
+        for x, y, count in zip(rows["mae_change_vs_full"], y_positions, rows["mean_predictor_count"]):
+            axis.annotate(
+                f"{count:.1f}", (x, y), xytext=(7, 0), textcoords="offset points",
+                va="center", fontsize=9,
+            )
 
     axis.set_yticks(positions, labels=conditions)
     axis.set_ylim(len(conditions) - 0.55, -0.55)
     axis.margins(x=0.13)
     axis.tick_params(axis="y", length=0, pad=8)
-    axis.set_xlabel("Change in participant-balanced MAE (difficulty-stage units)")
+    axis.set_xlabel("Change in MAE (stage units)")
     axis.spines[["top", "right", "left"]].set_visible(False)
     axis.set_axisbelow(True)
     axis.grid(axis="y", color="#e0e0e0", linewidth=0.7)
+    selected_key = Line2D([], [], marker="o", linestyle="none", markersize=5.5,
+                          color="#474747", label="Filled marker: selected model")
     axis.legend(
-        handles=[*markers, zero, margin], loc="lower left", bbox_to_anchor=(0, 1.07),
-        borderaxespad=0, ncol=2, frameon=False, fontsize=9,
+        handles=[*markers, selected_key, zero, margin], loc="lower left", bbox_to_anchor=(0, 1.04),
+        borderaxespad=0, columnspacing=1.2, ncol=2, frameon=False, fontsize=9,
     )
-    axis.text(1.06, 1.04, "Selected equation", transform=axis.transAxes, fontweight="bold")
-    selected = summary.loc[summary["selected"]].set_index("condition")["candidate"]
-    for position, condition in enumerate(conditions):
-        axis.text(
-            1.06, position, CANDIDATE_LABELS[selected.loc[condition]],
-            transform=axis.get_yaxis_transform(), va="center",
-        )
     return figure
 
 

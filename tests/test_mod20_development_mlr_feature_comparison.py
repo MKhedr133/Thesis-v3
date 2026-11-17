@@ -249,26 +249,36 @@ class DevelopmentComparisonTests(unittest.TestCase):
 
     def test_mae_change_figure_uses_paired_deltas_and_marks_full_selection(self):
         scores = pd.DataFrame([
-            ("Visual", "full", 0.00, False),
-            ("Visual", "screened", 0.05, True),
-            ("Visual", "add_back", -0.02, False),
-            ("Auditory", "full", 0.00, True),
-            ("Auditory", "screened", 0.08, False),
-            ("Auditory", "add_back", 0.08, False),
-            ("Cognitive", "full", 0.00, False),
-            ("Cognitive", "screened", 0.06, False),
-            ("Cognitive", "add_back", 0.01, True),
-        ], columns=["condition", "candidate", "mae_change_vs_full", "selected"])
+            ("Visual", "full", 0.00, False, 10.0),
+            ("Visual", "screened", 0.05, True, 3.2),
+            ("Visual", "add_back", -0.02, False, 5.0),
+            ("Auditory", "full", 0.00, True, 10.0),
+            ("Auditory", "screened", 0.08, False, 3.4),
+            ("Auditory", "add_back", 0.08, False, 4.8),
+            ("Cognitive", "full", 0.00, False, 10.0),
+            ("Cognitive", "screened", 0.06, False, 2.0),
+            ("Cognitive", "add_back", 0.01, True, 3.6),
+        ], columns=["condition", "candidate", "mae_change_vs_full", "selected", "mean_predictor_count"])
         figure = comparison.mae_change_figure(scores.sample(frac=1, random_state=1))
         try:
             axis = figure.axes[0]
-            screened, add_back = axis.collections
+            screened, add_back = axis.collections[:2]
             np.testing.assert_allclose(screened.get_offsets()[:, 0], [0.05, 0.08, 0.06])
             np.testing.assert_allclose(add_back.get_offsets()[:, 0], [-0.02, 0.08, 0.01])
             self.assertNotEqual(screened.get_offsets()[1, 1], add_back.get_offsets()[1, 1])
             self.assertEqual([line.get_xdata() for line in axis.lines], [[0, 0], [0.05, 0.05]])
-            self.assertIn("Full MLR", [label.get_text() for label in axis.texts])
+            self.assertEqual(
+                [label.get_text() for label in axis.texts],
+                ["3.2", "3.4", "2.0", "5.0", "4.8", "3.6", "10.0"],
+            )
+            np.testing.assert_allclose(axis.collections[2].get_offsets(), [[0, 1]])
+            self.assertFalse(np.array_equal(screened.get_facecolors()[0], screened.get_facecolors()[1]))
+            labels = " ".join(" ".join(t.get_text().split()) for t in axis.get_legend().get_texts())
+            self.assertIn("keeping those with $p < 0.05$", labels)
+            self.assertIn("from the pair chosen in advance for each condition", labels)
             figure.canvas.draw()
+            legend = axis.get_legend().get_window_extent(figure.canvas.get_renderer())
+            self.assertTrue(figure.bbox.contains(legend.x1, legend.y1))
             for label in axis.texts:
                 self.assertLess(label.get_window_extent().x1, figure.bbox.x1)
         finally:
