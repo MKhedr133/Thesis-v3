@@ -86,9 +86,8 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .cd-feature-track::after{content:"";position:absolute;left:50%;top:0;bottom:0;
   width:1px;background:#536d84;transform:translateX(-50%)}
 .cd-feature-fill{position:absolute;top:2px;height:9px;background:#2d719d;border-radius:2px}
-.cd-profile-title{margin:16px 0 8px;font-size:13px}
 .cd-gap-axis{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
-  gap:4px;color:#536578;font-size:11px}
+  gap:4px;margin-top:16px;color:#536578;font-size:11px}
 .cd-gap-axis span:last-child{text-align:right}
 .cd-key{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:#556b7e;margin-top:10px}
 .cd-key>span{display:inline-flex;align-items:center;gap:6px}

@@ -422,7 +422,6 @@
   function profileDetails(target,obs,profile,features,domain){
     target.replaceChildren();
     target.setAttribute("aria-label","Cluster "+profile.cluster+" recorded measurement comparison");
-    target.append(html("h4","cd-profile-title","Gap to Cluster "+profile.cluster+" centre"));
     const axis=html("div","cd-gap-axis");
     axis.setAttribute("aria-hidden","true");
     axis.append(...["Below centre","0","Above centre"].map(text=>html("span",null,text)));
@@ -441,7 +440,6 @@
       fill.style.width=(50*(gap/features[i].maximum)/domain)+"%";
       track.append(fill);row.append(track);target.append(row);
     }
-    target.append(html("p","cd-note","Bar lengths use the same model scale across rows. Labels show gaps in the original units."));
   }
   function show(data,example,stage,method){
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);

@@ -385,7 +385,8 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
       t.includes("Each feature has its own scale")||
       t.includes("measurement comparison")||
       t.includes("Session value / learned")));
-    assert.ok(comparisonText.includes("Gap to Cluster 3 centre"));
+    assert.ok(!comparisonText.some(text=>text.startsWith("Gap to Cluster")));
+    assert.ok(!comparisonText.some(text=>text.startsWith("Bar lengths use")));
     const fills=()=>all(comparison).filter(n=>n.className==="cd-feature-fill");
     const gapLabels=()=>all(comparison).filter(n=>n.className==="cd-feature-gap").map(n=>n.textContent);
     assert.equal(fills().length,4);
