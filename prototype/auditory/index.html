@@ -53,15 +53,6 @@
           <strong id="prediction">—</strong>
         </div>
       </div>
-      <details class="cd-recorded shap-recorded">
-        <summary>Recorded measurements</summary>
-        <div class="cd-recorded-scroll">
-          <table aria-label="Recorded Auditory measurements">
-            <thead><tr><th>Measurement</th><th>Measured value</th></tr></thead>
-            <tbody id="measurement-rows"></tbody>
-          </table>
-        </div>
-      </details>
       <div class="cd-hero shap-hero">
         <figure>
           <div id="waterfall" class="chart" aria-live="polite"></div>
@@ -87,6 +78,15 @@
             <span><i class="shap-dot shap-current"></i>Current observation</span>
             <span class="shap-value-gradient">Lower contribution value <i></i> Higher contribution value</span>
           </div>
+        </div>
+      </details>
+      <details class="cd-recorded shap-recorded">
+        <summary>Recorded measurements</summary>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Recorded Auditory measurements">
+            <thead><tr><th>Measurement</th><th>Measured value</th></tr></thead>
+            <tbody id="measurement-rows"></tbody>
+          </table>
         </div>
       </details>
     </section>
@@ -124,13 +124,6 @@
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
-          <details class="cd-recorded">
-            <summary>Recorded measurements</summary>
-            <table aria-label="Four recorded Auditory measurements">
-              <thead><tr><th>Measurement</th><th>Recorded value</th></tr></thead>
-              <tbody id="cd-recorded-rows"></tbody>
-            </table>
-          </details>
           <div class="cd-tree-toolbar" role="group" aria-label="Decision tree zoom controls">
             <button id="cd-tree-zoom-out" type="button" aria-label="Zoom out of decision tree">−</button>
             <output id="cd-tree-zoom-value" aria-live="polite">100%</output>
@@ -160,20 +153,19 @@
           <span class="cd-legend-centroid">Mamdani prediction</span>
           <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
         </div>
+        <p class="cd-note">The strongest active leaf sets the limit for its category. Tied leaves share the limit.</p>
       </div>
+      <details class="cd-recorded">
+        <summary>Recorded measurements</summary>
+        <table aria-label="Four recorded Auditory measurements">
+          <thead><tr><th>Measurement</th><th>Recorded value</th></tr></thead>
+          <tbody id="cd-recorded-rows"></tbody>
+        </table>
+      </details>
     </section>
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
       <div id="cd-sugeno-scores" class="cd-scores"></div>
-      <details class="cd-recorded cd-cluster-recorded">
-        <summary>Recorded measurements</summary>
-        <div class="cd-recorded-scroll">
-          <table aria-label="Auditory measurements and all three learned cluster centers">
-            <thead><tr><th>Measurement</th><th>Recorded value</th><th>Cluster 1 center</th><th>Cluster 2 center</th><th>Cluster 3 center</th></tr></thead>
-            <tbody id="cd-sugeno-recorded-rows"></tbody>
-          </table>
-        </div>
-      </details>
       <div class="cd-grid">
         <div class="cd-hero">
           <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
@@ -193,6 +185,15 @@
         <h3>Calculation</h3>
         <div id="cd-calculation" class="cd-calculation"></div>
       </div>
+      <details class="cd-recorded cd-cluster-recorded">
+        <summary>Recorded measurements</summary>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Auditory measurements and all three learned cluster centers">
+            <thead><tr><th>Measurement</th><th>Recorded value</th><th>Cluster 1 center</th><th>Cluster 2 center</th><th>Cluster 3 center</th></tr></thead>
+            <tbody id="cd-sugeno-recorded-rows"></tbody>
+          </table>
+        </div>
+      </details>
     </section>
 
     <section class="panel" aria-label="Next session decision">
