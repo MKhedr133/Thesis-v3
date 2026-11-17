@@ -419,10 +419,14 @@
       return row;
     });
   }
-  function profileDetails(target,obs,profile,features){
+  function profileDetails(target,obs,profile,features,domain){
     target.replaceChildren();
     target.setAttribute("aria-label","Cluster "+profile.cluster+" recorded measurement comparison");
     target.append(html("h4","cd-profile-title","Gap to Cluster "+profile.cluster+" centre"));
+    const axis=html("div","cd-gap-axis");
+    axis.setAttribute("aria-hidden","true");
+    axis.append(...["Below centre","0","Above centre"].map(text=>html("span",null,text)));
+    target.append(axis);
     for(let i=0;i<4;i++){
       const row=html("div","cd-feature");
       const difference=obs.measurements[i]-profile.centre[i];
@@ -433,10 +437,11 @@
         difference===0?"At centre":amount+" "+UNITS[i]+direction));
       const track=html("div","cd-feature-track"),fill=html("span","cd-feature-fill");
       track.setAttribute("aria-hidden","true");
-      fill.style.width=(100*Math.min(1,gap/features[i].maximum))+"%";
+      fill.style[difference<0?"right":"left"]="50%";
+      fill.style.width=(50*(gap/features[i].maximum)/domain)+"%";
       track.append(fill);row.append(track);target.append(row);
     }
-    target.append(html("p","cd-note","Shorter bars mean smaller gaps. Bar lengths are scaled to each measurement’s development maximum."));
+    target.append(html("p","cd-note","Bar lengths use the same model scale across rows. Labels show gaps in the original units."));
   }
   function show(data,example,stage,method){
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);
@@ -471,6 +476,12 @@
         .replaceChildren(...recordedRows(obs.measurements,data.profiles));
       document.getElementById("cd-scatter").replaceChildren(scatter(data.clusterMap,obs));
       const list=document.getElementById("cd-memberships"),detail=document.getElementById("cd-profile-detail");
+      // One symmetric display domain for every case and cluster in this file.
+      // The differences use the feature scaling already used in FCM inference.
+      const largestGap=Math.max(.1,...data.cases.flatMap(({measurements})=>
+        data.profiles.flatMap(({centre})=>measurements.map((value,i)=>
+          Math.abs(value-centre[i])/data.features[i].maximum))));
+      const domain=Math.ceil(largestGap*10)/10;
       const buttons=[],winner=obs.sugeno.memberships.indexOf(Math.max(...obs.sugeno.memberships));
       data.profiles.forEach((profile,i)=>{
         const b=html("button","cd-membership");b.type="button";
@@ -483,10 +494,10 @@
         track.append(fill);b.append(row,track);
         b.addEventListener("click",()=>{
           buttons.forEach(btn=>btn.setAttribute("aria-pressed","false"));
-          b.setAttribute("aria-pressed","true");profileDetails(detail,obs,profile,data.features);
+          b.setAttribute("aria-pressed","true");profileDetails(detail,obs,profile,data.features,domain);
         });buttons.push(b);
       });
-      list.replaceChildren(...buttons);profileDetails(detail,obs,data.profiles[winner],data.features);
+      list.replaceChildren(...buttons);profileDetails(detail,obs,data.profiles[winner],data.features,domain);
       const calcs=document.getElementById("cd-calculation");
       calcs.replaceChildren(...data.profiles.map((profile,i)=>{
         const r=html("div","cd-term");r.append(html("span",null,"Cluster "+(i+1)),

@@ -390,11 +390,17 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     const gapLabels=()=>all(comparison).filter(n=>n.className==="cd-feature-gap").map(n=>n.textContent);
     assert.equal(fills().length,4);
     assert.equal(fills()[0].style.width,"0%");
-    assert.ok(Math.abs(parseFloat(fills()[3].style.width)-11.1111)<.001);
+    assert.equal(fills()[1].style.right,"50%");
+    assert.ok(Math.abs(parseFloat(fills()[3].style.width)-13.8889)<.001);
+    assert.ok(comparisonText.includes("Below centre"));
+    assert.ok(comparisonText.includes("Above centre"));
     assert.deepEqual(gapLabels(),["At centre","3 s below","1 s below","20 ° below"]);
     elements.get("cd-memberships").children[1].listeners.click();
     assert.deepEqual(gapLabels(),["1 /10 above","2 s below","At centre","10 ° below"]);
     assert.equal(fills()[2].style.width,"0%");
+    assert.equal(fills()[0].style.left,"50%");
+    assert.equal(fills()[0].style.width,"12.5%");
+    assert.equal(fills()[3].style.right,"50%");
     assert.equal(all(comparison).filter(n=>n.className==="cd-feature").length,4);
     for(const label of [
       "Subjective mental demand rating",
@@ -413,6 +419,13 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     assert.ok(calculation.includes("0.3 × 2 = 0.6"));
     assert.ok(calculation.includes("0.5 × 3 = 1.5"));
     assert.ok(!calculation.some(t=>t.includes("Profile")));
+    // A large synthetic gap expands the display domain rather than clamping.
+    d.cases[0].measurements[0]=25;
+    CD.show(d,"P06","0","sugeno");
+    elements.get("cd-memberships").children[0].listeners.click();
+    assert.equal(fills()[0].style.left,"50%");
+    assert.equal(fills()[0].style.width,"50%");
+    assert.equal(gapLabels()[0],"23 /10 above");
   }finally{global.document=prev;}
 });
 
