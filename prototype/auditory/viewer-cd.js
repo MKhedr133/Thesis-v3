@@ -11,6 +11,7 @@
   ];
   const UNITS = ["/10","s","s","°"];
   const COLORS = ["#3576a5","#228d85","#ae7c35"];
+  const OUTPUT_TERMS = ["Very low","Low","Medium","High","Very high"];
   const linguisticLabel = value => String(value)
     .replace(/\bMental demand\b/gi,LABELS[0])
     .replace(/\bTime between grabs\b/gi,LABELS[1])
@@ -82,7 +83,7 @@
       grid[0]<grid[grid.length-1],"invalid original output universe");
     const lo=grid[0],hi=grid[grid.length-1];
     const centres=Array.from({length:5},(_,i)=>lo+(hi-lo)*i/4);
-    const names=["Very low","Low","Intermediate","High","Very high"];
+    const names=OUTPUT_TERMS.map(linguisticLabel);
     const values=centres.map((centre,i)=>grid.map(x=>{
       if(i===0)return Math.max(0,Math.min(1,(centres[1]-x)/(centres[1]-centres[0])));
       if(i===4)return Math.max(0,Math.min(1,(x-centres[3])/(centres[4]-centres[3])));
@@ -258,7 +259,7 @@
     if(!rules.length)return [html("p","hint","No activated rules. Mamdani result unavailable.")];
     return rules.map(rule=>{
       const item=html("details","cd-rule"),head=html("summary");
-      head.append(html("span",null,"Leaf "+rule.leaf),
+      head.append(html("span",null,"Leaf "+rule.leaf+" → "+linguisticLabel(rule.consequent)),
         html("strong",null,f(rule.activation,2)));
       const track=html("div","cd-track"),fill=html("div","cd-fill");
       fill.style.width=(rule.activation*100)+"%";track.append(fill);
@@ -271,16 +272,28 @@
       return html("p","hint","Unavailable: no valid aggregated fuzzy output.");
     const curve=obs.mamdani.outputCurve,x=curve.x,y=curve.y;
     const categories=outputCategories(x);
+    // Max aggregation makes the strongest positive rule(s) the clip limit
+    // for each consequent. This explains the saved curve without refitting it.
+    const caps=OUTPUT_TERMS.map(term=>{
+      const rules=obs.mamdani.rules.filter(rule=>rule.consequent===term);
+      const activation=Math.max(0,...rules.map(rule=>rule.activation));
+      const leaves=rules.filter(rule=>activation>0&&rule.activation===activation)
+        .map(rule=>rule.leaf).sort((a,b)=>a-b);
+      const label=leaves.length ? (leaves.length===1?"Leaf ":"Leaves ")+leaves.join(", ") : "No active leaf";
+      return {activation,label,lines:wrappedFeatureName(label,19)};
+    });
+    const extraHeight=(Math.max(...caps.map(cap=>cap.lines.length))-1)*13;
     const original=obs.originalPrediction,centroidScore=obs.mamdani.prediction;
     const bounds=plotBounds(x,original,centroidScore);
     const X=v=>48+694*(v-bounds.lower)/(bounds.upper-bounds.lower);
     const axisY=218,Y=v=>axisY-126*v;
     const xa=X(original),xb=X(centroidScore);
-    const chart=svg("svg",{viewBox:"0 0 790 322",role:"img",
+    const chart=svg("svg",{viewBox:"0 0 790 "+(333+extraHeight),role:"img",
       "aria-label":"Five output membership categories, combined fuzzy shape, regression prediction "+
         f(original)+" and Mamdani prediction "+f(centroidScore)+
         ". Difference "+(centroidScore>=original?"+":"−")+
-        f(Math.abs(centroidScore-original))+" difficulty-level points."});
+        f(Math.abs(centroidScore-original))+" difficulty-level points. Category limits: "+
+        categories.names.map((name,i)=>name+": "+caps[i].label).join("; ")+"."});
     chart.append(svg("title",{},
       "Original five fuzzy output categories, combined Mamdani membership and two model prediction markers"));
     chart.append(svg("line",{x1:48,y1:axisY,x2:742,y2:axisY,
@@ -324,10 +337,10 @@
       points:combined,fill:"none",stroke:"#7147bf",
       "stroke-width":3.5,"stroke-linejoin":"round"
     }));
-    chart.append(svg("line",{x1:xa,y1:34,x2:xa,y2:axisY,
+    chart.append(svg("line",{class:"cd-regression-marker",x1:xa,y1:34,x2:xa,y2:axisY,
       stroke:"#687a90","stroke-width":2,"stroke-dasharray":"5 5"}));
-    chart.append(svg("line",{x1:xb,y1:56,x2:xb,y2:axisY,
-      stroke:"#173f6c","stroke-width":2.5,"stroke-dasharray":"7 4"}));
+    chart.append(svg("line",{class:"cd-centroid-marker",x1:xb,y1:56,x2:xb,y2:axisY,
+      stroke:"#a54410","stroke-width":3}));
     // Number-only markers: the legend identifies regression and centroid.
     chart.append(svg("text",{
       x:Math.max(80,Math.min(710,xa)),y:25,"text-anchor":"middle",
@@ -335,7 +348,7 @@
     },f(original)));
     chart.append(svg("text",{
       x:Math.max(80,Math.min(710,xb)),y:49,"text-anchor":"middle",
-      fill:"#173f6c","font-size":15,"font-weight":700
+      fill:"#a54410","font-size":15,"font-weight":700
     },f(centroidScore)));
     for(let i=0;i<=4;i++){
       const value=bounds.lower+(bounds.upper-bounds.lower)*i/4,px=X(value);
@@ -348,8 +361,16 @@
       chart.append(svg("text",{x:X(centre),y:axisY+49,
         "text-anchor":"middle",fill:"#51677d","font-size":12,
         "font-weight":600},categories.names[i]));
+      const label=svg("text",{class:"cd-category-leaves",x:X(centre),y:axisY+66,
+        "text-anchor":"middle",fill:"#415870","font-size":11});
+      caps[i].lines.forEach((line,j)=>{
+        label.append(svg("tspan",{x:X(centre),dy:j?13:0},line));
+      });
+      label.append(svg("title",{},categories.names[i]+": "+caps[i].label+
+        (caps[i].activation>0?" (activation "+f(caps[i].activation)+")":"")));
+      chart.append(label);
     });
-    chart.append(svg("text",{x:395,y:307,"text-anchor":"middle",
+    chart.append(svg("text",{x:395,y:319+extraHeight,"text-anchor":"middle",
       fill:"#425e77","font-size":14,"font-weight":600},
       "Predicted difficulty level"));
     return chart;
@@ -398,19 +419,27 @@
       return row;
     });
   }
-  function profileDetails(target,obs,profile,features){
+  function profileDetails(target,obs,profile,features,domain){
     target.replaceChildren();
     target.setAttribute("aria-label","Cluster "+profile.cluster+" recorded measurement comparison");
+    const axis=html("div","cd-gap-axis");
+    axis.setAttribute("aria-hidden","true");
+    axis.append(...["Below centre","0","Above centre"].map(text=>html("span",null,text)));
+    target.append(axis);
     for(let i=0;i<4;i++){
       const row=html("div","cd-feature");
-      row.append(html("span",null,LABELS[i]));
-      const track=html("div","cd-feature-track"),dot1=html("span","cd-feature-dot"),
-        dot2=html("span","cd-feature-dot cd-feature-centre");
-      dot1.style.left=(100*Math.min(1,obs.measurements[i]/features[i].maximum))+"%";
-      dot2.style.left=(100*Math.min(1,profile.centre[i]/features[i].maximum))+"%";
-      track.append(dot1,dot2);row.append(track);target.append(row);
+      const difference=obs.measurements[i]-profile.centre[i];
+      const gap=Math.abs(difference);
+      const amount=gap<.001?"<0.001":f(gap);
+      const direction=difference<0?" below":" above";
+      row.append(html("span",null,LABELS[i]),html("strong","cd-feature-gap",
+        difference===0?"At centre":amount+" "+UNITS[i]+direction));
+      const track=html("div","cd-feature-track"),fill=html("span","cd-feature-fill");
+      track.setAttribute("aria-hidden","true");
+      fill.style[difference<0?"right":"left"]="50%";
+      fill.style.width=(50*(gap/features[i].maximum)/domain)+"%";
+      track.append(fill);row.append(track);target.append(row);
     }
-    target.append(html("p","cd-note","Solid = current session · outline = cluster center."));
   }
   function show(data,example,stage,method){
     const obs=data.cases.find(r=>r.example===example&&r.stage===stage);
@@ -445,6 +474,12 @@
         .replaceChildren(...recordedRows(obs.measurements,data.profiles));
       document.getElementById("cd-scatter").replaceChildren(scatter(data.clusterMap,obs));
       const list=document.getElementById("cd-memberships"),detail=document.getElementById("cd-profile-detail");
+      // One symmetric display domain for every case and cluster in this file.
+      // The differences use the feature scaling already used in FCM inference.
+      const largestGap=Math.max(.1,...data.cases.flatMap(({measurements})=>
+        data.profiles.flatMap(({centre})=>measurements.map((value,i)=>
+          Math.abs(value-centre[i])/data.features[i].maximum))));
+      const domain=Math.ceil(largestGap*10)/10;
       const buttons=[],winner=obs.sugeno.memberships.indexOf(Math.max(...obs.sugeno.memberships));
       data.profiles.forEach((profile,i)=>{
         const b=html("button","cd-membership");b.type="button";
@@ -457,10 +492,10 @@
         track.append(fill);b.append(row,track);
         b.addEventListener("click",()=>{
           buttons.forEach(btn=>btn.setAttribute("aria-pressed","false"));
-          b.setAttribute("aria-pressed","true");profileDetails(detail,obs,profile,data.features);
+          b.setAttribute("aria-pressed","true");profileDetails(detail,obs,profile,data.features,domain);
         });buttons.push(b);
       });
-      list.replaceChildren(...buttons);profileDetails(detail,obs,data.profiles[winner],data.features);
+      list.replaceChildren(...buttons);profileDetails(detail,obs,data.profiles[winner],data.features,domain);
       const calcs=document.getElementById("cd-calculation");
       calcs.replaceChildren(...data.profiles.map((profile,i)=>{
         const r=html("div","cd-term");r.append(html("span",null,"Cluster "+(i+1)),

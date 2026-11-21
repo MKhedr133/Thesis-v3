@@ -197,7 +197,7 @@ test("shared prediction axis contains both original MLR and centroid even if reg
 test("Mamdani SVG overlays original regression and centroid on one axis with shaded difference",()=>{
   const obs={
     originalPrediction:1.29,
-    mamdani:{status:"OK",prediction:1.389,outputCurve:{
+    mamdani:{status:"OK",prediction:1.389,rules:[],outputCurve:{
       x:[.46,.9,1.5,2,2.5,3.23],y:[0,.69,.69,.25,.25,0]
     }}
   };
@@ -211,9 +211,12 @@ test("Mamdani SVG overlays original regression and centroid on one axis with sha
     assert.doesNotMatch(figure.attributes["aria-label"],/Approximation difference/);
     assert.ok(nodes.some(n=>n.tag==="polygon"&&n.attributes.fill==="#7850c8"));
     assert.ok(nodes.some(n=>n.tag==="polyline"&&n.attributes.stroke==="#7147bf"));
-    const orig=nodes.find(n=>n.tag==="line"&&n.attributes.stroke==="#687a90");
-    const centroid=nodes.find(n=>n.tag==="line"&&n.attributes.stroke==="#173f6c");
+    const orig=nodes.find(n=>n.tag==="line"&&n.attributes.class==="cd-regression-marker");
+    const centroid=nodes.find(n=>n.tag==="line"&&n.attributes.class==="cd-centroid-marker");
     assert.ok(orig&&centroid);
+    assert.notEqual(orig.attributes.stroke,centroid.attributes.stroke);
+    assert.ok(orig.attributes["stroke-dasharray"]);
+    assert.equal(centroid.attributes["stroke-dasharray"],undefined);
     assert.ok(Number(orig.attributes.x1)<Number(centroid.attributes.x1));
     assert.ok(nodes.some(n=>n.tag==="rect"&&n.attributes.fill==="#c7d8f5"));
     assert.ok(nodes.some(n=>n.textContent==="Predicted difficulty level"));
@@ -224,6 +227,25 @@ test("Mamdani SVG overlays original regression and centroid on one axis with sha
       n.attributes.stroke==="#9bb1c5").length,5);
     for(const label of ["Very low","Low","Intermediate","High","Very high"])
       assert.ok(nodes.some(n=>n.textContent===label));
+  });
+});
+test("Mamdani identifies all tied positive leaves that set each category cap",()=>{
+  const obs={originalPrediction:1.29,mamdani:{status:"OK",prediction:1.389,
+    outputCurve:{x:[.46,.9,1.5,2,2.5,3.23],y:[0,.69,.69,.25,.25,0]},
+    rules:[
+      {leaf:0,activation:0,consequent:"Very low"},
+      {leaf:1,activation:.22,consequent:"Low"},
+      {leaf:5,activation:.69,consequent:"Low"},
+      {leaf:3,activation:.69,consequent:"Low"},
+      {leaf:7,activation:.25,consequent:"Medium"},
+      {leaf:8,activation:0,consequent:"High"}
+    ]}};
+  withMockSvgDom(()=>{
+    const chart=CD.outputChart(obs);
+    const labels=walkSvg(chart).filter(n=>n.tag==="text"&&n.attributes.class==="cd-category-leaves");
+    assert.deepEqual(labels.map(n=>n.children.filter(line=>line.tag==="tspan").map(line=>line.textContent).join(" ")),
+      ["No active leaf","Leaves 3, 5","Leaf 7","No active leaf","No active leaf"]);
+    assert.match(chart.attributes["aria-label"],/Low: Leaves 3, 5.*Intermediate: Leaf 7/);
   });
 });
 test("Mamdani chart preserves unavailable without plotting fabricated markers",()=>{
@@ -363,7 +385,23 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
       t.includes("Each feature has its own scale")||
       t.includes("measurement comparison")||
       t.includes("Session value / learned")));
-    assert.ok(comparisonText.includes("Solid = current session · outline = cluster center."));
+    assert.ok(!comparisonText.some(text=>text.startsWith("Gap to Cluster")));
+    assert.ok(!comparisonText.some(text=>text.startsWith("Bar lengths use")));
+    const fills=()=>all(comparison).filter(n=>n.className==="cd-feature-fill");
+    const gapLabels=()=>all(comparison).filter(n=>n.className==="cd-feature-gap").map(n=>n.textContent);
+    assert.equal(fills().length,4);
+    assert.equal(fills()[0].style.width,"0%");
+    assert.equal(fills()[1].style.right,"50%");
+    assert.ok(Math.abs(parseFloat(fills()[3].style.width)-13.8889)<.001);
+    assert.ok(comparisonText.includes("Below centre"));
+    assert.ok(comparisonText.includes("Above centre"));
+    assert.deepEqual(gapLabels(),["At centre","3 s below","1 s below","20 ° below"]);
+    elements.get("cd-memberships").children[1].listeners.click();
+    assert.deepEqual(gapLabels(),["1 /10 above","2 s below","At centre","10 ° below"]);
+    assert.equal(fills()[2].style.width,"0%");
+    assert.equal(fills()[0].style.left,"50%");
+    assert.equal(fills()[0].style.width,"12.5%");
+    assert.equal(fills()[3].style.right,"50%");
     assert.equal(all(comparison).filter(n=>n.className==="cd-feature").length,4);
     for(const label of [
       "Subjective mental demand rating",
@@ -373,7 +411,6 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     ])assert.ok(comparisonText.includes(label));
     assert.ok(!comparisonText.includes("4 /10"));
     assert.ok(!comparisonText.includes("40 °"));
-    assert.equal(all(comparison).filter(n=>n.tag==="strong").length,0);
 
     const calculation=all(elements.get("cd-calculation")).map(n=>n.textContent);
     for(const cluster of ["Cluster 1","Cluster 2","Cluster 3"])
@@ -383,6 +420,13 @@ test("Sugeno screen uses clusters, no visible case caption, and unchanged member
     assert.ok(calculation.includes("0.3 × 2 = 0.6"));
     assert.ok(calculation.includes("0.5 × 3 = 1.5"));
     assert.ok(!calculation.some(t=>t.includes("Profile")));
+    // A large synthetic gap expands the display domain rather than clamping.
+    d.cases[0].measurements[0]=25;
+    CD.show(d,"P06","0","sugeno");
+    elements.get("cd-memberships").children[0].listeners.click();
+    assert.equal(fills()[0].style.left,"50%");
+    assert.equal(fills()[0].style.width,"50%");
+    assert.equal(gapLabels()[0],"23 /10 above");
   }finally{global.document=prev;}
 });
 
@@ -424,8 +468,12 @@ test("long labels wrap cleanly in the learned CART without abbreviating their me
   assert.ok(spans.includes("product"));
 });
 
-test("Mamdani leaf summaries omit consequents while retaining activations and conditions",()=>{
+test("Mamdani leaf summaries show saved output categories and unchanged activations",()=>{
   const d=exploratoryFixture();
+  const rules=d.cases[0].mamdani.rules;
+  rules[0].activation=.69;rules[0].consequent="Low";
+  rules[1].activation=.31;rules[1].consequent="Medium";
+  rules[7].activation=0;
   const previous=global.document;
   const elements=new Map();
   function el(tag){
@@ -447,12 +495,21 @@ test("Mamdani leaf summaries omit consequents while retaining activations and co
     CD.show(d,"P06","0","mamdani");
     const summaries=walkSvg(elements.get("cd-rule-list"))
       .filter(n=>n.tag==="summary");
-    assert.ok(summaries.length>0);
+    assert.equal(summaries.length,7);
     for(const summary of summaries){
-      assert.match(summary.children[0].textContent,/^Leaf \d+$/);
-      assert.ok(Number(summary.children[1].textContent)>0);
-      assert.ok(!summary.children[0].textContent.includes(" · "));
+      const leaf=Number(summary.children[0].textContent.match(/^Leaf (\d+) → /)?.[1]);
+      const rule=rules.find(r=>r.leaf===leaf);
+      assert.ok(rule);
+      assert.equal(summary.children[0].textContent,
+        "Leaf "+leaf+" → "+CD.linguisticLabel(rule.consequent));
+      assert.equal(Number(summary.children[1].textContent),Number(rule.activation.toFixed(2)));
     }
+    assert.equal(summaries[0].children[0].textContent,"Leaf 0 → Low");
+    assert.equal(summaries[1].children[0].textContent,"Leaf 1 → Intermediate");
+    const fills=walkSvg(elements.get("cd-rule-list"))
+      .filter(node=>node.className==="cd-fill");
+    assert.equal(fills[0].style.width,"69%");
+    assert.equal(fills[1].style.width,"31%");
     const details=walkSvg(elements.get("cd-rule-list"))
       .filter(n=>n.className==="cd-rule-text");
     assert.ok(details.length>0);

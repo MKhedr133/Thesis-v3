@@ -41,7 +41,6 @@
 
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
-      <button id="tab-fuzzy" type="button" role="tab" aria-controls="fuzzy-view" aria-selected="false">Fuzzy rules</button>
       <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">Decision tree–Mamdani</button>
       <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">FCM–Sugeno</button>
     </nav>
@@ -53,15 +52,6 @@
           <strong id="prediction">—</strong>
         </div>
       </div>
-      <details class="cd-recorded shap-recorded">
-        <summary>Recorded measurements</summary>
-        <div class="cd-recorded-scroll">
-          <table aria-label="Recorded Auditory measurements">
-            <thead><tr><th>Measurement</th><th>Measured value</th></tr></thead>
-            <tbody id="measurement-rows"></tbody>
-          </table>
-        </div>
-      </details>
       <div class="cd-hero shap-hero">
         <figure>
           <div id="waterfall" class="chart" aria-live="polite"></div>
@@ -89,48 +79,21 @@
           </div>
         </div>
       </details>
-    </section>
-
-    <section id="fuzzy-view" class="panel" role="tabpanel" aria-labelledby="tab-fuzzy" hidden>
-      <div class="rule-summary">
-        <div class="rule-summary-main">
-          <p class="eyebrow">Suggested action</p>
-          <strong id="rule-indication">—</strong>
-          <p id="rule-context" class="hint"></p>
+      <details class="cd-recorded shap-recorded">
+        <summary>Recorded measurements</summary>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Recorded Auditory measurements">
+            <thead><tr><th>Measurement</th><th>Measured value</th></tr></thead>
+            <tbody id="measurement-rows"></tbody>
+          </table>
         </div>
-      </div>
-      <div id="active-rule-section">
-        <h3>Activated rule(s)</h3>
-        <div id="main-rules" class="rule-list"></div>
-      </div>
-      <details>
-        <summary>All rules activations</summary>
-        <table>
-          <thead><tr><th>Rule description</th><th>Action</th><th>Activation scale (0–1)</th></tr></thead>
-          <tbody id="rule-rows"></tbody>
-        </table>
-      </details>
-      <details>
-        <summary>Feature categories activations</summary>
-        <table>
-          <thead><tr><th>Feature</th><th>Low</th><th>Intermediate</th><th>High</th></tr></thead>
-          <tbody id="membership-rows"></tbody>
-        </table>
       </details>
     </section>
-
 
     <section id="mamdani-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-mamdani" hidden>
       <div id="cd-mamdani-scores" class="cd-scores"></div>
       <div class="cd-grid">
         <div class="cd-hero">
-          <details class="cd-recorded">
-            <summary>Recorded measurements</summary>
-            <table aria-label="Four recorded Auditory measurements">
-              <thead><tr><th>Measurement</th><th>Recorded value</th></tr></thead>
-              <tbody id="cd-recorded-rows"></tbody>
-            </table>
-          </details>
           <div class="cd-tree-toolbar" role="group" aria-label="Decision tree zoom controls">
             <button id="cd-tree-zoom-out" type="button" aria-label="Zoom out of decision tree">−</button>
             <output id="cd-tree-zoom-value" aria-live="polite">100%</output>
@@ -139,14 +102,14 @@
           </div>
           <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
           <div class="cd-tree-legend" aria-label="Decision tree route legend">
-            <span class="cd-legend-crisp" title="Crisp decision-tree route; not necessarily the highest-activation fuzzy rule">Strongest rule route</span>
+            <span class="cd-legend-crisp" title="Original crisp decision-tree path; not necessarily the highest-activation fuzzy rule">Original decision-tree path</span>
             <span class="cd-legend-fuzzy">Other activated fuzzy routes</span>
             <span class="cd-legend-inactive">Inactive routes</span>
           </div>
         </div>
         <aside class="cd-sidebar">
           <h3>Fuzzy rule activations</h3>
-          <p class="cd-note">Rules ordered by activation strength; select one to inspect its conditions.</p>
+          <p class="cd-note">Rules ordered by activation strength (0 = no match, 1 = full match). Select one to inspect its conditions.</p>
           <div id="cd-rule-list"></div>
         </aside>
       </div>
@@ -160,20 +123,19 @@
           <span class="cd-legend-centroid">Mamdani prediction</span>
           <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
         </div>
+        <p class="cd-note">The strongest active leaf sets the limit for its category.</p>
       </div>
+      <details class="cd-recorded">
+        <summary>Recorded measurements</summary>
+        <table aria-label="Four recorded Auditory measurements">
+          <thead><tr><th>Measurement</th><th>Recorded value</th></tr></thead>
+          <tbody id="cd-recorded-rows"></tbody>
+        </table>
+      </details>
     </section>
 
     <section id="sugeno-view" class="panel cd-panel" role="tabpanel" aria-labelledby="tab-sugeno" hidden>
       <div id="cd-sugeno-scores" class="cd-scores"></div>
-      <details class="cd-recorded cd-cluster-recorded">
-        <summary>Recorded measurements</summary>
-        <div class="cd-recorded-scroll">
-          <table aria-label="Auditory measurements and all three learned cluster centers">
-            <thead><tr><th>Measurement</th><th>Recorded value</th><th>Cluster 1 center</th><th>Cluster 2 center</th><th>Cluster 3 center</th></tr></thead>
-            <tbody id="cd-sugeno-recorded-rows"></tbody>
-          </table>
-        </div>
-      </details>
       <div class="cd-grid">
         <div class="cd-hero">
           <div id="cd-scatter" class="cd-graphic" aria-live="polite"></div>
@@ -193,6 +155,15 @@
         <h3>Calculation</h3>
         <div id="cd-calculation" class="cd-calculation"></div>
       </div>
+      <details class="cd-recorded cd-cluster-recorded">
+        <summary>Recorded measurements</summary>
+        <div class="cd-recorded-scroll">
+          <table aria-label="Auditory measurements and all three learned cluster centers">
+            <thead><tr><th>Measurement</th><th>Recorded value</th><th>Cluster 1 center</th><th>Cluster 2 center</th><th>Cluster 3 center</th></tr></thead>
+            <tbody id="cd-sugeno-recorded-rows"></tbody>
+          </table>
+        </div>
+      </details>
     </section>
 
     <section class="panel" aria-label="Next session decision">
