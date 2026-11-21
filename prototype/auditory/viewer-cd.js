@@ -259,7 +259,7 @@
     if(!rules.length)return [html("p","hint","No activated rules. Mamdani result unavailable.")];
     return rules.map(rule=>{
       const item=html("details","cd-rule"),head=html("summary");
-      head.append(html("span",null,"Leaf "+rule.leaf),
+      head.append(html("span",null,"Leaf "+rule.leaf+" → "+linguisticLabel(rule.consequent)),
         html("strong",null,f(rule.activation,2)));
       const track=html("div","cd-track"),fill=html("div","cd-fill");
       fill.style.width=(rule.activation*100)+"%";track.append(fill);

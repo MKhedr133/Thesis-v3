@@ -468,8 +468,12 @@ test("long labels wrap cleanly in the learned CART without abbreviating their me
   assert.ok(spans.includes("product"));
 });
 
-test("Mamdani leaf summaries omit consequents while retaining activations and conditions",()=>{
+test("Mamdani leaf summaries show saved output categories and unchanged activations",()=>{
   const d=exploratoryFixture();
+  const rules=d.cases[0].mamdani.rules;
+  rules[0].activation=.69;rules[0].consequent="Low";
+  rules[1].activation=.31;rules[1].consequent="Medium";
+  rules[7].activation=0;
   const previous=global.document;
   const elements=new Map();
   function el(tag){
@@ -491,12 +495,21 @@ test("Mamdani leaf summaries omit consequents while retaining activations and co
     CD.show(d,"P06","0","mamdani");
     const summaries=walkSvg(elements.get("cd-rule-list"))
       .filter(n=>n.tag==="summary");
-    assert.ok(summaries.length>0);
+    assert.equal(summaries.length,7);
     for(const summary of summaries){
-      assert.match(summary.children[0].textContent,/^Leaf \d+$/);
-      assert.ok(Number(summary.children[1].textContent)>0);
-      assert.ok(!summary.children[0].textContent.includes(" · "));
+      const leaf=Number(summary.children[0].textContent.match(/^Leaf (\d+) → /)?.[1]);
+      const rule=rules.find(r=>r.leaf===leaf);
+      assert.ok(rule);
+      assert.equal(summary.children[0].textContent,
+        "Leaf "+leaf+" → "+CD.linguisticLabel(rule.consequent));
+      assert.equal(Number(summary.children[1].textContent),Number(rule.activation.toFixed(2)));
     }
+    assert.equal(summaries[0].children[0].textContent,"Leaf 0 → Low");
+    assert.equal(summaries[1].children[0].textContent,"Leaf 1 → Intermediate");
+    const fills=walkSvg(elements.get("cd-rule-list"))
+      .filter(node=>node.className==="cd-fill");
+    assert.equal(fills[0].style.width,"69%");
+    assert.equal(fills[1].style.width,"31%");
     const details=walkSvg(elements.get("cd-rule-list"))
       .filter(n=>n.className==="cd-rule-text");
     assert.ok(details.length>0);
