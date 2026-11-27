@@ -156,7 +156,9 @@ test("waterfall uses green/red bars and labels the population prediction referen
     const text=chart.children.filter(n=>n.tag==="text").map(n=>n.textContent);
     assert.ok(text.includes("Population difficulty level"));
     assert.ok(text.includes("prediction reference"));
-    assert.ok(text.includes("Model-predicted difficulty level"));
+    assert.ok(!text.includes("Model-predicted difficulty level"));
+    assert.ok(text.includes("Predicted difficulty level"));
+    assert.ok(chart.children.filter(n=>n.tag==="text"&&n.attributes.class==="axis-label").length>0);
     names.forEach(name=>assert.ok(text.includes(shapFeatureLabel(name))));
   });
 });
