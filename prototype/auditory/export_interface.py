@@ -7,6 +7,9 @@ import re
 ROOT = Path(__file__).resolve().parents[2]
 VIEWER = Path(__file__).with_name("index.html")
 LEVEL_CODES = ("0", "2", "6", "10")
+SHAP_COMPARISON_EXPORTS = (("all", "all-difficulty-levels"),) + tuple(
+    (code, f"level-{level}") for level, code in enumerate(LEVEL_CODES)
+)
 WIDTH, HEIGHT, SCALE = 1920, 1080, 3
 
 METHODS = {
@@ -66,6 +69,22 @@ def capture(page, destination, selectors):
     )
     page.screenshot(path=destination, full_page=True, clip=clip,
                     type="png", scale="device", animations="disabled")
+
+
+def capture_shap_comparisons(page, folder, name, selectors):
+    """Capture each population with the selected session reference unchanged."""
+    population = page.locator("#shap-stage-filter")
+    original = population.input_value()
+    try:
+        for value, suffix in SHAP_COMPARISON_EXPORTS:
+            population.select_option(value)
+            page.locator("#shap-beeswarm svg").wait_for(state="visible")
+            page.evaluate("window.scrollTo(0, 0)")
+            capture(page, folder / f"{name}-{suffix}.png", selectors)
+    finally:
+        population.select_option(original)
+        page.locator("#shap-beeswarm svg").wait_for(state="visible")
+        page.evaluate("window.scrollTo(0, 0)")
 
 
 def prepare_method(page, method):
@@ -145,7 +164,10 @@ def main():
                 folder.mkdir()
                 _, sections = METHODS[method]
                 for name, selectors in sections:
-                    capture(page, folder / (name + ".png"), selectors)
+                    if method == "shap" and name == "02-comparison":
+                        capture_shap_comparisons(page, folder, name, selectors)
+                    else:
+                        capture(page, folder / (name + ".png"), selectors)
                 capture(page, folder / "00-complete-interface.png", (".shell",))
         finally:
             browser.close()
