@@ -98,9 +98,10 @@
             <button id="cd-tree-zoom-out" type="button" aria-label="Zoom out of decision tree">−</button>
             <output id="cd-tree-zoom-value" aria-live="polite">100%</output>
             <button id="cd-tree-zoom-in" type="button" aria-label="Zoom in on decision tree">+</button>
-            <button id="cd-tree-zoom-reset" type="button">Reset</button>
+            <button id="cd-tree-zoom-reset" type="button" aria-label="Reset decision tree to readable size">Reset</button>
+            <button id="cd-tree-zoom-fit" type="button" aria-label="Fit entire decision tree in viewport">Fit</button>
           </div>
-          <div id="cd-tree" class="cd-graphic cd-tree-viewport" aria-live="polite"></div>
+          <div id="cd-tree" class="cd-graphic cd-tree-viewport" tabindex="0" role="region" aria-label="Decision tree. Scroll to explore at readable size." aria-live="polite"></div>
           <div class="cd-tree-legend" aria-label="Decision tree route legend">
             <span class="cd-legend-crisp" title="Original crisp decision-tree path; not necessarily the highest-activation fuzzy rule">Original decision-tree path</span>
             <span class="cd-legend-fuzzy">Other activated fuzzy routes</span>

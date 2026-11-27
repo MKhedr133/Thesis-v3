@@ -1,5 +1,5 @@
 :root{font-family:Arial,Helvetica,sans-serif;color:#172436;background:#f5f7fa;font-synthesis:none}
-*{box-sizing:border-box}body{margin:0}.shell{max-width:1120px;margin:0 auto;padding:28px 22px 40px}
+*{box-sizing:border-box}body{margin:0}.shell{width:100%;margin:0 auto;padding:22px 22px 32px}
 .header{display:flex;align-items:flex-start;justify-content:space-between;gap:15px;margin-bottom:20px}
 .header h1{margin:4px 0 8px;font-size:clamp(23px,3vw,31px);line-height:1.18}
 .eyebrow{font-weight:700;letter-spacing:.075em;text-transform:uppercase;font-size:12px;color:#356282;margin:0}
@@ -103,13 +103,17 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 #mamdani-view .cd-top{justify-content:flex-end}
 .cd-recorded{margin:14px 0 0}
 .cd-recorded table{font-variant-numeric:tabular-nums}
-.cd-tree-toolbar{display:flex;justify-content:flex-end;align-items:center;gap:8px;margin:4px 0 10px}
+.cd-tree-toolbar{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin:4px 0 10px}
 .cd-tree-toolbar button{min-width:36px;min-height:34px;border:1px solid #c4d2e0;border-radius:6px;
   background:#fff;color:#254767;font-weight:700;cursor:pointer;padding:6px 10px}
 .cd-tree-toolbar button:hover{background:#edf3fb}
 .cd-tree-toolbar output{font-size:12px;min-width:42px;text-align:center;color:#405c73;
   font-variant-numeric:tabular-nums}
-.cd-tree-viewport{max-height:520px;overflow:auto;scrollbar-gutter:stable}
+.cd-tree-viewport{height:clamp(420px,65vh,850px);overflow:auto;scrollbar-gutter:stable}
+#mamdani-view .cd-grid{grid-template-columns:minmax(0,1fr)}
+#mamdani-view .cd-sidebar{max-height:none;overflow:visible}
+#cd-rule-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px;align-items:start}
+.cd-tree-viewport:focus-visible{outline:3px solid #2c89b2;outline-offset:2px}
 .cd-tree-viewport svg{min-width:0;max-width:none;height:auto}
 #cd-curve svg{min-width:400px;max-height:none}
 .cd-curve-legend{display:flex;flex-wrap:wrap;align-items:center;gap:10px 19px;
@@ -122,7 +126,7 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 .cd-legend-difference{font-size:12px;color:#214a75;margin-left:auto;
   font-variant-numeric:tabular-nums}
 @media(max-width:620px){.cd-curve-legend{gap:10px}.cd-legend-difference{margin-left:0;width:100%}
-  .cd-tree-viewport{max-height:420px}}
+  .cd-tree-viewport{height:clamp(300px,60vh,420px)}}
 
 /* Distinguish crisp CART navigation from every positively activated fuzzy route. */
 #mamdani-view .cd-scores{grid-template-columns:repeat(2,minmax(0,1fr));margin-top:0}
