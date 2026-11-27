@@ -318,7 +318,6 @@ function makeWaterfall(regression, onFeatureFocus) {
   svg.append(svgNode("text",{x:14,y:finalY+5,class:"row-name final-name"},"Predicted difficulty level"));
   svg.append(svgNode("circle",{cx:x(prediction),cy:finalY,r:6,fill:"#334155"}));
   svg.append(svgNode("text",{x:1030,y:finalY+5,"text-anchor":"end",class:"row-value final-name"},format(prediction)));
-  svg.append(svgNode("text",{x:615,y:axisY+45,"text-anchor":"middle",class:"axis-label"},"Model-predicted difficulty level"));
   return svg;
 }
 function cell(value) {
