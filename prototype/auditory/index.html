@@ -41,8 +41,8 @@
 
     <nav class="tabs" role="tablist" aria-label="Explanation method">
       <button id="tab-regression" type="button" role="tab" aria-controls="regression-view" aria-selected="true">SHAP</button>
-      <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">Decision tree–Mamdani</button>
-      <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">FCM–Sugeno</button>
+      <button id="tab-mamdani" type="button" role="tab" aria-controls="mamdani-view" aria-selected="false">Decision tree &amp; Mamdani</button>
+      <button id="tab-sugeno" type="button" role="tab" aria-controls="sugeno-view" aria-selected="false">Fuzzy C-means &amp; Sugeno</button>
     </nav>
 
     <section id="regression-view" class="panel cd-panel shap-panel" role="tabpanel" aria-labelledby="tab-regression">
@@ -95,6 +95,7 @@
       <div class="cd-grid">
         <div id="cd-tree-panel" class="cd-hero">
           <div class="cd-tree-toolbar" role="group" aria-label="Decision tree zoom controls">
+            <span class="cd-tree-instruction">Drag to move the tree</span>
             <button id="cd-tree-zoom-out" type="button" aria-label="Zoom out of decision tree">−</button>
             <output id="cd-tree-zoom-value" aria-live="polite">100%</output>
             <button id="cd-tree-zoom-in" type="button" aria-label="Zoom in on decision tree">+</button>
@@ -114,20 +115,20 @@
           <p class="cd-note">Rules ordered by activation strength (0 = no match, 1 = full match). Select one to inspect its conditions.</p>
           <div id="cd-rule-list"></div>
         </aside>
+        <div class="cd-bottom mamdani-output">
+          <h3>Mamdani approximation of predicted difficulty level</h3>
+          <div id="cd-curve" class="cd-graphic"></div>
+          <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
+            <span class="cd-legend-categories">Prediction difficulty level categories</span>
+            <span class="cd-legend-shape">Combined fuzzy output</span>
+            <span class="cd-legend-regression">Regression model prediction</span>
+            <span class="cd-legend-centroid">Mamdani prediction</span>
+            <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
+          </div>
+          <p class="cd-note">The strongest active leaf sets the limit for its category.</p>
+        </div>
       </div>
       <dialog id="cd-tree-dialog" class="cd-tree-dialog" aria-label="Expanded decision tree"></dialog>
-      <div class="cd-bottom">
-        <h3>Mamdani approximation of predicted difficulty level</h3>
-        <div id="cd-curve" class="cd-graphic"></div>
-        <div class="cd-curve-legend" aria-label="Fuzzy output plot legend">
-          <span class="cd-legend-categories">Prediction difficulty level categories</span>
-          <span class="cd-legend-shape">Combined fuzzy output</span>
-          <span class="cd-legend-regression">Regression model prediction</span>
-          <span class="cd-legend-centroid">Mamdani prediction</span>
-          <strong id="cd-curve-difference" class="cd-legend-difference"></strong>
-        </div>
-        <p class="cd-note">The strongest active leaf sets the limit for its category.</p>
-      </div>
       <details class="cd-recorded">
         <summary>Recorded measurements</summary>
         <table aria-label="Four recorded Auditory measurements">
@@ -169,7 +170,8 @@
       </details>
     </section>
 
-    <section class="panel" aria-label="Next session decision">
+    <section class="panel" aria-labelledby="next-session-heading">
+      <h2 id="next-session-heading">Next session decision</h2>
       <div class="decision-grid">
         <label>Next-session difficulty level
           <select id="next-stage">
