@@ -114,7 +114,18 @@ footer{font-size:12px;color:#647383;margin:16px 3px}
 #mamdani-view .cd-sidebar{max-height:none;overflow:visible}
 #cd-rule-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:8px;align-items:start}
 .cd-tree-viewport:focus-visible{outline:3px solid #2c89b2;outline-offset:2px}
-.cd-tree-viewport svg{min-width:0;max-width:none;height:auto}
+.cd-tree-viewport svg{min-width:0;max-width:none;height:auto;margin-inline:auto}
+.cd-tree-viewport{cursor:grab}
+.cd-tree-viewport.is-panning{cursor:grabbing;user-select:none}
+.cd-tree-dialog{width:calc(100% - 24px);height:calc(100% - 24px);
+  max-width:none;max-height:none;margin:auto;padding:12px;border:1px solid #dce3ea;
+  border-radius:12px;background:#f5f7fa;color:inherit;overflow:hidden}
+.cd-tree-dialog::backdrop{background:#17243680}
+.cd-tree-dialog[open]{display:flex;flex-direction:column}
+.cd-tree-dialog #cd-tree-panel{display:flex;flex-direction:column;flex:1;min-height:0}
+.cd-tree-dialog .cd-tree-viewport{flex:1;min-height:0;height:auto}
+.cd-tree-dialog .cd-tree-toolbar,.cd-tree-dialog .cd-tree-legend{flex-shrink:0}
+body:has(.cd-tree-dialog[open]){overflow:hidden}
 #cd-curve svg{min-width:400px;max-height:none}
 .cd-curve-legend{display:flex;flex-wrap:wrap;align-items:center;gap:10px 19px;
   font-size:12px;color:#526b82;margin-top:12px}

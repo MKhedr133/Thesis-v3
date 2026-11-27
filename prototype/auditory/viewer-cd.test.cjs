@@ -528,3 +528,59 @@ test("Mamdani leaf summaries show saved output categories and unchanged activati
     assert.match(diff,/^Difference: /);
   }finally{global.document=previous;}
 });
+
+test("expanded tree moves the original panel, restores focus and scroll; pointer drag pans",()=>{
+  const old=global.document;
+  const events=()=>({
+    handlers:{},addEventListener(type,fn){this.handlers[type]=fn;},
+    emit(type,event={}){this.handlers[type](event);}
+  });
+  const drawing={style:{},getAttribute:()=> "0 0 1762 522"};
+  const viewport={...events(),clientWidth:720,clientHeight:520,clientLeft:1,clientTop:1,
+    scrollLeft:100,scrollTop:40,querySelector:()=>drawing,
+    getBoundingClientRect:()=>({left:0,top:0}),
+    classList:{add(){},remove(){}},focus(){},
+    setPointerCapture(id){this.capture=id;},
+    hasPointerCapture(id){return this.capture===id;},
+    releasePointerCapture(){this.capture=null;}
+  };
+  const next={},parent={insertBefore(node,sibling){assert.equal(sibling,next);node.parentNode=this;}};
+  const panel={parentNode:parent,nextSibling:next};
+  const toggle={...events(),setAttribute(k,v){this[k]=v;},focus(){this.focused=true;}};
+  const dialog={...events(),open:false,append(node){node.parentNode=this;},
+    showModal(){this.open=true;viewport.clientWidth=1000;},
+    close(){this.open=false;viewport.clientWidth=720;this.emit("close");}};
+  const percentage={textContent:""};
+  const elements={"cd-tree-panel":panel,"cd-tree-dialog":dialog,"cd-tree-expand":toggle,
+    "cd-tree":viewport,"cd-tree-zoom-value":percentage};
+  global.document={getElementById:id=>elements[id]};
+  try{
+    CD.zoomTree("reset");
+    viewport.scrollLeft=100;viewport.scrollTop=40;
+    CD.installTreeExplorer();
+    toggle.emit("click");
+    assert.equal(panel.parentNode,dialog);
+    assert.equal(toggle["aria-expanded"],"true");
+    assert.equal(toggle.focused,true);
+    assert.equal(drawing.style.width,"2203px");
+    const pointer={pointerId:1,isPrimary:true,pointerType:"mouse",button:0,
+      clientX:300,clientY:200,preventDefault(){}};
+    viewport.emit("pointerdown",pointer);
+    viewport.emit("pointermove",{...pointer,clientX:250,clientY:170});
+    assert.equal(viewport.scrollLeft,150);
+    assert.equal(viewport.scrollTop,70);
+    viewport.emit("pointerup",pointer);
+    assert.equal(viewport.capture,null);
+    viewport.emit("pointermove",{...pointer,clientX:200});
+    assert.equal(viewport.scrollLeft,150);
+    viewport.emit("pointerdown",{...pointer,pointerType:"touch"});
+    assert.equal(viewport.capture,null);
+    // Native Escape closes the dialog and dispatches this same close event.
+    dialog.close();
+    assert.equal(panel.parentNode,parent);
+    assert.equal(toggle["aria-expanded"],"false");
+    assert.equal(viewport.scrollLeft,100);
+    assert.equal(viewport.scrollTop,40);
+    assert.equal(toggle.focused,true);
+  }finally{global.document=old;}
+});
