@@ -39,20 +39,35 @@
     return {lower:lower-pad,upper:upper+pad};
   }
   const zoomStep = (value,action) => action==="reset"?1:
-    Math.max(.75,Math.min(3.2,value*(action==="in"?1.25:action==="out"?.8:1)));
+    Math.max(Math.min(.25,value),Math.min(3.2,value*(action==="in"?1.25:action==="out"?.8:1)));
   let currentTreeZoom=1;
+  let treeFit=false;
+  function treeDimensions(drawing,viewport){
+    const [, , width,height]=drawing.getAttribute("viewBox").split(/\s+/).map(Number);
+    // At native scale, the existing 11.4-unit split labels are 14.25 CSS px.
+    const nativeWidth=width*1.25,nativeHeight=height*1.25;
+    return {nativeWidth,fit:Math.min(1,
+      Math.max(1,viewport.clientWidth-16)/nativeWidth,
+      Math.max(1,viewport.clientHeight-16)/nativeHeight)};
+  }
   function zoomTree(action) {
-    currentTreeZoom=zoomStep(currentTreeZoom,action);
     const viewport=document.getElementById("cd-tree");
     const drawing=viewport.querySelector("svg");
+    if(action==="fit")treeFit=true;
+    else if(action!=="resize"){treeFit=false;currentTreeZoom=zoomStep(currentTreeZoom,action);}
     if(drawing){
-      drawing.style.width=Math.round(Math.max(440,viewport.clientWidth-16)*currentTreeZoom)+"px";
+      const {nativeWidth,fit}=treeDimensions(drawing,viewport);
+      if(treeFit)currentTreeZoom=fit;
+      drawing.style.width=Math.round(nativeWidth*currentTreeZoom)+"px";
       drawing.style.minWidth="0";
       drawing.style.maxWidth="none";
+      if(action==="reset"||action==="fit"||(action==="resize"&&treeFit)){
+        viewport.scrollLeft=action==="reset"?Math.max(0,(nativeWidth-viewport.clientWidth+16)/2):0;
+        viewport.scrollTop=0;
+      }
     }
     document.getElementById("cd-tree-zoom-value").textContent=
       Math.round(currentTreeZoom*100)+"%";
-    if(action==="reset"){viewport.scrollLeft=0;viewport.scrollTop=0;}
     return currentTreeZoom;
   }
   const finite = v => typeof v === "number" && Number.isFinite(v);
