@@ -152,10 +152,6 @@ def main():
             page.locator("#participant").select_option(args.participant)
             page.locator("#stage").select_option(LEVEL_CODES[args.level])
 
-            # Capture-only privacy edit: keep the option value and selected case intact.
-            page.locator("#participant").evaluate(
-                "el => { el.options[el.selectedIndex].textContent = 'Selected case'; }"
-            )
             page.locator(".load").evaluate("el => { el.hidden = true; }")
 
             for method in methods:
