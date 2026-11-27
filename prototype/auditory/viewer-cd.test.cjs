@@ -180,7 +180,7 @@ test("tree zoom increases and resets without changing the tree source",()=>{
   assert.equal(CD.zoomStep(1,"in"),1.25);
   assert.equal(CD.zoomStep(1.25,"out"),1);
   assert.equal(CD.zoomStep(3.2,"in"),3.2);
-  assert.equal(CD.zoomStep(.75,"out"),.75);
+  assert.equal(CD.zoomStep(.25,"out"),.25);
   assert.equal(CD.zoomStep(2.1,"reset"),1);
 });
 test("replace Medium only in therapist-visible wording",()=>{
@@ -257,10 +257,10 @@ test("Mamdani chart preserves unavailable without plotting fabricated markers",(
   });
 });
 
-test("decision tree zoom controls change SVG width and reset scroll position",()=>{
+test("decision tree native zoom is independent of viewport; Fit uses both dimensions",()=>{
   const old=global.document;
-  const drawing={style:{}};
-  const viewport={clientWidth:720,scrollLeft:55,scrollTop:38,
+  const drawing={style:{},getAttribute:()=> "0 0 1980 557"};
+  const viewport={clientWidth:720,clientHeight:520,scrollLeft:55,scrollTop:38,
     querySelector:(name)=>name==="svg"?drawing:null};
   const percentage={textContent:""};
   global.document={getElementById:(id)=>{
@@ -271,16 +271,26 @@ test("decision tree zoom controls change SVG width and reset scroll position",()
   try{
     CD.zoomTree("reset");
     assert.equal(percentage.textContent,"100%");
-    assert.equal(viewport.scrollLeft,0);
-    const before=parseFloat(drawing.style.width);
+    assert.equal(drawing.style.width,"2475px");
+    assert.equal(viewport.scrollTop,0);
+    assert.ok(viewport.scrollLeft>0);
+    viewport.clientWidth=1400;
+    CD.zoomTree("resize");
+    assert.equal(drawing.style.width,"2475px");
     CD.zoomTree("in");
     assert.equal(percentage.textContent,"125%");
-    assert.ok(parseFloat(drawing.style.width)>before);
+    assert.equal(drawing.style.width,"3094px");
+    CD.zoomTree("fit");
+    assert.equal(drawing.style.width,"1384px");
+    assert.equal(viewport.scrollLeft,0);
+    viewport.clientHeight=300;
+    CD.zoomTree("resize");
+    assert.ok(parseFloat(drawing.style.width)<1384);
     CD.zoomTree("reset");
-    assert.equal(parseFloat(drawing.style.width),before);
+    assert.equal(drawing.style.width,"2475px");
+    assert.equal(percentage.textContent,"100%");
   }finally{global.document=old;}
 });
-
 
 test("display rename changes rule prose without altering saved Medium consequent",()=>{
   assert.equal(
