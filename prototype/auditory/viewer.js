@@ -703,9 +703,12 @@ function installApp() {
   });
   for(const name of methods)
     document.getElementById("tab-"+name).addEventListener("click",()=>setTab(name));
-  for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"]])
+  for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"],["fit","fit"]])
     document.getElementById("cd-tree-zoom-"+suffix)
       .addEventListener("click",()=>CD.zoomTree(action));
+  window.addEventListener("resize",()=>{
+    if(activeTab==="mamdani"&&cd)CD.zoomTree("resize");
+  });
 }
 if (typeof document !== "undefined") {
   document.addEventListener("DOMContentLoaded", installApp);
