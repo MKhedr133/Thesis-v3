@@ -706,6 +706,7 @@ function installApp() {
   for(const [suffix,action] of [["in","in"],["out","out"],["reset","reset"],["fit","fit"]])
     document.getElementById("cd-tree-zoom-"+suffix)
       .addEventListener("click",()=>CD.zoomTree(action));
+  CD.installTreeExplorer();
   window.addEventListener("resize",()=>{
     if(activeTab==="mamdani"&&cd)CD.zoomTree("resize");
   });
