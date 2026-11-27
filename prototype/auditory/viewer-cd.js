@@ -70,6 +70,60 @@
       Math.round(currentTreeZoom*100)+"%";
     return currentTreeZoom;
   }
+  function installTreeExplorer(){
+    const panel=document.getElementById("cd-tree-panel");
+    const dialog=document.getElementById("cd-tree-dialog");
+    const toggle=document.getElementById("cd-tree-expand");
+    const viewport=document.getElementById("cd-tree");
+    const parent=panel.parentNode, next=panel.nextSibling;
+    let savedScroll=null,drag=null;
+    toggle.addEventListener("click",()=>{
+      if(dialog.open){dialog.close();return;}
+      savedScroll={left:viewport.scrollLeft,top:viewport.scrollTop};
+      dialog.append(panel);
+      dialog.showModal();
+      toggle.textContent="Close expanded view";
+      toggle.setAttribute("aria-expanded","true");
+      zoomTree("resize");
+      toggle.focus({preventScroll:true});
+    });
+    dialog.addEventListener("close",()=>{
+      parent.insertBefore(panel,next);
+      toggle.textContent="Expand tree";
+      toggle.setAttribute("aria-expanded","false");
+      zoomTree("resize");
+      if(savedScroll){viewport.scrollLeft=savedScroll.left;viewport.scrollTop=savedScroll.top;}
+      savedScroll=null;
+      toggle.focus({preventScroll:true});
+    });
+    viewport.addEventListener("pointerdown",event=>{
+      if(drag||!event.isPrimary||event.button!==0||event.pointerType==="touch")return;
+      const rect=viewport.getBoundingClientRect();
+      // Leave native scrollbar interactions alone.
+      if(event.clientX>=rect.left+viewport.clientLeft+viewport.clientWidth||
+         event.clientY>=rect.top+viewport.clientTop+viewport.clientHeight)return;
+      drag={id:event.pointerId,x:event.clientX,y:event.clientY,
+        left:viewport.scrollLeft,top:viewport.scrollTop};
+      viewport.setPointerCapture(event.pointerId);
+      viewport.classList.add("is-panning");
+      viewport.focus({preventScroll:true});
+      event.preventDefault();
+    });
+    viewport.addEventListener("pointermove",event=>{
+      if(!drag||drag.id!==event.pointerId)return;
+      viewport.scrollLeft=drag.left+drag.x-event.clientX;
+      viewport.scrollTop=drag.top+drag.y-event.clientY;
+      event.preventDefault();
+    });
+    function stop(event){
+      if(!drag||drag.id!==event.pointerId)return;
+      drag=null;
+      viewport.classList.remove("is-panning");
+      if(viewport.hasPointerCapture(event.pointerId))viewport.releasePointerCapture(event.pointerId);
+    }
+    for(const type of ["pointerup","pointercancel","lostpointercapture"])
+      viewport.addEventListener(type,stop);
+  }
   const finite = v => typeof v === "number" && Number.isFinite(v);
   const near = (a,b,t=1e-8) => Math.abs(a-b)<=t;
   function insist(v,msg){if(!v)throw new Error("C/D development data: "+msg);}
@@ -210,7 +264,7 @@
       return {node:n,x:(left.x+right.x)/2,y:60+depth*134,left,right};
     }
     const root=place(tree,0),chart=svg("svg",{
-      viewBox:"0 0 "+Math.max(1750,leaves*218+236)+" "+(155+depthMax*134),
+      viewBox:"0 0 "+(leaves*218+18)+" "+(120+depthMax*134),
       role:"img",
       "aria-label":"Decision tree with the crisp route and every positively activated fuzzy rule route highlighted separately"
     });
@@ -519,7 +573,7 @@
       }),html("div","cd-total","Combined prediction = "+f(obs.sugeno.prediction)));
     }
   }
-  const API={validate,route,centroid,show,zoomTree,zoomStep,plotBounds,
+  const API={validate,route,centroid,show,zoomTree,zoomStep,installTreeExplorer,plotBounds,
     linguisticLabel,outputChart,treeChart,activeTreeRoutes,outputCategories,
     recordedRows,wrappedFeatureName};
   if(typeof module!=="undefined"&&module.exports)module.exports=API;
