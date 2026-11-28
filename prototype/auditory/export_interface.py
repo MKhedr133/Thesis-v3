@@ -88,23 +88,17 @@ def capture_shap_comparisons(page, folder, name, selectors):
 
 
 def capture_mamdani_rules(page, folder, selectors):
-    """Capture the sidebar once for each displayed, positively activated rule."""
+    """Capture every displayed, positively activated rule expanded together."""
     rules = page.locator("#cd-rule-list details.cd-rule")
     original = rules.evaluate_all("nodes => nodes.map(node => node.open)")
+    if not original:
+        return
     try:
-        for index in range(len(original)):
-            rule = rules.nth(index)
-            title = rule.locator("summary span").inner_text()
-            match = re.match(r"Leaf (\d+)\b", title)
-            if not match:
-                raise RuntimeError("Cannot identify fuzzy rule: " + title)
-            rules.evaluate_all(
-                "(nodes, selected) => nodes.forEach((node, i) => { node.open = i === selected; })",
-                index,
-            )
+        rules.evaluate_all("nodes => nodes.forEach(node => { node.open = true; })")
+        for rule in rules.all():
             rule.locator(".cd-rule-text").wait_for(state="visible")
-            page.evaluate("window.scrollTo(0, 0)")
-            capture(page, folder / f"02-rule-expanded-leaf-{match[1]}.png", selectors)
+        page.evaluate("window.scrollTo(0, 0)")
+        capture(page, folder / "02-rule-activations-all-expanded.png", selectors)
     finally:
         rules.evaluate_all(
             "(nodes, states) => nodes.forEach((node, i) => { node.open = states[i]; })",
@@ -114,7 +108,7 @@ def capture_mamdani_rules(page, folder, selectors):
 
 
 def capture_sugeno_clusters(page, folder, selectors):
-    """Capture all three cluster selections, then restore the original selection."""
+    """Capture all three existing cluster comparisons together in an export-only layout."""
     buttons = page.locator("#cd-memberships .cd-membership")
     original = buttons.evaluate_all(
         "nodes => nodes.findIndex(node => node.getAttribute('aria-pressed') === 'true')"
@@ -122,15 +116,61 @@ def capture_sugeno_clusters(page, folder, selectors):
     if buttons.count() != 3 or original < 0:
         raise RuntimeError("Expected three clusters and one selected cluster")
     detail = page.locator("#cd-profile-detail")
+    sidebar = page.locator("#sugeno-view .cd-sidebar")
+    original_style = sidebar.get_attribute("style")
     try:
+        page.evaluate("""() => {
+            const host = document.createElement("div");
+            host.id = "export-all-clusters";
+            host.hidden = true;
+            Object.assign(host.style, {
+                display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))",
+                gap: "14px", alignItems: "start"
+            });
+            document.getElementById("cd-profile-detail").after(host);
+        }""")
         for index in range(3):
             buttons.nth(index).click()
             detail.locator(".cd-feature").first.wait_for(state="visible")
             if detail.get_attribute("aria-label") != f"Cluster {index + 1} recorded measurement comparison":
                 raise RuntimeError("Cluster comparison did not update")
-            page.evaluate("window.scrollTo(0, 0)")
-            capture(page, folder / f"01-cluster-{index + 1}-selected.png", selectors)
+            page.evaluate("""index => {
+                const host = document.getElementById("export-all-clusters");
+                const card = document.createElement("section");
+                Object.assign(card.style, {
+                    minWidth: "0", border: "1px solid #dce3ea",
+                    borderRadius: "10px", padding: "14px", background: "#ffffff"
+                });
+                const membership = document.querySelectorAll("#cd-memberships .cd-membership")[index]
+                    .cloneNode(true);
+                membership.removeAttribute("aria-pressed");
+                membership.tabIndex = -1;
+                const comparison = document.getElementById("cd-profile-detail").cloneNode(true);
+                comparison.removeAttribute("id");
+                comparison.style.marginTop = "17px";
+                comparison.querySelectorAll(".cd-feature > span").forEach(
+                    node => { node.style.lineHeight = "1.35"; }
+                );
+                card.append(membership, comparison);
+                host.append(card);
+            }""", index)
+        page.evaluate("""() => {
+            document.querySelector("#sugeno-view .cd-sidebar").style.gridColumn = "1 / -1";
+            document.getElementById("cd-memberships").hidden = true;
+            document.getElementById("cd-profile-detail").hidden = true;
+            document.getElementById("export-all-clusters").hidden = false;
+        }""")
+        page.evaluate("window.scrollTo(0, 0)")
+        capture(page, folder / "01-clusters-all-expanded.png", selectors)
     finally:
+        page.evaluate("""style => {
+            document.getElementById("export-all-clusters")?.remove();
+            document.getElementById("cd-memberships").hidden = false;
+            document.getElementById("cd-profile-detail").hidden = false;
+            const sidebar = document.querySelector("#sugeno-view .cd-sidebar");
+            if (style === null) sidebar.removeAttribute("style");
+            else sidebar.setAttribute("style", style);
+        }""", original_style)
         buttons.nth(original).click()
         page.evaluate("window.scrollTo(0, 0)")
 
@@ -215,7 +255,7 @@ def main():
                 if method == "mamdani":
                     capture_mamdani_rules(page, folder, ("#mamdani-view .cd-sidebar",))
                 elif method == "sugeno":
-                    capture_sugeno_clusters(page, folder, ("#sugeno-view .cd-grid",))
+                    capture_sugeno_clusters(page, folder, ("#sugeno-view .cd-sidebar",))
                 capture(page, folder / "00-complete-interface.png", (".shell",))
         finally:
             browser.close()
