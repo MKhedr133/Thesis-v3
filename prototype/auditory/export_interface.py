@@ -220,6 +220,11 @@ def main():
     except ImportError:
         parser.exit(1, "Playwright is not installed. Run python -m pip show playwright.\n")
 
+    try:
+        from interface_pdf import write_interface_pdf
+    except ImportError:
+        parser.exit(1, "PDF generation requires ReportLab. Run python -m pip install reportlab.\n")
+
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     output = ROOT / "outputs" / "interface_exports" / stamp
     output.mkdir(parents=True, exist_ok=False)
@@ -259,6 +264,9 @@ def main():
                 capture(page, folder / "00-complete-interface.png", (".shell",))
         finally:
             browser.close()
+
+    for method in methods:
+        print("PDF:", write_interface_pdf(output / method, method))
 
     print("Export complete:", output)
 
