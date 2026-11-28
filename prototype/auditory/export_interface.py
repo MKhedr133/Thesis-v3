@@ -87,6 +87,54 @@ def capture_shap_comparisons(page, folder, name, selectors):
         page.evaluate("window.scrollTo(0, 0)")
 
 
+def capture_mamdani_rules(page, folder, selectors):
+    """Capture the sidebar once for each displayed, positively activated rule."""
+    rules = page.locator("#cd-rule-list details.cd-rule")
+    original = rules.evaluate_all("nodes => nodes.map(node => node.open)")
+    try:
+        for index in range(len(original)):
+            rule = rules.nth(index)
+            title = rule.locator("summary span").inner_text()
+            match = re.match(r"Leaf (\d+)\b", title)
+            if not match:
+                raise RuntimeError("Cannot identify fuzzy rule: " + title)
+            rules.evaluate_all(
+                "(nodes, selected) => nodes.forEach((node, i) => { node.open = i === selected; })",
+                index,
+            )
+            rule.locator(".cd-rule-text").wait_for(state="visible")
+            page.evaluate("window.scrollTo(0, 0)")
+            capture(page, folder / f"02-rule-expanded-leaf-{match[1]}.png", selectors)
+    finally:
+        rules.evaluate_all(
+            "(nodes, states) => nodes.forEach((node, i) => { node.open = states[i]; })",
+            original,
+        )
+        page.evaluate("window.scrollTo(0, 0)")
+
+
+def capture_sugeno_clusters(page, folder, selectors):
+    """Capture all three cluster selections, then restore the original selection."""
+    buttons = page.locator("#cd-memberships .cd-membership")
+    original = buttons.evaluate_all(
+        "nodes => nodes.findIndex(node => node.getAttribute('aria-pressed') === 'true')"
+    )
+    if buttons.count() != 3 or original < 0:
+        raise RuntimeError("Expected three clusters and one selected cluster")
+    detail = page.locator("#cd-profile-detail")
+    try:
+        for index in range(3):
+            buttons.nth(index).click()
+            detail.locator(".cd-feature").first.wait_for(state="visible")
+            if detail.get_attribute("aria-label") != f"Cluster {index + 1} recorded measurement comparison":
+                raise RuntimeError("Cluster comparison did not update")
+            page.evaluate("window.scrollTo(0, 0)")
+            capture(page, folder / f"01-cluster-{index + 1}-selected.png", selectors)
+    finally:
+        buttons.nth(original).click()
+        page.evaluate("window.scrollTo(0, 0)")
+
+
 def prepare_method(page, method):
     tab, _ = METHODS[method]
     page.locator("#tab-" + tab).click()
@@ -164,6 +212,10 @@ def main():
                         capture_shap_comparisons(page, folder, name, selectors)
                     else:
                         capture(page, folder / (name + ".png"), selectors)
+                if method == "mamdani":
+                    capture_mamdani_rules(page, folder, ("#mamdani-view .cd-sidebar",))
+                elif method == "sugeno":
+                    capture_sugeno_clusters(page, folder, ("#sugeno-view .cd-grid",))
                 capture(page, folder / "00-complete-interface.png", (".shell",))
         finally:
             browser.close()
